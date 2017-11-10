@@ -185,3 +185,27 @@
 // CHECK-CL20-NOT: #define __FAST_RELAXED_MATH__ 1
 // CHECK-FRM: #define __FAST_RELAXED_MATH__ 1
 
+// RUN: %clang_cc1 %s -E -dM -o - -x cl \
+// RUN:   | FileCheck %s --check-prefix=MSCOPE
+// MSCOPE:#define __OPENCL_MEMORY_SCOPE_ALL_SVM_DEVICES 3
+// MSCOPE:#define __OPENCL_MEMORY_SCOPE_DEVICE 2
+// MSCOPE:#define __OPENCL_MEMORY_SCOPE_SUB_GROUP 4
+// MSCOPE:#define __OPENCL_MEMORY_SCOPE_WORK_GROUP 1
+// MSCOPE:#define __OPENCL_MEMORY_SCOPE_WORK_ITEM 0
+
+// RUN: %clang_cc1 -triple aarch64-windows %s -E -dM -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ARM64-WIN
+
+// CHECK-ARM64-WIN: #define _M_ARM64 1
+// CHECK-ARM64-WIN: #define _WIN32 1
+// CHECK-ARM64-WIN: #define _WIN64 1
+
+// RUN: %clang_cc1 -triple aarch64-windows-gnu %s -E -dM -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ARM64-MINGW
+
+// CHECK-ARM64-MINGW-NOT: #define _M_ARM64 1
+// CHECK-ARM64-MINGW: #define WIN32 1
+// CHECK-ARM64-MINGW: #define WIN64 1
+// CHECK-ARM64-MINGW: #define _WIN32 1
+// CHECK-ARM64-MINGW: #define _WIN64 1
+// CHECK-ARM64-MINGW: #define __aarch64__ 1

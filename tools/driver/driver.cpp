@@ -53,8 +53,15 @@ using namespace clang::driver;
 using namespace llvm::opt;
 
 std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {
-  if (!CanonicalPrefixes)
-    return Argv0;
+  if (!CanonicalPrefixes) {
+    SmallString<128> ExecutablePath(Argv0);
+    // Do a PATH lookup if Argv0 isn't a valid path.
+    if (!llvm::sys::fs::exists(ExecutablePath))
+      if (llvm::ErrorOr<std::string> P =
+              llvm::sys::findProgramByName(ExecutablePath))
+        ExecutablePath = *P;
+    return ExecutablePath.str();
+  }
 
   // This just needs to be some symbol in the binary; C++ doesn't
   // allow taking the address of ::main however.
@@ -199,23 +206,26 @@ extern int cc1_main(ArrayRef<const char *> Argv, const char *Argv0,
 extern int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0,
                       void *MainAddr);
 
-static void insertTargetAndModeArgs(StringRef Target, StringRef Mode,
+static void insertTargetAndModeArgs(const ParsedClangName &NameParts,
                                     SmallVectorImpl<const char *> &ArgVector,
                                     std::set<std::string> &SavedStrings) {
-  if (!Mode.empty()) {
+  // Put target and mode arguments at the start of argument list so that
+  // arguments specified in command line could override them. Avoid putting
+  // them at index 0, as an option like '-cc1' must remain the first.
+  auto InsertionPoint = ArgVector.begin();
+  if (InsertionPoint != ArgVector.end())
+    ++InsertionPoint;
+
+  if (NameParts.DriverMode) {
     // Add the mode flag to the arguments.
-    auto it = ArgVector.begin();
-    if (it != ArgVector.end())
-      ++it;
-    ArgVector.insert(it, GetStableCStr(SavedStrings, Mode));
+    ArgVector.insert(InsertionPoint,
+                     GetStableCStr(SavedStrings, NameParts.DriverMode));
   }
 
-  if (!Target.empty()) {
-    auto it = ArgVector.begin();
-    if (it != ArgVector.end())
-      ++it;
-    const char *arr[] = {"-target", GetStableCStr(SavedStrings, Target)};
-    ArgVector.insert(it, std::begin(arr), std::end(arr));
+  if (NameParts.TargetIsValid) {
+    const char *arr[] = {"-target", GetStableCStr(SavedStrings,
+                                                  NameParts.TargetPrefix)};
+    ArgVector.insert(InsertionPoint, std::begin(arr), std::end(arr));
   }
 }
 
@@ -323,9 +333,7 @@ int main(int argc_, const char **argv_) {
   }
 
   llvm::InitializeAllTargets();
-  std::string ProgName = argv[0];
-  std::pair<std::string, std::string> TargetAndMode =
-      ToolChain::getTargetAndModeFromProgramName(ProgName);
+  auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(argv[0]);
 
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver(A);
@@ -338,7 +346,7 @@ int main(int argc_, const char **argv_) {
   // Finally, our -cc1 tools don't care which tokenization mode we use because
   // response files written by clang will tokenize the same way in either mode.
   bool ClangCLMode = false;
-  if (TargetAndMode.second == "--driver-mode=cl" ||
+  if (StringRef(TargetAndMode.DriverMode).equals("--driver-mode=cl") ||
       std::find_if(argv.begin(), argv.end(), [](const char *F) {
         return F && strcmp(F, "--driver-mode=cl") == 0;
       }) != argv.end()) {
@@ -447,46 +455,48 @@ int main(int argc_, const char **argv_) {
 
   Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags);
   SetInstallDir(argv, TheDriver, CanonicalPrefixes);
+  TheDriver.setTargetAndMode(TargetAndMode);
 
-  insertTargetAndModeArgs(TargetAndMode.first, TargetAndMode.second, argv,
-                          SavedStrings);
+  insertTargetAndModeArgs(TargetAndMode, argv, SavedStrings);
 
   SetBackdoorDriverOutputsFromEnvVars(TheDriver);
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(argv));
-  int Res = 0;
-  SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
-  if (C.get())
+  int Res = 1;
+  if (C && !C->containsError()) {
+    SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
     Res = TheDriver.ExecuteCompilation(*C, FailingCommands);
 
-  // Force a crash to test the diagnostics.
-  if (::getenv("FORCE_CLANG_DIAGNOSTICS_CRASH")) {
-    Diags.Report(diag::err_drv_force_crash) << "FORCE_CLANG_DIAGNOSTICS_CRASH";
+    // Force a crash to test the diagnostics.
+    if (TheDriver.GenReproducer) {
+      Diags.Report(diag::err_drv_force_crash)
+        << !::getenv("FORCE_CLANG_DIAGNOSTICS_CRASH");
 
-    // Pretend that every command failed.
-    FailingCommands.clear();
-    for (const auto &J : C->getJobs())
-      if (const Command *C = dyn_cast<Command>(&J))
-        FailingCommands.push_back(std::make_pair(-1, C));
-  }
+      // Pretend that every command failed.
+      FailingCommands.clear();
+      for (const auto &J : C->getJobs())
+        if (const Command *C = dyn_cast<Command>(&J))
+          FailingCommands.push_back(std::make_pair(-1, C));
+    }
 
-  for (const auto &P : FailingCommands) {
-    int CommandRes = P.first;
-    const Command *FailingCommand = P.second;
-    if (!Res)
-      Res = CommandRes;
+    for (const auto &P : FailingCommands) {
+      int CommandRes = P.first;
+      const Command *FailingCommand = P.second;
+      if (!Res)
+        Res = CommandRes;
 
-    // If result status is < 0, then the driver command signalled an error.
-    // If result status is 70, then the driver command reported a fatal error.
-    // On Windows, abort will return an exit code of 3.  In these cases,
-    // generate additional diagnostic information if possible.
-    bool DiagnoseCrash = CommandRes < 0 || CommandRes == 70;
+      // If result status is < 0, then the driver command signalled an error.
+      // If result status is 70, then the driver command reported a fatal error.
+      // On Windows, abort will return an exit code of 3.  In these cases,
+      // generate additional diagnostic information if possible.
+      bool DiagnoseCrash = CommandRes < 0 || CommandRes == 70;
 #ifdef LLVM_ON_WIN32
-    DiagnoseCrash |= CommandRes == 3;
+      DiagnoseCrash |= CommandRes == 3;
 #endif
-    if (DiagnoseCrash) {
-      TheDriver.generateCompilationDiagnostics(*C, *FailingCommand);
-      break;
+      if (DiagnoseCrash) {
+        TheDriver.generateCompilationDiagnostics(*C, *FailingCommand);
+        break;
+      }
     }
   }
 

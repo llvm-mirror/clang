@@ -400,8 +400,9 @@ void PreprocessingRecord::Defined(const Token &MacroNameTok,
                       MacroNameTok.getLocation());
 }
 
-void PreprocessingRecord::SourceRangeSkipped(SourceRange Range) {
-  SkippedRanges.push_back(Range);
+void PreprocessingRecord::SourceRangeSkipped(SourceRange Range,
+                                             SourceLocation EndifLoc) {
+  SkippedRanges.emplace_back(Range.getBegin(), EndifLoc);
 }
 
 void PreprocessingRecord::MacroExpands(const Token &Id,
@@ -422,7 +423,8 @@ void PreprocessingRecord::MacroDefined(const Token &Id,
 }
 
 void PreprocessingRecord::MacroUndefined(const Token &Id,
-                                         const MacroDefinition &MD) {
+                                         const MacroDefinition &MD,
+                                         const MacroDirective *Undef) {
   MD.forAllDefinitions([&](MacroInfo *MI) { MacroDefinitions.erase(MI); });
 }
 

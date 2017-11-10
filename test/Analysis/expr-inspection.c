@@ -8,6 +8,7 @@ void clang_analyzer_numTimesReached();
 
 void foo(int x) {
   clang_analyzer_dump(x); // expected-warning{{reg_$0<int x>}}
+  clang_analyzer_dump(x + (-1)); // expected-warning{{(reg_$0<int x>) + -1}}
   int y = 1;
   clang_analyzer_printState();
   for (; y < 3; ++y)
@@ -19,4 +20,4 @@ void foo(int x) {
 
 // CHECK: Expressions:
 // CHECK-NEXT: clang_analyzer_printState : &code{clang_analyzer_printState}
-// CHECK-NEXT: Ranges are empty.
+// CHECK-NEXT: {{(Ranges are empty.)|(Constraints:[[:space:]]*$)}}

@@ -32,6 +32,7 @@ public:
     DebianWheezy,
     DebianJessie,
     DebianStretch,
+    DebianBuster,
     Exherbo,
     RHEL5,
     RHEL6,
@@ -57,6 +58,8 @@ public:
     UbuntuXenial,
     UbuntuYakkety,
     UbuntuZesty,
+    UbuntuArtful,
+    UbuntuBionic,
     UnknownDistro
   };
 
@@ -106,13 +109,13 @@ public:
   }
 
   bool IsDebian() const {
-    return DistroVal >= DebianLenny && DistroVal <= DebianStretch;
+    return DistroVal >= DebianLenny && DistroVal <= DebianBuster;
   }
 
   bool IsUbuntu() const {
-    return DistroVal >= UbuntuHardy && DistroVal <= UbuntuZesty;
+    return DistroVal >= UbuntuHardy && DistroVal <= UbuntuBionic;
   }
- 
+
   /// @}
 };
 

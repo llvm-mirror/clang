@@ -56,8 +56,7 @@
 /// __m128 _mm_ceil_ps(__m128 X);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPS / ROUNDPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPS / ROUNDPS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float] values to be rounded up.
@@ -74,8 +73,7 @@
 /// __m128d _mm_ceil_pd(__m128d X);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPD / ROUNDPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPD / ROUNDPD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double] values to be rounded up.
@@ -94,8 +92,7 @@
 /// __m128 _mm_ceil_ss(__m128 X, __m128 Y);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSS / ROUNDSS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSS / ROUNDSS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float]. The values stored in bits [127:32] are
@@ -120,8 +117,7 @@
 /// __m128d _mm_ceil_sd(__m128d X, __m128d Y);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSD / ROUNDSD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSD / ROUNDSD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double]. The value stored in bits [127:64] is
@@ -144,8 +140,7 @@
 /// __m128 _mm_floor_ps(__m128 X);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPS / ROUNDPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPS / ROUNDPS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float] values to be rounded down.
@@ -162,8 +157,7 @@
 /// __m128d _mm_floor_pd(__m128d X);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPD / ROUNDPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPD / ROUNDPD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double].
@@ -174,7 +168,7 @@
 ///    the corresponding three upper elements of the 128-bit result vector of
 ///    [4 x float]. Rounds down the lowest element of the second 128-bit vector
 ///    operand to an integer and copies it to the lowest element of the 128-bit
-///    result vector of [4 x float]. 
+///    result vector of [4 x float].
 ///
 /// \headerfile <x86intrin.h>
 ///
@@ -182,8 +176,7 @@
 /// __m128 _mm_floor_ss(__m128 X, __m128 Y);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSS / ROUNDSS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSS / ROUNDSS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float]. The values stored in bits [127:32] are
@@ -208,8 +201,7 @@
 /// __m128d _mm_floor_sd(__m128d X, __m128d Y);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSD / ROUNDSD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSD / ROUNDSD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double]. The value stored in bits [127:64] is
@@ -233,8 +225,7 @@
 /// __m128 _mm_round_ps(__m128 X, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPS / ROUNDPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPS / ROUNDPS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float].
@@ -256,7 +247,7 @@
 #define _mm_round_ps(X, M) __extension__ ({ \
   (__m128)__builtin_ia32_roundps((__v4sf)(__m128)(X), (M)); })
 
-/// \brief Copies three upper elements of the first 128-bit vector operand to 
+/// \brief Copies three upper elements of the first 128-bit vector operand to
 ///    the corresponding three upper elements of the 128-bit result vector of
 ///    [4 x float]. Rounds the lowest element of the second 128-bit vector
 ///    operand to an integer value according to the rounding control specified
@@ -265,12 +256,11 @@
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// \code                       
+/// \code
 /// __m128 _mm_round_ss(__m128 X, __m128 Y, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSS / ROUNDSS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSS / ROUNDSS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float]. The values stored in bits [127:32] are
@@ -310,8 +300,7 @@
 /// __m128d _mm_round_pd(__m128d X, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDPD / ROUNDPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDPD / ROUNDPD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double].
@@ -333,10 +322,9 @@
 #define _mm_round_pd(X, M) __extension__ ({ \
   (__m128d)__builtin_ia32_roundpd((__v2df)(__m128d)(X), (M)); })
 
-
 /// \brief Copies the upper element of the first 128-bit vector operand to the
 ///    corresponding upper element of the 128-bit result vector of [2 x double].
-///    Rounds the lower element of the second 128-bit vector operand to an 
+///    Rounds the lower element of the second 128-bit vector operand to an
 ///    integer value according to the rounding control specified by the third
 ///    argument and copies it to the lower element of the 128-bit result vector
 ///    of [2 x double].
@@ -347,8 +335,7 @@
 /// __m128d _mm_round_sd(__m128d X, __m128d Y, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VROUNDSD / ROUNDSD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VROUNDSD / ROUNDSD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double]. The value stored in bits [127:64] is
@@ -388,8 +375,7 @@
 /// __m128d _mm_blend_pd(__m128d V1, __m128d V2, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VBLENDPD / BLENDPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VBLENDPD / BLENDPD </c> instruction.
 ///
 /// \param V1
 ///    A 128-bit vector of [2 x double].
@@ -419,8 +405,7 @@
 /// __m128 _mm_blend_ps(__m128 V1, __m128 V2, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VBLENDPS / BLENDPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VBLENDPS / BLENDPS </c> instruction.
 ///
 /// \param V1
 ///    A 128-bit vector of [4 x float].
@@ -447,8 +432,7 @@
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VBLENDVPD / BLENDVPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VBLENDVPD / BLENDVPD </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [2 x double].
@@ -475,8 +459,7 @@ _mm_blendv_pd (__m128d __V1, __m128d __V2, __m128d __M)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VBLENDVPS / BLENDVPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VBLENDVPS / BLENDVPS </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x float].
@@ -503,8 +486,7 @@ _mm_blendv_ps (__m128 __V1, __m128 __V2, __m128 __M)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPBLENDVB / PBLENDVB </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPBLENDVB / PBLENDVB </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [16 x i8].
@@ -535,8 +517,7 @@ _mm_blendv_epi8 (__m128i __V1, __m128i __V2, __m128i __M)
 /// __m128i _mm_blend_epi16(__m128i V1, __m128i V2, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPBLENDW / PBLENDW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPBLENDW / PBLENDW </c> instruction.
 ///
 /// \param V1
 ///    A 128-bit vector of [8 x i16].
@@ -569,13 +550,12 @@ _mm_blendv_epi8 (__m128i __V1, __m128i __V2, __m128i __M)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMULLD / PMULLD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMULLD / PMULLD </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit integer vector.
 /// \param __V2
-///    A 128-bit integer vector. 
+///    A 128-bit integer vector.
 /// \returns A 128-bit integer vector containing the products of both operands.
 static __inline__  __m128i __DEFAULT_FN_ATTRS
 _mm_mullo_epi32 (__m128i __V1, __m128i __V2)
@@ -589,8 +569,7 @@ _mm_mullo_epi32 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMULDQ / PMULDQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMULDQ / PMULDQ </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x i32].
@@ -607,7 +586,9 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 /* SSE4 Floating Point Dot Product Instructions.  */
 /// \brief Computes the dot product of the two 128-bit vectors of [4 x float]
 ///    and returns it in the elements of the 128-bit result vector of
-///    [4 x float]. The immediate integer operand controls which input elements
+///    [4 x float].
+///
+///    The immediate integer operand controls which input elements
 ///    will contribute to the dot product, and where the final results are
 ///    returned.
 ///
@@ -617,8 +598,7 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 /// __m128 _mm_dp_ps(__m128 X, __m128 Y, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VDPPS / DPPS </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VDPPS / DPPS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float].
@@ -642,7 +622,9 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 
 /// \brief Computes the dot product of the two 128-bit vectors of [2 x double]
 ///    and returns it in the elements of the 128-bit result vector of
-///    [2 x double]. The immediate integer operand controls which input
+///    [2 x double].
+///
+///    The immediate integer operand controls which input
 ///    elements will contribute to the dot product, and where the final results
 ///    are returned.
 ///
@@ -652,8 +634,7 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 /// __m128d _mm_dp_pd(__m128d X, __m128d Y, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VDPPD / DPPD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VDPPD / DPPD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [2 x double].
@@ -680,8 +661,7 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VMOVNTDQA / MOVNTDQA </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VMOVNTDQA / MOVNTDQA </c> instruction.
 ///
 /// \param __V
 ///    A pointer to a 128-bit aligned memory location that contains the integer
@@ -691,7 +671,7 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 static __inline__  __m128i __DEFAULT_FN_ATTRS
 _mm_stream_load_si128 (__m128i const *__V)
 {
-  return (__m128i) __builtin_ia32_movntdqa ((const __v2di *) __V);
+  return (__m128i) __builtin_nontemporal_load ((const __v2di *) __V);
 }
 
 /* SSE4 Packed Integer Min/Max Instructions.  */
@@ -701,8 +681,7 @@ _mm_stream_load_si128 (__m128i const *__V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMINSB / PMINSB </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMINSB / PMINSB </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [16 x i8].
@@ -721,8 +700,7 @@ _mm_min_epi8 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMAXSB / PMAXSB </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMAXSB / PMAXSB </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [16 x i8].
@@ -741,8 +719,7 @@ _mm_max_epi8 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMINUW / PMINUW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMINUW / PMINUW </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [8 x u16].
@@ -761,8 +738,7 @@ _mm_min_epu16 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMAXUW / PMAXUW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMAXUW / PMAXUW </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [8 x u16].
@@ -781,8 +757,7 @@ _mm_max_epu16 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMINSD / PMINSD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMINSD / PMINSD </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x i32].
@@ -795,14 +770,13 @@ _mm_min_epi32 (__m128i __V1, __m128i __V2)
   return (__m128i) __builtin_ia32_pminsd128 ((__v4si) __V1, (__v4si) __V2);
 }
 
-/// \brief Compares the corresponding elements of two 128-bit vectors of 
+/// \brief Compares the corresponding elements of two 128-bit vectors of
 ///    [4 x i32] and returns a 128-bit vector of [4 x i32] containing the
 ///    greater value of the two.
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMAXSD / PMAXSD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMAXSD / PMAXSD </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x i32].
@@ -821,8 +795,7 @@ _mm_max_epi32 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMINUD / PMINUD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMINUD / PMINUD </c>  instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x u32].
@@ -841,8 +814,7 @@ _mm_min_epu32 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMAXUD / PMAXUD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMAXUD / PMAXUD </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x u32].
@@ -867,7 +839,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// __m128 _mm_insert_ps(__m128 X, __m128 Y, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VINSERTPS </i> </c> instruction.
+/// This intrinsic corresponds to the <c> VINSERTPS </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector source operand of [4 x float]. With the exception of
@@ -907,14 +879,14 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// int _mm_extract_ps(__m128 X, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VEXTRACTPS / EXTRACTPS </i> </c>
+/// This intrinsic corresponds to the <c> VEXTRACTPS / EXTRACTPS </c>
 /// instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [4 x float].
 /// \param N
 ///    An immediate value. Bits [1:0] determines which bits from the argument
-///    \a X are extracted and returned: \n 
+///    \a X are extracted and returned: \n
 ///    00: Bits [31:0] of parameter \a X are returned. \n
 ///    01: Bits [63:32] of parameter \a X are returned. \n
 ///    10: Bits [95:64] of parameter \a X are returned. \n
@@ -951,8 +923,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// __m128i _mm_insert_epi8(__m128i X, int I, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPINSRB / PINSRB </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPINSRB / PINSRB </c> instruction.
 ///
 /// \param X
 ///    A 128-bit integer vector of [16 x i8]. This vector is copied to the
@@ -997,8 +968,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// __m128i _mm_insert_epi32(__m128i X, int I, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPINSRD / PINSRD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPINSRD / PINSRD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit integer vector of [4 x i32]. This vector is copied to the
@@ -1009,7 +979,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 ///    specified by \a N.
 /// \param N
 ///    An immediate value. Bits [1:0] specify the bit offset in the result at
-///    which the integer \a I is written.
+///    which the integer \a I is written. \n
 ///    00: Bits [31:0] of the result are used for insertion. \n
 ///    01: Bits [63:32] of the result are used for insertion. \n
 ///    10: Bits [95:64] of the result are used for insertion. \n
@@ -1019,11 +989,12 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
                                    ({ __v4si __a = (__v4si)(__m128i)(X); \
                                       __a[(N) & 3] = (I);                \
                                       (__m128i)__a;}))
+
 #ifdef __x86_64__
 /// \brief Constructs a 128-bit vector of [2 x i64] by first making a copy of
 ///    the 128-bit integer vector parameter, and then inserting the 64-bit
 ///    integer parameter \a I, using the immediate value parameter \a N as an
-///    insertion location selector. 
+///    insertion location selector.
 ///
 /// \headerfile <x86intrin.h>
 ///
@@ -1031,9 +1002,8 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// __m128i _mm_insert_epi64(__m128i X, long long I, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPINSRQ / PINSRQ </i> </c>
-/// instruction.
-///                                                                      
+/// This intrinsic corresponds to the <c> VPINSRQ / PINSRQ </c> instruction.
+///
 /// \param X
 ///    A 128-bit integer vector of [2 x i64]. This vector is copied to the
 ///    result and then one of the two elements in the result vector is replaced
@@ -1043,7 +1013,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 ///    specified by \a N.
 /// \param N
 ///    An immediate value. Bit [0] specifies the bit offset in the result at
-///    which the integer \a I is written.
+///    which the integer \a I is written. \n
 ///    0: Bits [63:0] of the result are used for insertion. \n
 ///    1: Bits [127:64] of the result are used for insertion. \n
 /// \returns A 128-bit integer vector containing the constructed values.
@@ -1065,14 +1035,13 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// int _mm_extract_epi8(__m128i X, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPEXTRB / PEXTRB </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPEXTRB / PEXTRB </c> instruction.
 ///
 /// \param X
 ///    A 128-bit integer vector.
 /// \param N
-///    An immediate value. Bits [3:0] specify which 8-bit vector element
-///    from the argument \a X to extract and copy to the result. \n
+///    An immediate value. Bits [3:0] specify which 8-bit vector element from
+///    the argument \a X to extract and copy to the result. \n
 ///    0000: Bits [7:0] of parameter \a X are extracted. \n
 ///    0001: Bits [15:8] of the parameter \a X are extracted. \n
 ///    0010: Bits [23:16] of the parameter \a X are extracted. \n
@@ -1105,14 +1074,13 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// int _mm_extract_epi32(__m128i X, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPEXTRD / PEXTRD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPEXTRD / PEXTRD </c> instruction.
 ///
 /// \param X
 ///    A 128-bit integer vector.
 /// \param N
-///    An immediate value. Bits [1:0] specify which 32-bit vector element
-///    from the argument \a X to extract and copy to the result. \n
+///    An immediate value. Bits [1:0] specify which 32-bit vector element from
+///    the argument \a X to extract and copy to the result. \n
 ///    00: Bits [31:0] of the parameter \a X are extracted. \n
 ///    01: Bits [63:32] of the parameter \a X are extracted. \n
 ///    10: Bits [95:64] of the parameter \a X are extracted. \n
@@ -1122,6 +1090,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 #define _mm_extract_epi32(X, N) (__extension__                         \
                                  ({ __v4si __a = (__v4si)(__m128i)(X); \
                                     (int)__a[(N) & 3];}))
+
 #ifdef __x86_64__
 /// \brief Extracts a 64-bit element from the 128-bit integer vector of
 ///    [2 x i64], using the immediate value parameter \a N as a selector.
@@ -1132,14 +1101,13 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 /// long long _mm_extract_epi64(__m128i X, const int N);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPEXTRQ / PEXTRQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPEXTRQ / PEXTRQ </c> instruction.
 ///
 /// \param X
 ///    A 128-bit integer vector.
 /// \param N
-///    An immediate value. Bit [0] specifies which 64-bit vector element
-///    from the argument \a X to return. \n
+///    An immediate value. Bit [0] specifies which 64-bit vector element from
+///    the argument \a X to return. \n
 ///    0: Bits [63:0] are returned. \n
 ///    1: Bits [127:64] are returned. \n
 /// \returns  A 64-bit integer.
@@ -1154,8 +1122,7 @@ _mm_max_epu32 (__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param __M
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1173,8 +1140,7 @@ _mm_testz_si128(__m128i __M, __m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param __M
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1192,8 +1158,7 @@ _mm_testc_si128(__m128i __M, __m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param __M
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1216,8 +1181,7 @@ _mm_testnzc_si128(__m128i __M, __m128i __V)
 /// int _mm_test_all_ones(__m128i V);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param V
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1234,8 +1198,7 @@ _mm_testnzc_si128(__m128i __M, __m128i __V)
 /// int _mm_test_mix_ones_zeros(__m128i M, __m128i V);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param M
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1254,8 +1217,7 @@ _mm_testnzc_si128(__m128i __M, __m128i __V)
 /// int _mm_test_all_zeros(__m128i M, __m128i V);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPTEST / PTEST </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPTEST / PTEST </c> instruction.
 ///
 /// \param M
 ///    A 128-bit integer vector containing the bits to be tested.
@@ -1270,8 +1232,7 @@ _mm_testnzc_si128(__m128i __M, __m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPEQQ / PCMPEQQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPCMPEQQ / PCMPEQQ </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit integer vector.
@@ -1292,8 +1253,7 @@ _mm_cmpeq_epi64(__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXBW / PMOVSXBW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXBW / PMOVSXBW </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower eight 8-bit elements are sign-
@@ -1314,8 +1274,7 @@ _mm_cvtepi8_epi16(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXBD / PMOVSXBD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXBD / PMOVSXBD </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower four 8-bit elements are sign-
@@ -1336,8 +1295,7 @@ _mm_cvtepi8_epi32(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXBQ / PMOVSXBQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXBQ / PMOVSXBQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower two 8-bit elements are sign-
@@ -1358,8 +1316,7 @@ _mm_cvtepi8_epi64(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXWD / PMOVSXWD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXWD / PMOVSXWD </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [8 x i16]. The lower four 16-bit elements are sign-
@@ -1378,8 +1335,7 @@ _mm_cvtepi16_epi32(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXWQ / PMOVSXWQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXWQ / PMOVSXWQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [8 x i16]. The lower two 16-bit elements are sign-
@@ -1398,8 +1354,7 @@ _mm_cvtepi16_epi64(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVSXDQ / PMOVSXDQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVSXDQ / PMOVSXDQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [4 x i32]. The lower two 32-bit elements are sign-
@@ -1419,8 +1374,7 @@ _mm_cvtepi32_epi64(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXBW / PMOVZXBW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXBW / PMOVZXBW </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower eight 8-bit elements are zero-
@@ -1439,8 +1393,7 @@ _mm_cvtepu8_epi16(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXBD / PMOVZXBD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXBD / PMOVZXBD </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower four 8-bit elements are zero-
@@ -1459,8 +1412,7 @@ _mm_cvtepu8_epi32(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXBQ / PMOVZXBQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXBQ / PMOVZXBQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [16 x i8]. The lower two 8-bit elements are zero-
@@ -1479,8 +1431,7 @@ _mm_cvtepu8_epi64(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXWD / PMOVZXWD </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXWD / PMOVZXWD </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [8 x i16]. The lower four 16-bit elements are zero-
@@ -1499,8 +1450,7 @@ _mm_cvtepu16_epi32(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXWQ / PMOVZXWQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXWQ / PMOVZXWQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [8 x i16]. The lower two 16-bit elements are zero-
@@ -1519,8 +1469,7 @@ _mm_cvtepu16_epi64(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPMOVZXDQ / PMOVZXDQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPMOVZXDQ / PMOVZXDQ </c> instruction.
 ///
 /// \param __V
 ///    A 128-bit vector of [4 x i32]. The lower two 32-bit elements are zero-
@@ -1535,13 +1484,12 @@ _mm_cvtepu32_epi64(__m128i __V)
 /* SSE4 Pack with Unsigned Saturation.  */
 /// \brief Converts 32-bit signed integers from both 128-bit integer vector
 ///    operands into 16-bit unsigned integers, and returns the packed result.
-///    Values greater than 0xFFFF are saturated to 0xFFFF. Values less than 
+///    Values greater than 0xFFFF are saturated to 0xFFFF. Values less than
 ///    0x0000 are saturated to 0x0000.
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPACKUSDW / PACKUSDW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPACKUSDW / PACKUSDW </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit vector of [4 x i32]. Each 32-bit element is treated as a
@@ -1574,8 +1522,7 @@ _mm_packus_epi32(__m128i __V1, __m128i __V2)
 /// __m128i _mm_mpsadbw_epu8(__m128i X, __m128i Y, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VMPSADBW / MPSADBW </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VMPSADBW / MPSADBW </c> instruction.
 ///
 /// \param X
 ///    A 128-bit vector of [16 x i8].
@@ -1608,7 +1555,7 @@ _mm_packus_epi32(__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPHMINPOSUW / PHMINPOSUW </i> </c>
+/// This intrinsic corresponds to the <c> VPHMINPOSUW / PHMINPOSUW </c>
 /// instruction.
 ///
 /// \param __V
@@ -1668,7 +1615,7 @@ _mm_minpos_epu16(__m128i __V)
 /// __m128i _mm_cmpistrm(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRM / PCMPISTRM </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRM / PCMPISTRM </c>
 /// instruction.
 ///
 /// \param A
@@ -1724,7 +1671,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistri(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -1738,7 +1685,7 @@ _mm_minpos_epu16(__m128i __V)
 ///    words, the type of comparison to perform, and the format of the return
 ///    value. \n
 ///    Bits [1:0]: Determine source data format. \n
-///      00: 16 unsigned bytes \n 
+///      00: 16 unsigned bytes \n
 ///      01: 8 unsigned words \n
 ///      10: 16 signed bytes \n
 ///      11: 8 signed words \n
@@ -1778,7 +1725,7 @@ _mm_minpos_epu16(__m128i __V)
 /// __m128i _mm_cmpestrm(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRM / PCMPESTRM </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRM / PCMPESTRM </c>
 /// instruction.
 ///
 /// \param A
@@ -1839,7 +1786,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestri(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI / PCMPESTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRI / PCMPESTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -1899,7 +1846,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistra(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -1949,7 +1896,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistrc(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -1997,7 +1944,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistro(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2046,7 +1993,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistrs(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2096,7 +2043,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpistrz(__m128i A, __m128i B, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPISTRI / PCMPISTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPISTRI / PCMPISTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2146,7 +2093,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestra(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI / PCMPESTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRI / PCMPESTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2176,7 +2123,7 @@ _mm_minpos_epu16(__m128i __V)
 ///      10: Match: Compare each pair of corresponding characters in \a A and
 ///          \a B for equality. \n
 ///      11: Substring: Search \a B for substring matches of \a A. \n
-///    Bits [5:4]: Determine whether to perform a one's complement on the bit 
+///    Bits [5:4]: Determine whether to perform a one's complement on the bit
 ///                mask of the comparison results. \n
 ///      00: No effect. \n
 ///      01: Negate the bit mask. \n
@@ -2201,7 +2148,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestrc(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI / PCMPESTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRI / PCMPESTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2243,6 +2190,7 @@ _mm_minpos_epu16(__m128i __V)
   (int)__builtin_ia32_pcmpestric128((__v16qi)(__m128i)(A), (int)(LA), \
                                     (__v16qi)(__m128i)(B), (int)(LB), \
                                     (int)(M))
+
 /// \brief Uses the immediate operand \a M to perform a comparison of string
 ///    data with explicitly defined lengths that is contained in source operands
 ///    \a A and \a B. Returns bit 0 of the resulting bit mask.
@@ -2253,7 +2201,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestro(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI / PCMPESTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRI / PCMPESTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2307,7 +2255,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestrs(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI / PCMPESTRI </i> </c>
+/// This intrinsic corresponds to the <c> VPCMPESTRI / PCMPESTRI </c>
 /// instruction.
 ///
 /// \param A
@@ -2362,7 +2310,7 @@ _mm_minpos_epu16(__m128i __V)
 /// int _mm_cmpestrz(__m128i A, int LA, __m128i B, int LB, const int M);
 /// \endcode
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPESTRI </i> </c> instruction.
+/// This intrinsic corresponds to the <c> VPCMPESTRI </c> instruction.
 ///
 /// \param A
 ///    A 128-bit integer vector containing one of the source operands to be
@@ -2412,8 +2360,7 @@ _mm_minpos_epu16(__m128i __V)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> VPCMPGTQ / PCMPGTQ </i> </c>
-/// instruction.
+/// This intrinsic corresponds to the <c> VPCMPGTQ / PCMPGTQ </c> instruction.
 ///
 /// \param __V1
 ///    A 128-bit integer vector.
@@ -2432,7 +2379,7 @@ _mm_cmpgt_epi64(__m128i __V1, __m128i __V2)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> CRC32B </i> </c> instruction.
+/// This intrinsic corresponds to the <c> CRC32B </c> instruction.
 ///
 /// \param __C
 ///    An unsigned integer operand to add to the CRC-32C checksum of operand
@@ -2452,7 +2399,7 @@ _mm_crc32_u8(unsigned int __C, unsigned char __D)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> CRC32W </i> </c> instruction.
+/// This intrinsic corresponds to the <c> CRC32W </c> instruction.
 ///
 /// \param __C
 ///    An unsigned integer operand to add to the CRC-32C checksum of operand
@@ -2472,7 +2419,7 @@ _mm_crc32_u16(unsigned int __C, unsigned short __D)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> CRC32L </i> </c> instruction.
+/// This intrinsic corresponds to the <c> CRC32L </c> instruction.
 ///
 /// \param __C
 ///    An unsigned integer operand to add to the CRC-32C checksum of operand
@@ -2493,7 +2440,7 @@ _mm_crc32_u32(unsigned int __C, unsigned int __D)
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> <i> CRC32Q </i> </c> instruction.
+/// This intrinsic corresponds to the <c> CRC32Q </c> instruction.
 ///
 /// \param __C
 ///    An unsigned integer operand to add to the CRC-32C checksum of operand

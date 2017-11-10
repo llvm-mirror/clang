@@ -128,21 +128,24 @@ void HeaderSearch::getHeaderMapFileNames(
     Names.push_back(HM.first->getName());
 }
 
-std::string HeaderSearch::getModuleFileName(Module *Module) {
+std::string HeaderSearch::getCachedModuleFileName(Module *Module) {
   const FileEntry *ModuleMap =
       getModuleMap().getModuleMapFileForUniquing(Module);
-  return getModuleFileName(Module->Name, ModuleMap->getName(),
-                           /*UsePrebuiltPath*/false);
+  return getCachedModuleFileName(Module->Name, ModuleMap->getName());
 }
 
-std::string HeaderSearch::getModuleFileName(StringRef ModuleName,
-                                            StringRef ModuleMapPath,
-                                            bool UsePrebuiltPath) {
-  if (UsePrebuiltPath) {
-    if (HSOpts->PrebuiltModulePaths.empty())
+std::string HeaderSearch::getPrebuiltModuleFileName(StringRef ModuleName,
+                                                    bool FileMapOnly) {
+  // First check the module name to pcm file map.
+  auto i (HSOpts->PrebuiltModuleFiles.find(ModuleName));
+  if (i != HSOpts->PrebuiltModuleFiles.end())
+    return i->second;
+
+  if (FileMapOnly || HSOpts->PrebuiltModulePaths.empty())
       return std::string();
 
-    // Go though each prebuilt module path and try to find the pcm file.
+  // Then go through each prebuilt module directory and try to find the pcm
+  // file.
     for (const std::string &Dir : HSOpts->PrebuiltModulePaths) {
       SmallString<256> Result(Dir);
       llvm::sys::fs::make_absolute(Result);
@@ -154,6 +157,8 @@ std::string HeaderSearch::getModuleFileName(StringRef ModuleName,
     return std::string();
   }
 
+std::string HeaderSearch::getCachedModuleFileName(StringRef ModuleName,
+                                                  StringRef ModuleMapPath) {
   // If we don't have a module cache path or aren't supposed to use one, we
   // can't do anything.
   if (getModuleCachePath().empty())
@@ -624,7 +629,10 @@ const FileEntry *HeaderSearch::LookupFile(
     ArrayRef<std::pair<const FileEntry *, const DirectoryEntry *>> Includers,
     SmallVectorImpl<char> *SearchPath, SmallVectorImpl<char> *RelativePath,
     Module *RequestingModule, ModuleMap::KnownHeader *SuggestedModule,
-    bool SkipCache, bool BuildSystemModule) {
+    bool *IsMapped, bool SkipCache, bool BuildSystemModule) {
+  if (IsMapped)
+    *IsMapped = false;
+
   if (SuggestedModule)
     *SuggestedModule = ModuleMap::KnownHeader();
     
@@ -754,8 +762,11 @@ const FileEntry *HeaderSearch::LookupFile(
   if (!SkipCache && CacheLookup.StartIdx == i+1) {
     // Skip querying potentially lots of directories for this lookup.
     i = CacheLookup.HitIdx;
-    if (CacheLookup.MappedName)
+    if (CacheLookup.MappedName) {
       Filename = CacheLookup.MappedName;
+      if (IsMapped)
+        *IsMapped = true;
+    }
   } else {
     // Otherwise, this is the first query, or the previous query didn't match
     // our search start.  We will fill in our found location below, so prime the
@@ -776,6 +787,8 @@ const FileEntry *HeaderSearch::LookupFile(
     if (HasBeenMapped) {
       CacheLookup.MappedName =
           copyString(Filename, LookupFileCache.getAllocator());
+      if (IsMapped)
+        *IsMapped = true;
     }
     if (!FE) continue;
 
@@ -839,7 +852,7 @@ const FileEntry *HeaderSearch::LookupFile(
       const FileEntry *FE =
           LookupFile(ScratchFilename, IncludeLoc, /*isAngled=*/true, FromDir,
                      CurDir, Includers.front(), SearchPath, RelativePath,
-                     RequestingModule, SuggestedModule);
+                     RequestingModule, SuggestedModule, IsMapped);
 
       if (checkMSVCHeaderSearch(Diags, MSFE, FE, IncludeLoc)) {
         if (SuggestedModule)
@@ -1106,6 +1119,8 @@ bool HeaderSearch::ShouldEnterIncludeFile(Preprocessor &PP,
   auto TryEnterImported = [&](void) -> bool {
     if (!ModulesEnabled)
       return false;
+    // Ensure FileInfo bits are up to date.
+    ModMap.resolveHeaderDirectives(File);
     // Modules with builtins are special; multiple modules use builtins as
     // modular headers, example:
     //
@@ -1317,14 +1332,28 @@ static const FileEntry *getPrivateModuleMap(const FileEntry *File,
   return FileMgr.getFile(PrivateFilename);
 }
 
-bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem) {
+bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem,
+                                     FileID ID, unsigned *Offset,
+                                     StringRef OriginalModuleMapFile) {
   // Find the directory for the module. For frameworks, that may require going
   // up from the 'Modules' directory.
   const DirectoryEntry *Dir = nullptr;
   if (getHeaderSearchOpts().ModuleMapFileHomeIsCwd)
     Dir = FileMgr.getDirectory(".");
   else {
-    Dir = File->getDir();
+    if (!OriginalModuleMapFile.empty()) {
+      // We're building a preprocessed module map. Find or invent the directory
+      // that it originally occupied.
+      Dir = FileMgr.getDirectory(
+          llvm::sys::path::parent_path(OriginalModuleMapFile));
+      if (!Dir) {
+        auto *FakeFile = FileMgr.getVirtualFile(OriginalModuleMapFile, 0, 0);
+        Dir = FakeFile->getDir();
+      }
+    } else {
+      Dir = File->getDir();
+    }
+
     StringRef DirName(Dir->getName());
     if (llvm::sys::path::filename(DirName) == "Modules") {
       DirName = llvm::sys::path::parent_path(DirName);
@@ -1336,7 +1365,7 @@ bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem) {
     }
   }
 
-  switch (loadModuleMapFileImpl(File, IsSystem, Dir)) {
+  switch (loadModuleMapFileImpl(File, IsSystem, Dir, ID, Offset)) {
   case LMM_AlreadyLoaded:
   case LMM_NewlyLoaded:
     return false;
@@ -1349,7 +1378,8 @@ bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem) {
 
 HeaderSearch::LoadModuleMapResult
 HeaderSearch::loadModuleMapFileImpl(const FileEntry *File, bool IsSystem,
-                                    const DirectoryEntry *Dir) {
+                                    const DirectoryEntry *Dir, FileID ID,
+                                    unsigned *Offset) {
   assert(File && "expected FileEntry");
 
   // Check whether we've already loaded this module map, and mark it as being
@@ -1358,7 +1388,7 @@ HeaderSearch::loadModuleMapFileImpl(const FileEntry *File, bool IsSystem,
   if (!AddResult.second)
     return AddResult.first->second ? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
 
-  if (ModMap.parseModuleMapFile(File, IsSystem, Dir)) {
+  if (ModMap.parseModuleMapFile(File, IsSystem, Dir, ID, Offset)) {
     LoadedModuleMaps[File] = false;
     return LMM_InvalidModuleMap;
   }

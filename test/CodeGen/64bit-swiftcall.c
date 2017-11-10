@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -triple x86_64-apple-darwin10 -target-cpu core2 -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -target-cpu core2 -emit-llvm -o - %s | FileCheck %s --check-prefix=X86-64
 // RUN: %clang_cc1 -triple arm64-apple-ios9 -target-cpu cyclone -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple arm64-apple-ios9 -target-cpu cyclone -emit-llvm -o - %s | FileCheck %s --check-prefix=ARM64
 
 // REQUIRES: aarch64-registered-target,x86-registered-target
 
@@ -60,6 +62,7 @@ SWIFTCALL void context_error_2(short s, CONTEXT int *self, ERROR float **error) 
 /********************************** LOWERING *********************************/
 /*****************************************************************************/
 
+typedef float float3 __attribute__((ext_vector_type(3)));
 typedef float float4 __attribute__((ext_vector_type(4)));
 typedef float float8 __attribute__((ext_vector_type(8)));
 typedef double double2 __attribute__((ext_vector_type(2)));
@@ -1005,3 +1008,27 @@ struct {
 TEST(union_het_vecint)
 // CHECK: define swiftcc void @return_union_het_vecint([[UNION:%.*]]* noalias sret
 // CHECK: define swiftcc void @take_union_het_vecint([[UNION]]*
+
+typedef struct {
+  float3 f3;
+} struct_v1f3;
+TEST(struct_v1f3)
+// ARM64-LABEL: define swiftcc { <2 x float>, float } @return_struct_v1f3()
+// ARM64-LABEL: define swiftcc void @take_struct_v1f3(<2 x float>, float)
+
+typedef struct {
+  int3 vect;
+  unsigned long long val;
+} __attribute__((packed)) padded_alloc_size_vector;
+TEST(padded_alloc_size_vector)
+// X86-64-LABEL: take_padded_alloc_size_vector(<3 x i32>, i64)
+// X86-64-NOT: [4 x i8]
+// x86-64: ret void
+
+typedef union {
+  float f1;
+  float3 fv2;
+} union_hom_fp_partial2;
+TEST(union_hom_fp_partial2)
+// X86-64-LABEL: take_union_hom_fp_partial2(i64, float)
+// ARM64-LABEL: take_union_hom_fp_partial2(i64, float)

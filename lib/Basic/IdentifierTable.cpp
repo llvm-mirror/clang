@@ -114,7 +114,9 @@ namespace {
     KEYZVECTOR  = 0x40000,
     KEYCOROUTINES = 0x80000,
     KEYMODULES = 0x100000,
-    KEYALL = (0x1fffff & ~KEYNOMS18 &
+    KEYCXX2A = 0x200000,
+    KEYALLCXX = KEYCXX | KEYCXX11 | KEYCXX2A,
+    KEYALL = (0x3fffff & ~KEYNOMS18 &
               ~KEYNOOPENCL) // KEYNOMS18 and KEYNOOPENCL are used to exclude.
   };
 
@@ -134,6 +136,7 @@ static KeywordStatus getKeywordStatus(const LangOptions &LangOpts,
   if (Flags == KEYALL) return KS_Enabled;
   if (LangOpts.CPlusPlus && (Flags & KEYCXX)) return KS_Enabled;
   if (LangOpts.CPlusPlus11 && (Flags & KEYCXX11)) return KS_Enabled;
+  if (LangOpts.CPlusPlus2a && (Flags & KEYCXX2A)) return KS_Enabled;
   if (LangOpts.C99 && (Flags & KEYC99)) return KS_Enabled;
   if (LangOpts.GNUKeywords && (Flags & KEYGNU)) return KS_Extension;
   if (LangOpts.MicrosoftExt && (Flags & KEYMS)) return KS_Extension;
@@ -152,7 +155,7 @@ static KeywordStatus getKeywordStatus(const LangOptions &LangOpts,
   if (LangOpts.ConceptsTS && (Flags & KEYCONCEPTS)) return KS_Enabled;
   if (LangOpts.CoroutinesTS && (Flags & KEYCOROUTINES)) return KS_Enabled;
   if (LangOpts.ModulesTS && (Flags & KEYMODULES)) return KS_Enabled;
-  if (LangOpts.CPlusPlus && (Flags & KEYCXX11)) return KS_Future;
+  if (LangOpts.CPlusPlus && (Flags & KEYALLCXX)) return KS_Future;
   return KS_Disabled;
 }
 
@@ -244,7 +247,7 @@ static KeywordStatus getTokenKwStatus(const LangOptions &LangOpts,
 
 /// \brief Returns true if the identifier represents a keyword in the
 /// specified language.
-bool IdentifierInfo::isKeyword(const LangOptions &LangOpts) {
+bool IdentifierInfo::isKeyword(const LangOptions &LangOpts) const {
   switch (getTokenKwStatus(LangOpts, getTokenID())) {
   case KS_Enabled:
   case KS_Extension:
@@ -252,6 +255,20 @@ bool IdentifierInfo::isKeyword(const LangOptions &LangOpts) {
   default:
     return false;
   }
+}
+
+/// \brief Returns true if the identifier represents a C++ keyword in the
+/// specified language.
+bool IdentifierInfo::isCPlusPlusKeyword(const LangOptions &LangOpts) const {
+  if (!LangOpts.CPlusPlus || !isKeyword(LangOpts))
+    return false;
+  // This is a C++ keyword if this identifier is not a keyword when checked
+  // using LangOptions without C++ support.
+  LangOptions LangOptsNoCPP = LangOpts;
+  LangOptsNoCPP.CPlusPlus = false;
+  LangOptsNoCPP.CPlusPlus11 = false;
+  LangOptsNoCPP.CPlusPlus2a = false;
+  return !isKeyword(LangOptsNoCPP);
 }
 
 tok::PPKeywordKind IdentifierInfo::getPPKeywordID() const {
@@ -538,6 +555,7 @@ ObjCInstanceTypeFamily Selector::getInstTypeMethodFamily(Selector sel) {
     case 's':
       if (startsWithWord(name, "shared")) return OIT_ReturnsSelf;
       if (startsWithWord(name, "standard")) return OIT_Singleton;
+      break;
     case 'i':
       if (startsWithWord(name, "init")) return OIT_Init;
     default:

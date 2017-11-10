@@ -73,8 +73,7 @@ public:
 namespace llvm {
   // Provide PointerLikeTypeTraits for non-cvr pointers.
   template<>
-  class PointerLikeTypeTraits< ::clang::AnyFunctionDecl> {
-  public:
+  struct PointerLikeTypeTraits< ::clang::AnyFunctionDecl> {
     static inline void *getAsVoidPointer(::clang::AnyFunctionDecl F) {
       return F.get();
     }
@@ -375,6 +374,7 @@ class CXXRecordDecl : public RecordDecl {
     /// \brief These flags are \c true if a defaulted corresponding special
     /// member can't be fully analyzed without performing overload resolution.
     /// @{
+    unsigned NeedOverloadResolutionForCopyConstructor : 1;
     unsigned NeedOverloadResolutionForMoveConstructor : 1;
     unsigned NeedOverloadResolutionForMoveAssignment : 1;
     unsigned NeedOverloadResolutionForDestructor : 1;
@@ -383,6 +383,7 @@ class CXXRecordDecl : public RecordDecl {
     /// \brief These flags are \c true if an implicit defaulted corresponding
     /// special member would be defined as deleted.
     /// @{
+    unsigned DefaultedCopyConstructorIsDeleted : 1;
     unsigned DefaultedMoveConstructorIsDeleted : 1;
     unsigned DefaultedMoveAssignmentIsDeleted : 1;
     unsigned DefaultedDestructorIsDeleted : 1;
@@ -414,6 +415,12 @@ class CXXRecordDecl : public RecordDecl {
     /// \brief True if this class has a (possibly implicit) defaulted default
     /// constructor.
     unsigned HasDefaultedDefaultConstructor : 1;
+
+    /// \brief True if this class can be passed in a non-address-preserving
+    /// fashion (such as in registers) according to the C++ language rules.
+    /// This does not imply anything about how the ABI in use will actually
+    /// pass an object of this class.
+    unsigned CanPassInRegisters : 1;
 
     /// \brief True if a defaulted default constructor for this class would
     /// be constexpr.
@@ -463,6 +470,8 @@ class CXXRecordDecl : public RecordDecl {
 
     /// \brief Whether we are currently parsing base specifiers.
     unsigned IsParsingBaseSpecifiers : 1;
+
+    unsigned HasODRHash : 1;
 
     /// \brief A hash of parts of the class to help in ODR checking.
     unsigned ODRHash;
@@ -712,8 +721,7 @@ public:
     return data().IsParsingBaseSpecifiers;
   }
 
-  void computeODRHash();
-  unsigned getODRHash() const { return data().ODRHash; }
+  unsigned getODRHash() const;
 
   /// \brief Sets the base classes of this struct or class.
   void setBases(CXXBaseSpecifier const * const *Bases, unsigned NumBases);
@@ -810,18 +818,53 @@ public:
     return data().FirstFriend.isValid();
   }
 
+  /// \brief \c true if a defaulted copy constructor for this class would be
+  /// deleted.
+  bool defaultedCopyConstructorIsDeleted() const {
+    assert((!needsOverloadResolutionForCopyConstructor() ||
+            (data().DeclaredSpecialMembers & SMF_CopyConstructor)) &&
+           "this property has not yet been computed by Sema");
+    return data().DefaultedCopyConstructorIsDeleted;
+  }
+
+  /// \brief \c true if a defaulted move constructor for this class would be
+  /// deleted.
+  bool defaultedMoveConstructorIsDeleted() const {
+    assert((!needsOverloadResolutionForMoveConstructor() ||
+            (data().DeclaredSpecialMembers & SMF_MoveConstructor)) &&
+           "this property has not yet been computed by Sema");
+    return data().DefaultedMoveConstructorIsDeleted;
+  }
+
+  /// \brief \c true if a defaulted destructor for this class would be deleted.
+  bool defaultedDestructorIsDeleted() const {
+    assert((!needsOverloadResolutionForDestructor() ||
+            (data().DeclaredSpecialMembers & SMF_Destructor)) &&
+           "this property has not yet been computed by Sema");
+    return data().DefaultedDestructorIsDeleted;
+  }
+
+  /// \brief \c true if we know for sure that this class has a single,
+  /// accessible, unambiguous copy constructor that is not deleted.
+  bool hasSimpleCopyConstructor() const {
+    return !hasUserDeclaredCopyConstructor() &&
+           !data().DefaultedCopyConstructorIsDeleted;
+  }
+
   /// \brief \c true if we know for sure that this class has a single,
   /// accessible, unambiguous move constructor that is not deleted.
   bool hasSimpleMoveConstructor() const {
     return !hasUserDeclaredMoveConstructor() && hasMoveConstructor() &&
            !data().DefaultedMoveConstructorIsDeleted;
   }
+
   /// \brief \c true if we know for sure that this class has a single,
   /// accessible, unambiguous move assignment operator that is not deleted.
   bool hasSimpleMoveAssignment() const {
     return !hasUserDeclaredMoveAssignment() && hasMoveAssignment() &&
            !data().DefaultedMoveAssignmentIsDeleted;
   }
+
   /// \brief \c true if we know for sure that this class has an accessible
   /// destructor that is not deleted.
   bool hasSimpleDestructor() const {
@@ -877,7 +920,16 @@ public:
   /// \brief Determine whether we need to eagerly declare a defaulted copy
   /// constructor for this class.
   bool needsOverloadResolutionForCopyConstructor() const {
-    return data().HasMutableFields;
+    // C++17 [class.copy.ctor]p6:
+    //   If the class definition declares a move constructor or move assignment
+    //   operator, the implicitly declared copy constructor is defined as
+    //   deleted.
+    // In MSVC mode, sometimes a declared move assignment does not delete an
+    // implicit copy constructor, so defer this choice to Sema.
+    if (data().UserDeclaredSpecialMembers &
+        (SMF_MoveConstructor | SMF_MoveAssignment))
+      return true;
+    return data().NeedOverloadResolutionForCopyConstructor;
   }
 
   /// \brief Determine whether an implicit copy constructor for this type
@@ -918,13 +970,31 @@ public:
            needsImplicitMoveConstructor();
   }
 
-  /// \brief Set that we attempted to declare an implicitly move
+  /// \brief Set that we attempted to declare an implicit copy
+  /// constructor, but overload resolution failed so we deleted it.
+  void setImplicitCopyConstructorIsDeleted() {
+    assert((data().DefaultedCopyConstructorIsDeleted ||
+            needsOverloadResolutionForCopyConstructor()) &&
+           "Copy constructor should not be deleted");
+    data().DefaultedCopyConstructorIsDeleted = true;
+  }
+
+  /// \brief Set that we attempted to declare an implicit move
   /// constructor, but overload resolution failed so we deleted it.
   void setImplicitMoveConstructorIsDeleted() {
     assert((data().DefaultedMoveConstructorIsDeleted ||
             needsOverloadResolutionForMoveConstructor()) &&
            "move constructor should not be deleted");
     data().DefaultedMoveConstructorIsDeleted = true;
+  }
+
+  /// \brief Set that we attempted to declare an implicit destructor,
+  /// but overload resolution failed so we deleted it.
+  void setImplicitDestructorIsDeleted() {
+    assert((data().DefaultedDestructorIsDeleted ||
+            needsOverloadResolutionForDestructor()) &&
+           "destructor should not be deleted");
+    data().DefaultedDestructorIsDeleted = true;
   }
 
   /// \brief Determine whether this class should get an implicit move
@@ -1315,6 +1385,18 @@ public:
     return data().HasIrrelevantDestructor;
   }
 
+  /// \brief Determine whether this class has at least one trivial, non-deleted
+  /// copy or move constructor.
+  bool canPassInRegisters() const {
+    return data().CanPassInRegisters;
+  }
+
+  /// \brief Set that we can pass this RecordDecl in registers.
+  // FIXME: This should be set as part of completeDefinition.
+  void setCanPassInRegisters(bool CanPass) {
+    data().CanPassInRegisters = CanPass;
+  }
+
   /// \brief Determine whether this class has a non-literal or/ volatile type
   /// non-static data member or base class.
   bool hasNonLiteralTypeFieldsOrBases() const {
@@ -1562,10 +1644,13 @@ public:
   /// \param Paths used to record the paths from this class to its base class
   /// subobjects that match the search criteria.
   ///
+  /// \param LookupInDependent can be set to true to extend the search to
+  /// dependent base classes.
+  ///
   /// \returns true if there exists any path from this class to a base class
   /// subobject that matches the search criteria.
-  bool lookupInBases(BaseMatchesCallback BaseMatches,
-                     CXXBasePaths &Paths) const;
+  bool lookupInBases(BaseMatchesCallback BaseMatches, CXXBasePaths &Paths,
+                     bool LookupInDependent = false) const;
 
   /// \brief Base-class lookup callback that determines whether the given
   /// base class specifier refers to a specific class declaration.
@@ -1607,6 +1692,16 @@ public:
                                  CXXBasePath &Path, DeclarationName Name);
 
   /// \brief Base-class lookup callback that determines whether there exists
+  /// a member with the given name.
+  ///
+  /// This callback can be used with \c lookupInBases() to find members
+  /// of the given name within a C++ class hierarchy, including dependent
+  /// classes.
+  static bool
+  FindOrdinaryMemberInDependentClasses(const CXXBaseSpecifier *Specifier,
+                                       CXXBasePath &Path, DeclarationName Name);
+
+  /// \brief Base-class lookup callback that determines whether there exists
   /// an OpenMP declare reduction member with the given name.
   ///
   /// This callback can be used with \c lookupInBases() to find members
@@ -1631,6 +1726,14 @@ public:
 
   /// \brief Get the indirect primary bases for this class.
   void getIndirectPrimaryBases(CXXIndirectPrimaryBaseSet& Bases) const;
+
+  /// Performs an imprecise lookup of a dependent name in this class.
+  ///
+  /// This function does not follow strict semantic rules and should be used
+  /// only when lookup rules can be relaxed, e.g. indexing.
+  std::vector<const NamedDecl *>
+  lookupDependentName(const DeclarationName &Name,
+                      llvm::function_ref<bool(const NamedDecl *ND)> Filter);
 
   /// Renders and displays an inheritance diagram
   /// for this C++ class and all of its base classes (transitively) using
@@ -1740,6 +1843,10 @@ public:
     return getLambdaData().MethodTyInfo;
   }
 
+  // \brief Determine whether this type is an Interface Like type for
+  // __interface inheritence purposes.
+  bool isInterfaceLike() const;
+
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) {
     return K >= firstCXXRecord && K <= lastCXXRecord;
@@ -1774,6 +1881,10 @@ private:
     if (EndLocation.isValid())
       setRangeEnd(EndLocation);
     IsExplicitSpecified = IsExplicit;
+
+    // IsCopyDeductionCandidate is a union variant member, so ensure it is the
+    // active member by storing to it.
+    IsCopyDeductionCandidate = false; 
   }
 
 public:
@@ -1795,6 +1906,12 @@ public:
   TemplateDecl *getDeducedTemplate() const {
     return getDeclName().getCXXDeductionGuideTemplate();
   }
+
+  void setIsCopyDeductionCandidate() {
+    IsCopyDeductionCandidate = true;
+  }
+
+  bool isCopyDeductionCandidate() const { return IsCopyDeductionCandidate; }
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
@@ -1864,6 +1981,19 @@ public:
     return (CD->begin_overridden_methods() != CD->end_overridden_methods());
   }
 
+  /// If it's possible to devirtualize a call to this method, return the called
+  /// function. Otherwise, return null.
+
+  /// \param Base The object on which this virtual function is called.
+  /// \param IsAppleKext True if we are compiling for Apple kext.
+  CXXMethodDecl *getDevirtualizedMethod(const Expr *Base, bool IsAppleKext);
+
+  const CXXMethodDecl *getDevirtualizedMethod(const Expr *Base,
+                                              bool IsAppleKext) const {
+    return const_cast<CXXMethodDecl *>(this)->getDevirtualizedMethod(
+        Base, IsAppleKext);
+  }
+
   /// \brief Determine whether this is a usual deallocation function
   /// (C++ [basic.stc.dynamic.deallocation]p2), which is an overloaded
   /// delete or delete[] operator with a particular signature.
@@ -1923,7 +2053,10 @@ public:
 
   /// \brief Returns the type of the \c this pointer.
   ///
-  /// Should only be called for instance (i.e., non-static) methods.
+  /// Should only be called for instance (i.e., non-static) methods. Note
+  /// that for the call operator of a lambda closure type, this returns the
+  /// desugared 'this' type (a pointer to the closure type), not the captured
+  /// 'this' type.
   QualType getThisType(ASTContext &C) const;
 
   unsigned getTypeQualifiers() const {
@@ -2443,7 +2576,10 @@ public:
 class CXXDestructorDecl : public CXXMethodDecl {
   void anchor() override;
 
+  // FIXME: Don't allocate storage for these except in the first declaration
+  // of a virtual destructor.
   FunctionDecl *OperatorDelete;
+  Expr *OperatorDeleteThisArg;
 
   CXXDestructorDecl(ASTContext &C, CXXRecordDecl *RD, SourceLocation StartLoc,
                     const DeclarationNameInfo &NameInfo,
@@ -2451,7 +2587,7 @@ class CXXDestructorDecl : public CXXMethodDecl {
                     bool isInline, bool isImplicitlyDeclared)
     : CXXMethodDecl(CXXDestructor, C, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, /*isConstexpr=*/false, SourceLocation()),
-      OperatorDelete(nullptr) {
+      OperatorDelete(nullptr), OperatorDeleteThisArg(nullptr) {
     setImplicit(isImplicitlyDeclared);
   }
 
@@ -2464,9 +2600,12 @@ public:
                                    bool isImplicitlyDeclared);
   static CXXDestructorDecl *CreateDeserialized(ASTContext & C, unsigned ID);
 
-  void setOperatorDelete(FunctionDecl *OD);
+  void setOperatorDelete(FunctionDecl *OD, Expr *ThisArg);
   const FunctionDecl *getOperatorDelete() const {
     return getCanonicalDecl()->OperatorDelete;
+  }
+  Expr *getOperatorDeleteThisArg() const {
+    return getCanonicalDecl()->OperatorDeleteThisArg;
   }
 
   CXXDestructorDecl *getCanonicalDecl() override {

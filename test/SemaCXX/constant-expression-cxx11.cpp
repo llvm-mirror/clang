@@ -328,7 +328,7 @@ struct Str {
 
 extern char externalvar[];
 constexpr bool constaddress = (void *)externalvar == (void *)0x4000UL; // expected-error {{must be initialized by a constant expression}} expected-note {{reinterpret_cast}}
-constexpr bool litaddress = "foo" == "foo"; // expected-error {{must be initialized by a constant expression}} expected-warning {{unspecified}}
+constexpr bool litaddress = "foo" == "foo"; // expected-error {{must be initialized by a constant expression}}
 static_assert(0 != "foo", "");
 
 }
@@ -364,7 +364,7 @@ void foo() {
   constexpr B b3 { { 1 }, { 2 } }; // expected-error {{constant expression}} expected-note {{reference to temporary}} expected-note {{here}}
 }
 
-constexpr B &&b4 = ((1, 2), 3, 4, B { {10}, {{20}} }); // expected-warning 4{{unused}}
+constexpr B &&b4 = ((1, 2), 3, 4, B { {10}, {{20}} });
 static_assert(&b4 != &b2, "");
 
 // Proposed DR: copy-elision doesn't trigger lifetime extension.
@@ -604,11 +604,38 @@ static_assert(NATDCArray{}[1][1].n == 0, "");
 
 }
 
+// Per current CWG direction, we reject any cases where pointer arithmetic is
+// not statically known to be valid.
+namespace ArrayOfUnknownBound {
+  extern int arr[];
+  constexpr int *a = arr;
+  constexpr int *b = &arr[0];
+  static_assert(a == b, "");
+  constexpr int *c = &arr[1]; // expected-error {{constant}} expected-note {{indexing of array without known bound}}
+  constexpr int *d = &a[1]; // expected-error {{constant}} expected-note {{indexing of array without known bound}}
+  constexpr int *e = a + 1; // expected-error {{constant}} expected-note {{indexing of array without known bound}}
+
+  struct X {
+    int a;
+    int b[]; // expected-warning {{C99}}
+  };
+  extern X x;
+  constexpr int *xb = x.b; // expected-error {{constant}} expected-note {{not supported}}
+
+  struct Y { int a; };
+  extern Y yarr[];
+  constexpr Y *p = yarr;
+  constexpr int *q = &p->a;
+
+  extern const int carr[]; // expected-note {{here}}
+  constexpr int n = carr[0]; // expected-error {{constant}} expected-note {{non-constexpr variable}}
+}
+
 namespace DependentValues {
 
 struct I { int n; typedef I V[10]; };
 I::V x, y;
-int g();
+int g(); // expected-note {{declared here}}
 template<bool B, typename T> struct S : T {
   int k;
   void f() {
@@ -616,12 +643,22 @@ template<bool B, typename T> struct S : T {
     I &i = cells[k];
     switch (i.n) {}
 
-    // FIXME: We should be able to diagnose this.
-    constexpr int n = g();
+    constexpr int n = g(); // expected-error {{must be initialized by a constant expression}} expected-note {{non-constexpr function 'g'}}
 
     constexpr int m = this->g(); // ok, could be constexpr
   }
 };
+
+extern const int n;
+template<typename T> void f() {
+  // This is ill-formed, because a hypothetical instantiation at the point of
+  // template definition would be ill-formed due to a construct that does not
+  // depend on a template parameter.
+  constexpr int k = n; // expected-error {{must be initialized by a constant expression}}
+}
+// It doesn't matter that the instantiation could later become valid:
+constexpr int n = 4;
+template void f<int>();
 
 }
 
@@ -1894,6 +1931,22 @@ namespace Bitfields {
     };
     static_assert(X::f(3) == -1, "3 should truncate to -1");
   }
+
+  struct HasUnnamedBitfield {
+    unsigned a;
+    unsigned : 20;
+    unsigned b;
+
+    constexpr HasUnnamedBitfield() : a(), b() {}
+    constexpr HasUnnamedBitfield(unsigned a, unsigned b) : a(a), b(b) {}
+  };
+
+  void testUnnamedBitfield() {
+    const HasUnnamedBitfield zero{};
+    int a = 1 / zero.b; // expected-warning {{division by zero is undefined}}
+    const HasUnnamedBitfield oneZero{1, 0};
+    int b = 1 / oneZero.b; // expected-warning {{division by zero is undefined}}
+  }
 }
 
 namespace ZeroSizeTypes {
@@ -1939,7 +1992,7 @@ namespace NeverConstantTwoWays {
 
   constexpr int n = // expected-error {{must be initialized by a constant expression}}
       (int *)(long)&n == &n ? // expected-note {{reinterpret_cast}}
-        1 / 0 : // expected-warning {{division by zero}}
+        1 / 0 :
         0;
 }
 

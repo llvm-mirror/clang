@@ -38,57 +38,34 @@ void wasm::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                 const char *LinkingOutput) const {
 
   const ToolChain &ToolChain = getToolChain();
-  const Driver &D = ToolChain.getDriver();
   const char *Linker = Args.MakeArgString(ToolChain.GetLinkerPath());
   ArgStringList CmdArgs;
   CmdArgs.push_back("-flavor");
-  CmdArgs.push_back("ld");
+  CmdArgs.push_back("wasm");
 
-  // Enable garbage collection of unused input sections by default, since code
-  // size is of particular importance. This is significantly facilitated by
-  // the enabling of -ffunction-sections and -fdata-sections in
-  // Clang::ConstructJob.
-  if (areOptimizationsEnabled(Args))
-    CmdArgs.push_back("--gc-sections");
-
-  if (Args.hasArg(options::OPT_rdynamic))
-    CmdArgs.push_back("-export-dynamic");
   if (Args.hasArg(options::OPT_s))
     CmdArgs.push_back("--strip-all");
-  if (Args.hasArg(options::OPT_shared))
-    CmdArgs.push_back("-shared");
-  if (Args.hasArg(options::OPT_static))
-    CmdArgs.push_back("-Bstatic");
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles)) {
-    if (Args.hasArg(options::OPT_shared))
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("rcrt1.o")));
-    else if (Args.hasArg(options::OPT_pie))
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("Scrt1.o")));
-    else
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crt1.o")));
-
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
-  }
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles))
+    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crt1.o")));
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
-    if (D.CCCIsCXX())
+    if (ToolChain.ShouldLinkCXXStdlib(Args))
       ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
 
     if (Args.hasArg(options::OPT_pthread))
       CmdArgs.push_back("-lpthread");
 
+    CmdArgs.push_back("-allow-undefined-file");
+    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("wasm.syms")));
     CmdArgs.push_back("-lc");
-    CmdArgs.push_back("-lcompiler_rt");
+    AddRunTimeLibs(ToolChain, ToolChain.getDriver(), CmdArgs, Args);
   }
-
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles))
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
 
   CmdArgs.push_back("-o");
   CmdArgs.push_back(Output.getFilename());
@@ -101,8 +78,10 @@ WebAssembly::WebAssembly(const Driver &D, const llvm::Triple &Triple,
   : ToolChain(D, Triple, Args) {
 
   assert(Triple.isArch32Bit() != Triple.isArch64Bit());
-  getFilePaths().push_back(
-      getDriver().SysRoot + "/lib" + (Triple.isArch32Bit() ? "32" : "64"));
+
+  getProgramPaths().push_back(getDriver().getInstalledDir());
+
+  getFilePaths().push_back(getDriver().SysRoot + "/lib");
 }
 
 bool WebAssembly::IsMathErrnoDefault() const { return false; }
@@ -130,7 +109,8 @@ bool WebAssembly::SupportsProfiling() const { return false; }
 bool WebAssembly::HasNativeLLVMSupport() const { return true; }
 
 void WebAssembly::addClangTargetOptions(const ArgList &DriverArgs,
-                                        ArgStringList &CC1Args) const {
+                                        ArgStringList &CC1Args,
+                                        Action::OffloadKind) const {
   if (DriverArgs.hasFlag(clang::driver::options::OPT_fuse_init_array,
                          options::OPT_fno_use_init_array, true))
     CC1Args.push_back("-fuse-init-array");

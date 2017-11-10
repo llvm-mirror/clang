@@ -14,6 +14,9 @@
 // C_P: "-E"
 // C_P: "-C"
 
+// RUN: %clang_cl /d1reportAllClassLayout -### -- %s 2>&1 | FileCheck -check-prefix=d1reportAllClassLayout %s
+// d1reportAllClassLayout: -fdump-record-layouts
+
 // RUN: %clang_cl /Dfoo=bar /D bar=baz /DMYDEF#value /DMYDEF2=foo#bar /DMYDEF3#a=b /DMYDEF4# \
 // RUN:    -### -- %s 2>&1 | FileCheck -check-prefix=D %s
 // D: "-D" "foo=bar"
@@ -175,6 +178,9 @@
 // Oy_2: -momit-leaf-frame-pointer
 // Oy_2: -O2
 
+// RUN: %clang_cl --target=i686-pc-win32 -Werror /O2 /O2 -### -- %s 2>&1 | FileCheck -check-prefix=O2O2 %s
+// O2O2: "-O2"
+
 // RUN: %clang_cl /Zs -Werror /Oy -- %s 2>&1
 
 // RUN: %clang_cl --target=i686-pc-win32 -Werror /Oy- -### -- %s 2>&1 | FileCheck -check-prefix=Oy_ %s
@@ -191,7 +197,11 @@
 
 // RUN: %clang_cl /E /showIncludes -### -- %s 2>&1 | FileCheck -check-prefix=showIncludes_E %s
 // RUN: %clang_cl /EP /showIncludes -### -- %s 2>&1 | FileCheck -check-prefix=showIncludes_E %s
+// RUN: %clang_cl /E /EP /showIncludes -### -- %s 2>&1 | FileCheck -check-prefix=showIncludes_E %s
 // showIncludes_E: warning: argument unused during compilation: '--show-includes'
+
+// RUN: %clang_cl /EP /P /showIncludes -### -- %s 2>&1 | FileCheck -check-prefix=showIncludes_E_And_P %s
+// showIncludes_E_And_P-NOT: warning: argument unused during compilation: '--show-includes'
 
 // /source-charset: should warn on everything except UTF-8.
 // RUN: %clang_cl /source-charset:utf-16 -### -- %s 2>&1 | FileCheck -check-prefix=source-charset-utf-16 %s
@@ -296,11 +306,14 @@
 // NOSTRICT: "-relaxed-aliasing"
 
 // We recognize -f[no-]delayed-template-parsing.
+// /Zc:twoPhase[-] has the opposite meaning.
 // RUN: %clang_cl -c -### -- %s 2>&1 | FileCheck -check-prefix=DELAYEDDEFAULT %s
 // DELAYEDDEFAULT: "-fdelayed-template-parsing"
 // RUN: %clang_cl -c -fdelayed-template-parsing -### -- %s 2>&1 | FileCheck -check-prefix=DELAYEDON %s
+// RUN: %clang_cl -c /Zc:twoPhase- -### -- %s 2>&1 | FileCheck -check-prefix=DELAYEDON %s
 // DELAYEDON: "-fdelayed-template-parsing"
 // RUN: %clang_cl -c -fno-delayed-template-parsing -### -- %s 2>&1 | FileCheck -check-prefix=DELAYEDOFF %s
+// RUN: %clang_cl -c /Zc:twoPhase -### -- %s 2>&1 | FileCheck -check-prefix=DELAYEDOFF %s
 // DELAYEDOFF-NOT: "-fdelayed-template-parsing"
 
 // For some warning ids, we can map from MSVC warning to Clang warning.
@@ -511,8 +524,11 @@
 // RUN: %clang_cl -fmsc-version=1900 -TP -std:c++14 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX14 %s
 // STDCXX14: -std=c++14
 
+// RUN: %clang_cl -fmsc-version=1900 -TP -std:c++17 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX17 %s
+// STDCXX17: -std=c++17
+
 // RUN: %clang_cl -fmsc-version=1900 -TP -std:c++latest -### -- %s 2>&1 | FileCheck -check-prefix=STDCXXLATEST %s
-// STDCXXLATEST: -std=c++1z
+// STDCXXLATEST: -std=c++2a
 
 // RUN: env CL="/Gy" %clang_cl -### -- %s 2>&1 | FileCheck -check-prefix=ENV-CL %s
 // ENV-CL: "-ffunction-sections"
@@ -558,6 +574,7 @@
 // RUN:     -fstandalone-debug \
 // RUN:     -flimit-debug-info \
 // RUN:     -flto \
+// RUN:     --version \
 // RUN:     -Werror /Zs -- %s 2>&1
 
 

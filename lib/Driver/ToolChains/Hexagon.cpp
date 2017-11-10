@@ -27,6 +27,100 @@ using namespace clang::driver::toolchains;
 using namespace clang;
 using namespace llvm::opt;
 
+// Default hvx-length for various versions.
+static StringRef getDefaultHvxLength(StringRef Cpu) {
+  return llvm::StringSwitch<StringRef>(Cpu)
+      .Case("v60", "64b")
+      .Case("v62", "64b")
+      .Default("128b");
+}
+
+static void handleHVXWarnings(const Driver &D, const ArgList &Args) {
+  // Handle deprecated HVX double warnings.
+  if (Arg *A = Args.getLastArg(options::OPT_mhexagon_hvx_double))
+    D.Diag(diag::warn_drv_deprecated_arg)
+        << A->getAsString(Args) << "-mhvx-length=128B";
+  if (Arg *A = Args.getLastArg(options::OPT_mno_hexagon_hvx_double))
+    D.Diag(diag::warn_drv_deprecated_arg) << A->getAsString(Args) << "-mno-hvx";
+  // Handle the unsupported values passed to mhvx-length.
+  if (Arg *A = Args.getLastArg(options::OPT_mhexagon_hvx_length_EQ)) {
+    StringRef Val = A->getValue();
+    if (Val != "64B" && Val != "128B")
+      D.Diag(diag::err_drv_unsupported_option_argument)
+          << A->getOption().getName() << Val;
+  }
+}
+
+// Handle hvx target features explicitly.
+static void handleHVXTargetFeatures(const Driver &D, const ArgList &Args,
+                                    std::vector<StringRef> &Features,
+                                    bool &HasHVX) {
+  // Handle HVX warnings.
+  handleHVXWarnings(D, Args);
+
+  // Add the +hvx* features based on commandline flags.
+  StringRef HVXFeature, HVXLength;
+  StringRef Cpu(toolchains::HexagonToolChain::GetTargetCPUVersion(Args));
+
+  // Handle -mhvx, -mhvx=, -mno-hvx, -mno-hvx-double.
+  if (Arg *A = Args.getLastArg(
+          options::OPT_mno_hexagon_hvx, options::OPT_mno_hexagon_hvx_double,
+          options::OPT_mhexagon_hvx, options::OPT_mhexagon_hvx_EQ)) {
+    if (A->getOption().matches(options::OPT_mno_hexagon_hvx) ||
+        A->getOption().matches(options::OPT_mno_hexagon_hvx_double)) {
+      return;
+    } else if (A->getOption().matches(options::OPT_mhexagon_hvx_EQ)) {
+      HasHVX = true;
+      HVXFeature = Cpu = A->getValue();
+      HVXFeature = Args.MakeArgString(llvm::Twine("+hvx") + HVXFeature.lower());
+    } else if (A->getOption().matches(options::OPT_mhexagon_hvx)) {
+      HasHVX = true;
+      HVXFeature = Args.MakeArgString(llvm::Twine("+hvx") + Cpu);
+    }
+    Features.push_back(HVXFeature);
+  }
+
+  // Handle -mhvx-length=, -mhvx-double.
+  if (Arg *A = Args.getLastArg(options::OPT_mhexagon_hvx_length_EQ,
+                               options::OPT_mhexagon_hvx_double)) {
+    // These falgs are valid only if HVX in enabled.
+    if (!HasHVX)
+      D.Diag(diag::err_drv_invalid_hvx_length);
+    else if (A->getOption().matches(options::OPT_mhexagon_hvx_length_EQ))
+      HVXLength = A->getValue();
+    else if (A->getOption().matches(options::OPT_mhexagon_hvx_double))
+      HVXLength = "128b";
+  }
+  // Default hvx-length based on Cpu.
+  else if (HasHVX)
+    HVXLength = getDefaultHvxLength(Cpu);
+
+  if (!HVXLength.empty()) {
+    HVXFeature =
+        Args.MakeArgString(llvm::Twine("+hvx-length") + HVXLength.lower());
+    Features.push_back(HVXFeature);
+  }
+}
+
+// Hexagon target features.
+void hexagon::getHexagonTargetFeatures(const Driver &D, const ArgList &Args,
+                                       std::vector<StringRef> &Features) {
+  handleTargetFeaturesGroup(Args, Features,
+                            options::OPT_m_hexagon_Features_Group);
+
+  bool UseLongCalls = false;
+  if (Arg *A = Args.getLastArg(options::OPT_mlong_calls,
+                               options::OPT_mno_long_calls)) {
+    if (A->getOption().matches(options::OPT_mlong_calls))
+      UseLongCalls = true;
+  }
+
+  Features.push_back(UseLongCalls ? "+long-calls" : "-long-calls");
+
+  bool HasHVX(false);
+  handleHVXTargetFeatures(D, Args, Features, HasHVX);
+}
+
 // Hexagon tools start.
 void hexagon::Assembler::RenderExtraToolArgs(const JobAction &JA,
                                              ArgStringList &CmdArgs) const {
@@ -248,7 +342,8 @@ constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   //----------------------------------------------------------------------------
   if (IncStdLib && IncDefLibs) {
     if (D.CCCIsCXX()) {
-      HTC.AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (HTC.ShouldLinkCXXStdlib(Args))
+        HTC.AddCXXStdlibLibArgs(Args, CmdArgs);
       CmdArgs.push_back("-lm");
     }
 
@@ -400,6 +495,41 @@ Tool *HexagonToolChain::buildAssembler() const {
 
 Tool *HexagonToolChain::buildLinker() const {
   return new tools::hexagon::Linker(*this);
+}
+
+unsigned HexagonToolChain::getOptimizationLevel(
+    const llvm::opt::ArgList &DriverArgs) const {
+  // Copied in large part from lib/Frontend/CompilerInvocation.cpp.
+  Arg *A = DriverArgs.getLastArg(options::OPT_O_Group);
+  if (!A)
+    return 0;
+
+  if (A->getOption().matches(options::OPT_O0))
+    return 0;
+  if (A->getOption().matches(options::OPT_Ofast) ||
+      A->getOption().matches(options::OPT_O4))
+    return 3;
+  assert(A->getNumValues() != 0);
+  StringRef S(A->getValue());
+  if (S == "s" || S == "z" || S.empty())
+    return 2;
+  if (S == "g")
+    return 1;
+
+  unsigned OptLevel;
+  if (S.getAsInteger(10, OptLevel))
+    return 0;
+  return OptLevel;
+}
+
+void HexagonToolChain::addClangTargetOptions(const ArgList &DriverArgs,
+                                             ArgStringList &CC1Args,
+                                             Action::OffloadKind) const {
+  if (DriverArgs.hasArg(options::OPT_ffp_contract))
+    return;
+  unsigned OptLevel = getOptimizationLevel(DriverArgs);
+  if (OptLevel >= 3)
+    CC1Args.push_back("-ffp-contract=fast");
 }
 
 void HexagonToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,

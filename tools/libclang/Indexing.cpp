@@ -262,7 +262,8 @@ public:
   /// MacroUndefined - This hook is called whenever a macro #undef is seen.
   /// MI is released immediately following this callback.
   void MacroUndefined(const Token &MacroNameTok,
-                      const MacroDefinition &MD) override {}
+                      const MacroDefinition &MD,
+                      const MacroDirective *UD) override {}
 
   /// MacroExpands - This is called by when a macro invocation is found.
   void MacroExpands(const Token &MacroNameTok, const MacroDefinition &MD,
@@ -271,7 +272,8 @@ public:
   /// SourceRangeSkipped - This hook is called when a source range is skipped.
   /// \param Range The SourceRange that was skipped. The range begins at the
   /// #if/#else directive and ends after the #endif/#else directive.
-  void SourceRangeSkipped(SourceRange Range) override {}
+  void SourceRangeSkipped(SourceRange Range, SourceLocation EndifLoc) override {
+  }
 };
 
 //===----------------------------------------------------------------------===//

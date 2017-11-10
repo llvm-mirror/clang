@@ -70,7 +70,7 @@ def analyzer_opt_analyze_nested_blocks : Flag<["-"], "analyzer-opt-analyze-neste
 def analyzer_display_progress : Flag<["-"], "analyzer-display-progress">,
   HelpText<"Emit verbose output about the analyzer's progress">;
 def analyze_function : Separate<["-"], "analyze-function">,
-  HelpText<"Run analysis on specific function">;
+  HelpText<"Run analysis on specific function (for C++ include parameters in name)">;
 def analyze_function_EQ : Joined<["-"], "analyze-function=">, Alias<analyze_function>;
 def analyzer_eagerly_assume : Flag<["-"], "analyzer-eagerly-assume">,
   HelpText<"Eagerly assume the truth/falseness of some symbolic constraints">;
@@ -99,7 +99,19 @@ def analyzer_stats : Flag<["-"], "analyzer-stats">,
   HelpText<"Print internal analyzer statistics.">;
 
 def analyzer_checker : Separate<["-"], "analyzer-checker">,
-  HelpText<"Choose analyzer checkers to enable">;
+  HelpText<"Choose analyzer checkers to enable">,
+  ValuesCode<[{
+    const char *Values =
+    #define GET_CHECKERS
+    #define CHECKER(FULLNAME, CLASS, DESCFILE, HT, G, H)  FULLNAME ","
+    #include "clang/StaticAnalyzer/Checkers/Checkers.inc"
+    #undef GET_CHECKERS
+    #define GET_PACKAGES
+    #define PACKAGE(FULLNAME, G, D)  FULLNAME ","
+    #include "clang/StaticAnalyzer/Checkers/Checkers.inc"
+    #undef GET_PACKAGES
+    ;
+  }]>;
 def analyzer_checker_EQ : Joined<["-"], "analyzer-checker=">,
   Alias<analyzer_checker>;
 
@@ -134,7 +146,6 @@ def migrator_no_finalize_removal : Flag<["-"], "no-finalize-removal">,
 //===----------------------------------------------------------------------===//
 
 let Flags = [CC1Option, CC1AsOption, NoDriverOption] in {
-
 def debug_info_kind_EQ : Joined<["-"], "debug-info-kind=">;
 def debug_info_macro : Flag<["-"], "debug-info-macro">,
   HelpText<"Emit macro debug information">;
@@ -144,20 +155,22 @@ def fdebug_compilation_dir : Separate<["-"], "fdebug-compilation-dir">,
   HelpText<"The compilation directory to embed in the debug info.">;
 def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
   HelpText<"The string to embed in the Dwarf debug flags record.">;
+def compress_debug_sections : Flag<["-", "--"], "compress-debug-sections">,
+    HelpText<"DWARF debug sections compression">;
+def compress_debug_sections_EQ : Joined<["-"], "compress-debug-sections=">,
+    HelpText<"DWARF debug sections compression type">;
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
 def massembler_fatal_warnings : Flag<["-"], "massembler-fatal-warnings">,
   HelpText<"Make assembler warnings fatal">;
 def mrelax_relocations : Flag<["--"], "mrelax-relocations">,
     HelpText<"Use relaxable elf relocations">;
-def compress_debug_sections : Flag<["-"], "compress-debug-sections">,
-    HelpText<"Compress DWARF debug sections using zlib">;
 def msave_temp_labels : Flag<["-"], "msave-temp-labels">,
   HelpText<"Save temporary labels in the symbol table. "
            "Note this may change .s semantics and shouldn't generally be used "
            "on compiler-generated code.">;
 def mrelocation_model : Separate<["-"], "mrelocation-model">,
-  HelpText<"The relocation model to use">;
+  HelpText<"The relocation model to use">, Values<"static,pic,ropi,rwpi,ropi-rwpi,dynamic-no-pic">;
 def fno_math_builtin : Flag<["-"], "fno-math-builtin">,
   HelpText<"Disable implicit builtin knowledge of math functions">;
 }
@@ -172,6 +185,8 @@ def disable_llvm_optzns : Flag<["-"], "disable-llvm-optzns">,
 def disable_lifetimemarkers : Flag<["-"], "disable-lifetime-markers">,
   HelpText<"Disable lifetime-markers emission even when optimizations are "
            "enabled">;
+def disable_O0_optnone : Flag<["-"], "disable-O0-optnone">,
+  HelpText<"Disable adding the optnone attribute to functions at O0">;
 def disable_red_zone : Flag<["-"], "disable-red-zone">,
   HelpText<"Do not emit code that uses the red zone.">;
 def dwarf_column_info : Flag<["-"], "dwarf-column-info">,
@@ -185,6 +200,12 @@ def arange_sections : Flag<["-"], "arange_sections">,
 def dwarf_ext_refs : Flag<["-"], "dwarf-ext-refs">,
   HelpText<"Generate debug info with external references to clang modules"
            " or precompiled headers">;
+def dwarf_explicit_import : Flag<["-"], "dwarf-explicit-import">,
+  HelpText<"Generate explicit import from anonymous namespace to containing"
+           " scope">;
+def debug_forward_template_params : Flag<["-"], "debug-forward-template-params">,
+  HelpText<"Emit complete descriptions of template parameters in forward"
+           " declarations">;
 def fforbid_guard_variables : Flag<["-"], "fforbid-guard-variables">,
   HelpText<"Emit an error if a C++ static local initializer would need a guard variable">;
 def no_implicit_float : Flag<["-"], "no-implicit-float">,
@@ -226,7 +247,7 @@ def no_struct_path_tbaa : Flag<["-"], "no-struct-path-tbaa">,
 def masm_verbose : Flag<["-"], "masm-verbose">,
   HelpText<"Generate verbose assembly output">;
 def mcode_model : Separate<["-"], "mcode-model">,
-  HelpText<"The code model to use">;
+  HelpText<"The code model to use">, Values<"small,kernel,medium,large">;
 def mdebug_pass : Separate<["-"], "mdebug-pass">,
   HelpText<"Enable additional debug output">;
 def mdisable_fp_elim : Flag<["-"], "mdisable-fp-elim">,
@@ -242,6 +263,8 @@ def menable_unsafe_fp_math : Flag<["-"], "menable-unsafe-fp-math">,
            "precision">;
 def mfloat_abi : Separate<["-"], "mfloat-abi">,
   HelpText<"The float ABI to use">;
+def mtp : Separate<["-"], "mtp">,
+  HelpText<"Mode for reading thread pointer">;
 def mlimit_float_precision : Separate<["-"], "mlimit-float-precision">,
   HelpText<"Limit float precision to the given value">;
 def split_stacks : Flag<["-"], "split-stacks">,
@@ -265,8 +288,6 @@ def vectorize_loops : Flag<["-"], "vectorize-loops">,
   HelpText<"Run the Loop vectorization passes">;
 def vectorize_slp : Flag<["-"], "vectorize-slp">,
   HelpText<"Run the SLP vectorization passes">;
-def vectorize_slp_aggressive : Flag<["-"], "vectorize-slp-aggressive">,
-  HelpText<"Run the BB vectorization passes">;
 def dependent_lib : Joined<["--"], "dependent-lib=">,
   HelpText<"Add dependent library">;
 def linker_option : Joined<["--"], "linker-option=">,
@@ -291,15 +312,27 @@ def fsanitize_coverage_trace_gep
 def fsanitize_coverage_8bit_counters
     : Flag<["-"], "fsanitize-coverage-8bit-counters">,
       HelpText<"Enable frequency counters in sanitizer coverage">;
+def fsanitize_coverage_inline_8bit_counters
+    : Flag<["-"], "fsanitize-coverage-inline-8bit-counters">,
+      HelpText<"Enable inline 8-bit counters in sanitizer coverage">;
+def fsanitize_coverage_pc_table
+    : Flag<["-"], "fsanitize-coverage-pc-table">,
+      HelpText<"Create a table of coverage-instrumented PCs">;
 def fsanitize_coverage_trace_pc
     : Flag<["-"], "fsanitize-coverage-trace-pc">,
       HelpText<"Enable PC tracing in sanitizer coverage">;
 def fsanitize_coverage_trace_pc_guard
     : Flag<["-"], "fsanitize-coverage-trace-pc-guard">,
       HelpText<"Enable PC tracing with guard in sanitizer coverage">;
+def fsanitize_coverage_no_prune
+    : Flag<["-"], "fsanitize-coverage-no-prune">,
+      HelpText<"Disable coverage pruning (i.e. instrument all blocks/edges)">;
+def fsanitize_coverage_stack_depth
+    : Flag<["-"], "fsanitize-coverage-stack-depth">,
+      HelpText<"Enable max stack depth tracing">;
 def fprofile_instrument_EQ : Joined<["-"], "fprofile-instrument=">,
     HelpText<"Enable PGO instrumentation. The accepted value is clang, llvm, "
-             "or none">;
+             "or none">, Values<"none,clang,llvm">;
 def fprofile_instrument_path_EQ : Joined<["-"], "fprofile-instrument-path=">,
     HelpText<"Generate instrumented code to collect execution counts into "
              "<file> (overridden by LLVM_PROFILE_FILE env var)">;
@@ -312,6 +345,12 @@ def flto_visibility_public_std:
 def flto_unit: Flag<["-"], "flto-unit">,
     HelpText<"Emit IR to support LTO unit features (CFI, whole program vtable opt)">;
 def fno_lto_unit: Flag<["-"], "fno-lto-unit">;
+def fthin_link_bitcode_EQ : Joined<["-"], "fthin-link-bitcode=">,
+    HelpText<"Write minimized bitcode to <file> for the ThinLTO thin link only">;
+def fdebug_pass_manager : Flag<["-"], "fdebug-pass-manager">,
+    HelpText<"Prints debug information for the new pass manager">;
+def fno_debug_pass_manager : Flag<["-"], "fno-debug-pass-manager">,
+    HelpText<"Disables debug printing for the new pass manager">;
 
 //===----------------------------------------------------------------------===//
 // Dependency Output Options
@@ -337,9 +376,9 @@ def diagnostic_serialized_file : Separate<["-"], "serialize-diagnostic-file">,
   HelpText<"File for serializing diagnostics in a binary format">;
 
 def fdiagnostics_format : Separate<["-"], "fdiagnostics-format">,
-  HelpText<"Change diagnostic formatting to match IDE and command line tools">;
+  HelpText<"Change diagnostic formatting to match IDE and command line tools">, Values<"clang,msvc,msvc-fallback,vi">;
 def fdiagnostics_show_category : Separate<["-"], "fdiagnostics-show-category">,
-  HelpText<"Print diagnostic category">;
+  HelpText<"Print diagnostic category">, Values<"none,id,name">;
 def fno_diagnostics_use_presumed_location : Flag<["-"], "fno-diagnostics-use-presumed-location">,
   HelpText<"Ignore #line directives when displaying diagnostic locations">;
 def ftabstop : Separate<["-"], "ftabstop">, MetaVarName<"<N>">,
@@ -354,6 +393,9 @@ def fconstexpr_backtrace_limit : Separate<["-"], "fconstexpr-backtrace-limit">, 
   HelpText<"Set the maximum number of entries to print in a constexpr evaluation backtrace (0 = no limit).">;
 def fspell_checking_limit : Separate<["-"], "fspell-checking-limit">, MetaVarName<"<N>">,
   HelpText<"Set the maximum number of times to perform spell checking on unrecognized identifiers (0 = no limit).">;
+def fcaret_diagnostics_max_lines :
+  Separate<["-"], "fcaret-diagnostics-max-lines">, MetaVarName<"<N>">,
+  HelpText<"Set the maximum number of source lines to show in a caret diagnostic">;
 def fmessage_length : Separate<["-"], "fmessage-length">, MetaVarName<"<N>">,
   HelpText<"Format message diagnostics so that they fit within N columns or fewer, when possible.">;
 def verify : Flag<["-"], "verify">,
@@ -434,10 +476,14 @@ def fmodules_local_submodule_visibility :
   Flag<["-"], "fmodules-local-submodule-visibility">,
   HelpText<"Enforce name visibility rules across submodules of the same "
            "top-level module.">;
-def fmodule_codegen :
+def fmodules_codegen :
   Flag<["-"], "fmodules-codegen">,
   HelpText<"Generate code for uses of this module that assumes an explicit "
            "object file will be built for the module">;
+def fmodules_debuginfo :
+  Flag<["-"], "fmodules-debuginfo">,
+  HelpText<"Generate debug info for types in an object file built from this "
+           "module and do not generate them elsewhere">;
 def fmodule_format_EQ : Joined<["-"], "fmodule-format=">,
   HelpText<"Select the container format for clang modules and PCH. "
            "Supported options are 'raw' and 'obj'.">;
@@ -550,6 +596,9 @@ def find_pch_source_EQ : Joined<["-"], "find-pch-source=">,
 def fno_pch_timestamp : Flag<["-"], "fno-pch-timestamp">,
   HelpText<"Disable inclusion of timestamp in precompiled headers">;
   
+def aligned_alloc_unavailable : Flag<["-"], "faligned-alloc-unavailable">,
+  HelpText<"Aligned allocation/deallocation functions are unavailable">;
+
 //===----------------------------------------------------------------------===//
 // Language Options
 //===----------------------------------------------------------------------===//
@@ -567,6 +616,8 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fexternc_nounwind : Flag<["-"], "fexternc-nounwind">,
   HelpText<"Assume all functions with C linkage do not unwind">;
+def enable_split_dwarf : Flag<["-"], "enable-split-dwarf">,
+  HelpText<"Use split dwarf/Fission">;
 def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
   HelpText<"File name to use for split dwarf debug info output">;
 def fno_wchar : Flag<["-"], "fno-wchar">,
@@ -575,11 +626,11 @@ def fconstant_string_class : Separate<["-"], "fconstant-string-class">,
   MetaVarName<"<class name>">,
   HelpText<"Specify the class to use for constant Objective-C string objects.">;
 def fobjc_arc_cxxlib_EQ : Joined<["-"], "fobjc-arc-cxxlib=">,
-  HelpText<"Objective-C++ Automatic Reference Counting standard library kind">;
+  HelpText<"Objective-C++ Automatic Reference Counting standard library kind">, Values<"libc++,libstdc++,none">;
 def fobjc_runtime_has_weak : Flag<["-"], "fobjc-runtime-has-weak">,
   HelpText<"The target Objective-C runtime supports ARC weak operations">;
 def fobjc_dispatch_method_EQ : Joined<["-"], "fobjc-dispatch-method=">,
-  HelpText<"Objective-C dispatch method to use">;
+  HelpText<"Objective-C dispatch method to use">, Values<"legacy,non-legacy,mixed">;
 def disable_objc_default_synthesize_properties : Flag<["-"], "disable-objc-default-synthesize-properties">,
   HelpText<"disable the default synthesis of Objective-C properties">;
 def fencode_extended_block_signature : Flag<["-"], "fencode-extended-block-signature">,
@@ -653,9 +704,17 @@ def fnative_half_arguments_and_returns : Flag<["-"], "fnative-half-arguments-and
 def fallow_half_arguments_and_returns : Flag<["-"], "fallow-half-arguments-and-returns">,
   HelpText<"Allow function arguments and returns of type half">;
 def fdefault_calling_conv_EQ : Joined<["-"], "fdefault-calling-conv=">,
-  HelpText<"Set default MS calling convention">;
+  HelpText<"Set default MS calling convention">, Values<"cdecl,fastcall,stdcall,vectorcall">;
 def finclude_default_header : Flag<["-"], "finclude-default-header">,
   HelpText<"Include the default header file for OpenCL">;
+def fpreserve_vec3_type : Flag<["-"], "fpreserve-vec3-type">,
+  HelpText<"Preserve 3-component vector type">;
+def fwchar_type_EQ : Joined<["-"], "fwchar-type=">,
+  HelpText<"Select underlying type for wchar_t">, Values<"char,short,int">;
+def fsigned_wchar : Flag<["-"], "fsigned-wchar">,
+  HelpText<"Use a signed type for wchar_t">;
+def fno_signed_wchar : Flag<["-"], "fno-signed-wchar">,
+  HelpText<"Use an unsigned type for wchar_t">;
 
 // FIXME: Remove these entirely once functionality/tests have been excised.
 def fobjc_gc_only : Flag<["-"], "fobjc-gc-only">, Group<f_Group>,

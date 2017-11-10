@@ -60,7 +60,7 @@ public:
         const llvm::opt::ArgList &Args);
 
   bool IsIntegratedAssemblerDefault() const override;
-  bool IsUnwindTablesDefault() const override;
+  bool IsUnwindTablesDefault(const llvm::opt::ArgList &Args) const override;
   bool isPICDefault() const override;
   bool isPIEDefault() const override;
   bool isPICDefaultForced() const override;
@@ -93,6 +93,7 @@ private:
   mutable std::unique_ptr<tools::gcc::Preprocessor> Preprocessor;
   mutable std::unique_ptr<tools::gcc::Compiler> Compiler;
   void findGccLibDir();
+  llvm::ErrorOr<std::string> findGcc();
 };
 
 } // end namespace toolchains

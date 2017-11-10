@@ -6,8 +6,8 @@ This test serves two purposes:
 (1) It documents all existing warnings that currently have no associated -W flag,
     and ensures that the list never grows.
 
-    If take an existing warning and add a flag, this test will fail.  To
-    fix this test, simply remove that warning from the list below.
+    If you take an existing warning and add a flag, this test will fail.
+    To fix this test, simply remove that warning from the list below.
 
 (2) It prevents us adding new warnings to Clang that have no -W flag.  All
     new warnings should have -W flags.
@@ -18,7 +18,7 @@ This test serves two purposes:
 
 The list of warnings below should NEVER grow.  It should gradually shrink to 0.
 
-CHECK: Warnings without flags (78):
+CHECK: Warnings without flags (77):
 CHECK-NEXT:   ext_excess_initializers
 CHECK-NEXT:   ext_excess_initializers_in_char_array_initializer
 CHECK-NEXT:   ext_expected_semi_decl_list
@@ -94,7 +94,6 @@ CHECK-NEXT:   warn_typecheck_function_qualifiers
 CHECK-NEXT:   warn_undef_interface
 CHECK-NEXT:   warn_undef_interface_suggest
 CHECK-NEXT:   warn_undef_protocolref
-CHECK-NEXT:   warn_use_out_of_scope_declaration
 CHECK-NEXT:   warn_weak_identifier_undeclared
 CHECK-NEXT:   warn_weak_import
 

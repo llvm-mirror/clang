@@ -21,6 +21,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
+#include "clang/Basic/AddressSpaces.h"
 #include "clang/Frontend/ASTUnit.h"
 
 using namespace clang;
@@ -52,6 +53,7 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
     BTCASE(Float);
     BTCASE(Double);
     BTCASE(LongDouble);
+    BTCASE(Float16);
     BTCASE(Float128);
     BTCASE(NullPtr);
     BTCASE(Overload);
@@ -59,6 +61,13 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
     BTCASE(ObjCId);
     BTCASE(ObjCClass);
     BTCASE(ObjCSel);
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) BTCASE(Id);
+#include "clang/Basic/OpenCLImageTypes.def"
+#undef IMAGE_TYPE
+    BTCASE(OCLSampler);
+    BTCASE(OCLEvent);
+    BTCASE(OCLQueue);
+    BTCASE(OCLReserveID);
   default:
     return CXType_Unexposed;
   }
@@ -94,6 +103,7 @@ static CXTypeKind GetTypeKind(QualType T) {
     TKCASE(MemberPointer);
     TKCASE(Auto);
     TKCASE(Elaborated);
+    TKCASE(Pipe);
     default:
       return CXType_Unexposed;
   }
@@ -386,6 +396,30 @@ unsigned clang_isRestrictQualifiedType(CXType CT) {
   return T.isLocalRestrictQualified();
 }
 
+unsigned clang_getAddressSpace(CXType CT) {
+  QualType T = GetQualType(CT);
+
+  // For non language-specific address space, use separate helper function.
+  if (T.getAddressSpace() >= LangAS::FirstTargetAddressSpace) {
+    return T.getQualifiers().getAddressSpaceAttributePrintValue();
+  }
+  // FIXME: this function returns either a LangAS or a target AS
+  // Those values can overlap which makes this function rather unpredictable
+  // for any caller
+  return (unsigned)T.getAddressSpace();
+}
+
+CXString clang_getTypedefName(CXType CT) {
+  QualType T = GetQualType(CT);
+  const TypedefType *TT = T->getAs<TypedefType>();
+  if (TT) {
+    TypedefNameDecl *TD = TT->getDecl();
+    if (TD)
+      return cxstring::createDup(TD->getNameAsString().c_str());
+  }
+  return cxstring::createEmpty();
+}
+
 CXType clang_getPointeeType(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
@@ -490,7 +524,7 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(Char_U);
     TKIND(UChar);
     TKIND(Char16);
-    TKIND(Char32);  
+    TKIND(Char32);
     TKIND(UShort);
     TKIND(UInt);
     TKIND(ULong);
@@ -508,6 +542,7 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(Float);
     TKIND(Double);
     TKIND(LongDouble);
+    TKIND(Float16);
     TKIND(Float128);
     TKIND(NullPtr);
     TKIND(Overload);
@@ -535,6 +570,14 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(MemberPointer);
     TKIND(Auto);
     TKIND(Elaborated);
+    TKIND(Pipe);
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) TKIND(Id);
+#include "clang/Basic/OpenCLImageTypes.def"
+#undef IMAGE_TYPE
+    TKIND(OCLSampler);
+    TKIND(OCLEvent);
+    TKIND(OCLQueue);
+    TKIND(OCLReserveID);
   }
 #undef TKIND
   return cxstring::createRef(s);
@@ -573,7 +616,7 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
       TCALLINGCONV(X86Pascal);
       TCALLINGCONV(X86RegCall);
       TCALLINGCONV(X86VectorCall);
-      TCALLINGCONV(X86_64Win64);
+      TCALLINGCONV(Win64);
       TCALLINGCONV(X86_64SysV);
       TCALLINGCONV(AAPCS);
       TCALLINGCONV(AAPCS_VFP);
@@ -644,6 +687,24 @@ CXType clang_getCursorResultType(CXCursor C) {
   }
 
   return MakeCXType(QualType(), cxcursor::getCursorTU(C));
+}
+
+int clang_getExceptionSpecificationType(CXType X) {
+  QualType T = GetQualType(X);
+  if (T.isNull())
+    return -1;
+
+  if (const auto *FD = T->getAs<FunctionProtoType>())
+    return static_cast<int>(FD->getExceptionSpecType());
+
+  return -1;
+}
+
+int clang_getCursorExceptionSpecificationType(CXCursor C) {
+  if (clang_isDeclaration(C.kind))
+    return clang_getExceptionSpecificationType(clang_getCursorType(C));
+
+  return -1;
 }
 
 unsigned clang_isPODType(CXType X) {
@@ -1038,4 +1099,13 @@ CXType clang_Type_getNamedType(CXType CT){
     return MakeCXType(cast<ElaboratedType>(TP)->getNamedType(), GetTU(CT));
 
   return MakeCXType(QualType(), GetTU(CT));
+}
+
+unsigned clang_Type_isTransparentTagTypedef(CXType TT){
+  QualType T = GetQualType(TT);
+  if (auto *TT = dyn_cast_or_null<TypedefType>(T.getTypePtrOrNull())) {
+    if (auto *D = TT->getDecl())
+      return D->isTransparentTag();
+  }
+  return false;
 }

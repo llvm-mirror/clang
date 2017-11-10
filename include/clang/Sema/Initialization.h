@@ -70,6 +70,9 @@ public:
     /// \brief The entity being initialized is a field of block descriptor for
     /// the copied-in c++ object.
     EK_BlockElement,
+    /// The entity being initialized is a field of block descriptor for the
+    /// copied-in lambda object that's used in the lambda to block conversion.
+    EK_LambdaToBlockConversionBlockElement,
     /// \brief The entity being initialized is the real or imaginary part of a
     /// complex number.
     EK_ComplexElement,
@@ -260,7 +263,13 @@ public:
                                            QualType Type, bool NRVO) {
     return InitializedEntity(EK_BlockElement, BlockVarLoc, Type, NRVO);
   }
-  
+
+  static InitializedEntity InitializeLambdaToBlock(SourceLocation BlockVarLoc,
+                                                   QualType Type, bool NRVO) {
+    return InitializedEntity(EK_LambdaToBlockConversionBlockElement,
+                             BlockVarLoc, Type, NRVO);
+  }
+
   /// \brief Create the initialization entity for an exception object.
   static InitializedEntity InitializeException(SourceLocation ThrowLoc,
                                                QualType Type, bool NRVO) {
@@ -822,6 +831,8 @@ public:
   enum FailureKind {
     /// \brief Too many initializers provided for a reference.
     FK_TooManyInitsForReference,
+    /// \brief Reference initialized from a parenthesized initializer list.
+    FK_ParenthesizedListInitForReference,
     /// \brief Array must be initialized with an initializer list.
     FK_ArrayNeedsInitList,
     /// \brief Array must be initialized with an initializer list or a 
@@ -866,6 +877,8 @@ public:
     FK_ConversionFromPropertyFailed,
     /// \brief Too many initializers for scalar
     FK_TooManyInitsForScalar,
+    /// \brief Scalar initialized from a parenthesized initializer list.
+    FK_ParenthesizedListInitForScalar,
     /// \brief Reference initialization from an initializer list
     FK_ReferenceBindingToInitList,
     /// \brief Initialization of some unused destination type with an
@@ -892,7 +905,7 @@ public:
     /// having its address taken.
     FK_AddressOfUnaddressableFunction,
     /// \brief List-copy-initialization chose an explicit constructor.
-    FK_ExplicitConstructor
+    FK_ExplicitConstructor,
   };
   
 private:

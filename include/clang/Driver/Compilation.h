@@ -99,16 +99,19 @@ class Compilation {
   /// only be removed if we crash.
   ArgStringMap FailureResultFiles;
 
-  /// Redirection for stdout, stderr, etc.
-  const StringRef **Redirects;
+  /// Optional redirection for stdin, stdout, stderr.
+  std::vector<Optional<StringRef>> Redirects;
 
   /// Whether we're compiling for diagnostic purposes.
   bool ForDiagnostics;
 
+  /// Whether an error during the parsing of the input args.
+  bool ContainsError;
+
 public:
   Compilation(const Driver &D, const ToolChain &DefaultToolChain,
               llvm::opt::InputArgList *Args,
-              llvm::opt::DerivedArgList *TranslatedArgs);
+              llvm::opt::DerivedArgList *TranslatedArgs, bool ContainsError);
   ~Compilation();
 
   const Driver &getDriver() const { return TheDriver; }
@@ -275,14 +278,15 @@ public:
   /// Return true if we're compiling for diagnostics.
   bool isForDiagnostics() const { return ForDiagnostics; }
 
+  /// Return whether an error during the parsing of the input args.
+  bool containsError() const { return ContainsError; }
+
   /// Redirect - Redirect output of this compilation. Can only be done once.
   ///
-  /// \param Redirects - array of pointers to paths. The array
-  /// should have a size of three. The inferior process's
-  /// stdin(0), stdout(1), and stderr(2) will be redirected to the
-  /// corresponding paths. This compilation instance becomes
-  /// the owner of Redirects and will delete the array and StringRef's.
-  void Redirect(const StringRef** Redirects);
+  /// \param Redirects - array of optional paths. The array should have a size
+  /// of three. The inferior process's stdin(0), stdout(1), and stderr(2) will
+  /// be redirected to the corresponding paths, if provided (not llvm::None).
+  void Redirect(ArrayRef<Optional<StringRef>> Redirects);
 };
 
 } // end namespace driver

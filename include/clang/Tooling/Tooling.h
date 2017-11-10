@@ -31,12 +31,12 @@
 #define LLVM_CLANG_TOOLING_TOOLING_H
 
 #include "clang/AST/ASTConsumer.h"
-#include "clang/Frontend/PCHContainerOperations.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Driver/Util.h"
 #include "clang/Frontend/FrontendAction.h"
+#include "clang/Frontend/PCHContainerOperations.h"
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CompilationDatabase.h"
@@ -116,7 +116,7 @@ public:
 
   /// \brief Called before a source file is processed by a FrontEndAction.
   /// \see clang::FrontendAction::BeginSourceFileAction
-  virtual bool handleBeginSource(CompilerInstance &CI, StringRef Filename) {
+  virtual bool handleBeginSource(CompilerInstance &CI) {
     return true;
   }
 
@@ -202,12 +202,15 @@ buildASTFromCode(const Twine &Code, const Twine &FileName = "input.cc",
 /// \param PCHContainerOps The PCHContainerOperations for loading and creating
 /// clang modules.
 ///
+/// \param Adjuster A function to filter the command line arguments as specified.
+///
 /// \return The resulting AST or null if an error occurred.
 std::unique_ptr<ASTUnit> buildASTFromCodeWithArgs(
     const Twine &Code, const std::vector<std::string> &Args,
     const Twine &FileName = "input.cc", const Twine &ToolName = "clang-tool",
     std::shared_ptr<PCHContainerOperations> PCHContainerOps =
-        std::make_shared<PCHContainerOperations>());
+      std::make_shared<PCHContainerOperations>(),
+    ArgumentsAdjuster Adjuster = getClangStripDependencyFileAdjuster());
 
 /// \brief Utility to run a FrontendAction in a single clang invocation.
 class ToolInvocation {
@@ -334,7 +337,9 @@ class ClangTool {
   /// The file manager is shared between all translation units.
   FileManager &getFiles() { return *Files; }
 
- private:
+  llvm::ArrayRef<std::string> getSourcePaths() const { return SourcePaths; }
+
+private:
   const CompilationDatabase &Compilations;
   std::vector<std::string> SourcePaths;
   std::shared_ptr<PCHContainerOperations> PCHContainerOps;
@@ -388,12 +393,11 @@ inline std::unique_ptr<FrontendActionFactory> newFrontendActionFactory(
       }
 
     protected:
-      bool BeginSourceFileAction(CompilerInstance &CI,
-                                 StringRef Filename) override {
-        if (!clang::ASTFrontendAction::BeginSourceFileAction(CI, Filename))
+      bool BeginSourceFileAction(CompilerInstance &CI) override {
+        if (!clang::ASTFrontendAction::BeginSourceFileAction(CI))
           return false;
         if (Callbacks)
-          return Callbacks->handleBeginSource(CI, Filename);
+          return Callbacks->handleBeginSource(CI);
         return true;
       }
       void EndSourceFileAction() override {

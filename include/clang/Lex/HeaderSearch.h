@@ -47,7 +47,7 @@ struct HeaderFileInfo {
   /// whether it is C++ clean or not.  This can be set by the include paths or
   /// by \#pragma gcc system_header.  This is an instance of
   /// SrcMgr::CharacteristicKind.
-  unsigned DirInfo : 2;
+  unsigned DirInfo : 3;
 
   /// \brief Whether this header file info was supplied by an external source,
   /// and has not changed since.
@@ -375,13 +375,16 @@ public:
   /// \param SuggestedModule If non-null, and the file found is semantically
   /// part of a known module, this will be set to the module that should
   /// be imported instead of preprocessing/parsing the file found.
+  ///
+  /// \param IsMapped If non-null, and the search involved header maps, set to
+  /// true.
   const FileEntry *LookupFile(
       StringRef Filename, SourceLocation IncludeLoc, bool isAngled,
       const DirectoryLookup *FromDir, const DirectoryLookup *&CurDir,
       ArrayRef<std::pair<const FileEntry *, const DirectoryEntry *>> Includers,
       SmallVectorImpl<char> *SearchPath, SmallVectorImpl<char> *RelativePath,
       Module *RequestingModule, ModuleMap::KnownHeader *SuggestedModule,
-      bool SkipCache = false, bool BuildSystemModule = false);
+      bool *IsMapped, bool SkipCache = false, bool BuildSystemModule = false);
 
   /// \brief Look up a subframework for the specified \#include file.
   ///
@@ -468,29 +471,41 @@ public:
   /// \brief Get filenames for all registered header maps.
   void getHeaderMapFileNames(SmallVectorImpl<std::string> &Names) const;
 
-  /// \brief Retrieve the name of the module file that should be used to 
-  /// load the given module.
+  /// \brief Retrieve the name of the cached module file that should be used
+  /// to load the given module.
   ///
   /// \param Module The module whose module file name will be returned.
   ///
   /// \returns The name of the module file that corresponds to this module,
   /// or an empty string if this module does not correspond to any module file.
-  std::string getModuleFileName(Module *Module);
+  std::string getCachedModuleFileName(Module *Module);
 
-  /// \brief Retrieve the name of the module file that should be used to 
-  /// load a module with the given name.
+  /// \brief Retrieve the name of the prebuilt module file that should be used
+  /// to load a module with the given name.
+  ///
+  /// \param ModuleName The module whose module file name will be returned.
+  ///
+  /// \param FileMapOnly If true, then only look in the explicit module name
+  //  to file name map and skip the directory search.
+  ///
+  /// \returns The name of the module file that corresponds to this module,
+  /// or an empty string if this module does not correspond to any module file.
+  std::string getPrebuiltModuleFileName(StringRef ModuleName,
+                                        bool FileMapOnly = false);
+
+
+  /// \brief Retrieve the name of the (to-be-)cached module file that should
+  /// be used to load a module with the given name.
   ///
   /// \param ModuleName The module whose module file name will be returned.
   ///
   /// \param ModuleMapPath A path that when combined with \c ModuleName
   /// uniquely identifies this module. See Module::ModuleMap.
   ///
-  /// \param UsePrebuiltPath Whether we should use the prebuilt module path.
-  ///
   /// \returns The name of the module file that corresponds to this module,
   /// or an empty string if this module does not correspond to any module file.
-  std::string getModuleFileName(StringRef ModuleName, StringRef ModuleMapPath,
-                                bool UsePrebuiltPath);
+  std::string getCachedModuleFileName(StringRef ModuleName,
+                                      StringRef ModuleMapPath);
 
   /// \brief Lookup a module Search for a module with the given name.
   ///
@@ -535,9 +550,18 @@ public:
   ///
   /// \param File The module map file.
   /// \param IsSystem Whether this file is in a system header directory.
-  ///
+  /// \param ID If the module map file is already mapped (perhaps as part of
+  ///        processing a preprocessed module), the ID of the file.
+  /// \param Offset [inout] An offset within ID to start parsing. On exit,
+  ///        filled by the end of the parsed contents (either EOF or the
+  ///        location of an end-of-module-map pragma).
+  /// \param OriginalModuleMapFile The original path to the module map file,
+  ///        used to resolve paths within the module (this is required when
+  ///        building the module from preprocessed source).
   /// \returns true if an error occurred, false otherwise.
-  bool loadModuleMapFile(const FileEntry *File, bool IsSystem);
+  bool loadModuleMapFile(const FileEntry *File, bool IsSystem,
+                         FileID ID = FileID(), unsigned *Offset = nullptr,
+                         StringRef OriginalModuleMapFile = StringRef());
 
   /// \brief Collect the set of all known, top-level modules.
   ///
@@ -683,7 +707,9 @@ private:
 
   LoadModuleMapResult loadModuleMapFileImpl(const FileEntry *File,
                                             bool IsSystem,
-                                            const DirectoryEntry *Dir);
+                                            const DirectoryEntry *Dir,
+                                            FileID ID = FileID(),
+                                            unsigned *Offset = nullptr);
 
   /// \brief Try to load the module map file in the given directory.
   ///

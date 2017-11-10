@@ -43,15 +43,17 @@ void tools::SHAVE::Compiler::ConstructJob(Compilation &C, const JobAction &JA,
   }
   CmdArgs.push_back("-DMYRIAD2");
 
-  // Append all -I, -iquote, -isystem paths, defines/undefines,
-  // 'f' flags, optimize flags, and warning options.
+  // Append all -I, -iquote, -isystem paths, defines/undefines, 'f'
+  // flags, 'g' flags, 'M' flags, optimize flags, warning options,
+  // mcpu flags, mllvm flags, and Xclang flags.
   // These are spelled the same way in clang and moviCompile.
   Args.AddAllArgsExcept(
       CmdArgs,
       {options::OPT_I_Group, options::OPT_clang_i_Group, options::OPT_std_EQ,
        options::OPT_D, options::OPT_U, options::OPT_f_Group,
        options::OPT_f_clang_Group, options::OPT_g_Group, options::OPT_M_Group,
-       options::OPT_O_Group, options::OPT_W_Group, options::OPT_mcpu_EQ},
+       options::OPT_O_Group, options::OPT_W_Group, options::OPT_mcpu_EQ,
+       options::OPT_mllvm, options::OPT_Xclang},
       {options::OPT_fno_split_dwarf_inlining});
   Args.hasArg(options::OPT_fno_split_dwarf_inlining); // Claim it if present.
 
@@ -215,6 +217,7 @@ MyriadToolChain::MyriadToolChain(const Driver &D, const llvm::Triple &Triple,
   default:
     D.Diag(clang::diag::err_target_unsupported_arch)
         << Triple.getArchName() << "myriad";
+    LLVM_FALLTHROUGH;
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:
   case llvm::Triple::shave:

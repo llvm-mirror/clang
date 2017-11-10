@@ -62,9 +62,20 @@ def main():
 
   # Determine range to format.
   if vim.eval('exists("l:lines")') == '1':
-    lines = vim.eval('l:lines')
+    lines = ['-lines', vim.eval('l:lines')]
+  elif vim.eval('exists("l:formatdiff")') == '1':
+    with open(vim.current.buffer.name, 'r') as f:
+      ondisk = f.read().splitlines();
+    sequence = difflib.SequenceMatcher(None, ondisk, vim.current.buffer)
+    lines = []
+    for op in reversed(sequence.get_opcodes()):
+      if op[0] not in ['equal', 'delete']:
+        lines += ['-lines', '%s:%s' % (op[3] + 1, op[4])]
+    if lines == []:
+      return
   else:
-    lines = '%s:%s' % (vim.current.range.start + 1, vim.current.range.end + 1)
+    lines = ['-lines', '%s:%s' % (vim.current.range.start + 1,
+                                  vim.current.range.end + 1)]
 
   # Determine the cursor position.
   cursor = int(vim.eval('line2byte(line("."))+col(".")')) - 2
@@ -81,8 +92,8 @@ def main():
 
   # Call formatter.
   command = [binary, '-style', style, '-cursor', str(cursor)]
-  if lines != 'all':
-    command.extend(['-lines', lines])
+  if lines != ['-lines', 'all']:
+    command += lines
   if fallback_style:
     command.extend(['-fallback-style', fallback_style])
   if vim.current.buffer.name:

@@ -66,6 +66,8 @@ struct SA {
     {}
     #pragma omp target map(always, tofrom: c,f[:])   // expected-error {{section length is unspecified and cannot be inferred because subscripted value is not an array}}
     {}
+    #pragma omp target map(always)   // expected-error {{use of undeclared identifier 'always'}}
+    {}
     return;
   }
 };
@@ -317,8 +319,8 @@ class S2 {
 public:
   S2():a(0) { }
   S2(S2 &s2):a(s2.a) { }
-  static float S2s; // expected-note 4 {{mappable type cannot contain static members}}
-  static const float S2sc; // expected-note 4 {{mappable type cannot contain static members}}
+  static float S2s;
+  static const float S2sc;
 };
 const float S2::S2sc = 0;
 const S2 b;
@@ -351,7 +353,7 @@ template <class T>
 struct S6;
 
 template<>
-struct S6<int>  // expected-note {{mappable type cannot be polymorphic}}
+struct S6<int>
 {
    virtual void foo();
 };
@@ -418,8 +420,8 @@ T tmain(T argc) {
 #pragma omp target data map(tofrom: argc > 0 ? x : y) // expected-error 2 {{expected expression containing only member accesses and/or array sections based on named variables}}
 #pragma omp target data map(argc)
 #pragma omp target data map(S1) // expected-error {{'S1' does not refer to a value}}
-#pragma omp target data map(a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}} expected-error 2 {{type 'S2' is not mappable to target}}
-#pragma omp target data map(ba) // expected-error 2 {{type 'S2' is not mappable to target}}
+#pragma omp target data map(a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}}
+#pragma omp target data map(ba)
 #pragma omp target data map(ca)
 #pragma omp target data map(da)
 #pragma omp target data map(S2::S2s)
@@ -452,6 +454,25 @@ T tmain(T argc) {
   return 0;
 }
 
+struct SA1{
+  int a;
+  struct SA1 *p;
+  int b[10];
+};
+struct SB1{
+  int a;
+  struct SA1 s;
+  struct SA1 sa[10];
+  struct SA1 *sp[10];
+  struct SA1 *p;
+};
+struct SC1{
+  int a;
+  struct SB1 s;
+  struct SB1 *p;
+  int b[10];
+};
+
 int main(int argc, char **argv) {
   const int d = 5;
   const int da[5] = { 0 };
@@ -465,7 +486,9 @@ int main(int argc, char **argv) {
   int y;
   int to, tofrom, always;
   const int (&l)[5] = da;
-#pragma omp target data map // expected-error {{expected '(' after 'map'}} expected-error {{expected at least one map clause for '#pragma omp target data'}}
+  SC1 s;
+  SC1 *p;
+#pragma omp target data map // expected-error {{expected '(' after 'map'}} expected-error {{expected at least one 'map' or 'use_device_ptr' clause for '#pragma omp target data'}}
 #pragma omp target data map( // expected-error {{expected ')'}} expected-note {{to match this '('}} expected-error {{expected expression}}
 #pragma omp target data map() // expected-error {{expected expression}}
 #pragma omp target data map(alloc) // expected-error {{use of undeclared identifier 'alloc'}}
@@ -487,9 +510,9 @@ int main(int argc, char **argv) {
 #pragma omp target data map(tofrom: argc > 0 ? argv[1] : argv[2]) // expected-error {{xpected expression containing only member accesses and/or array sections based on named variables}}
 #pragma omp target data map(argc)
 #pragma omp target data map(S1) // expected-error {{'S1' does not refer to a value}}
-#pragma omp target data map(a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}} expected-error 2 {{type 'S2' is not mappable to target}}
+#pragma omp target data map(a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}}
 #pragma omp target data map(argv[1])
-#pragma omp target data map(ba) // expected-error 2 {{type 'S2' is not mappable to target}}
+#pragma omp target data map(ba)
 #pragma omp target data map(ca)
 #pragma omp target data map(da)
 #pragma omp target data map(S2::S2s)
@@ -523,8 +546,55 @@ int main(int argc, char **argv) {
   {}
 #pragma omp target firstprivate(j) map(j)  // expected-error {{firstprivate variable cannot be in a map clause in '#pragma omp target' directive}} expected-note {{defined as firstprivate}}
   {}
-#pragma omp target map(m) // expected-error {{type 'S6<int>' is not mappable to target}}
+#pragma omp target map(m)
   {}
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.s)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.s.a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.b[:5])
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.p[:5])
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.sa[3].a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.sp[3]->a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.p->a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.p->a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.s.b[:2])
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.s.p->b[:2])
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+// expected-note@+1 {{used here}}
+#pragma omp target map(s.p->p->p->a)
+// expected-error@+1 {{variable already marked as mapped in current construct}}
+  { s.a++; }
+#pragma omp target map(s.s.s.b[:2])
+  { s.s.s.b[0]++; }
+
   return tmain<int, 3>(argc)+tmain<from, 4>(argc); // expected-note {{in instantiation of function template specialization 'tmain<int, 3>' requested here}} expected-note {{in instantiation of function template specialization 'tmain<int, 4>' requested here}}
 }
 #endif

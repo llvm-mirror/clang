@@ -129,14 +129,16 @@ Address
 CodeGenFunction::EmitCXXMemberDataPointerAddress(const Expr *E, Address base,
                                                  llvm::Value *memberPtr,
                                       const MemberPointerType *memberPtrType,
-                                                 AlignmentSource *alignSource) {
+                                                 LValueBaseInfo *BaseInfo,
+                                                 TBAAAccessInfo *TBAAInfo) {
   // Ask the ABI to compute the actual address.
   llvm::Value *ptr =
     CGM.getCXXABI().EmitMemberDataPointerAddress(*this, E, base,
                                                  memberPtr, memberPtrType);
 
   QualType memberType = memberPtrType->getPointeeType();
-  CharUnits memberAlign = getNaturalTypeAlignment(memberType, alignSource);
+  CharUnits memberAlign = getNaturalTypeAlignment(memberType, BaseInfo,
+                                                  TBAAInfo);
   memberAlign =
     CGM.getDynamicOffsetAlignment(base.getAlignment(),
                             memberPtrType->getClass()->getAsCXXRecordDecl(),
@@ -1413,10 +1415,11 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
   // possible to delegate the destructor body to the complete
   // destructor.  Do so.
   if (DtorType == Dtor_Deleting) {
+    RunCleanupsScope DtorEpilogue(*this);
     EnterDtorCleanups(Dtor, Dtor_Deleting);
-    EmitCXXDestructorCall(Dtor, Dtor_Complete, /*ForVirtualBase=*/false,
-                          /*Delegating=*/false, LoadCXXThisAddress());
-    PopCleanupBlock();
+    if (HaveInsertPoint())
+      EmitCXXDestructorCall(Dtor, Dtor_Complete, /*ForVirtualBase=*/false,
+                            /*Delegating=*/false, LoadCXXThisAddress());
     return;
   }
 
@@ -1512,6 +1515,13 @@ void CodeGenFunction::emitImplicitAssignmentOperatorBody(FunctionArgList &Args) 
 }
 
 namespace {
+  llvm::Value *LoadThisForDtorDelete(CodeGenFunction &CGF,
+                                     const CXXDestructorDecl *DD) {
+    if (Expr *ThisArg = DD->getOperatorDeleteThisArg())
+      return CGF.EmitScalarExpr(ThisArg);
+    return CGF.LoadCXXThis();
+  }
+
   /// Call the operator delete associated with the current destructor.
   struct CallDtorDelete final : EHScopeStack::Cleanup {
     CallDtorDelete() {}
@@ -1519,10 +1529,37 @@ namespace {
     void Emit(CodeGenFunction &CGF, Flags flags) override {
       const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CGF.CurCodeDecl);
       const CXXRecordDecl *ClassDecl = Dtor->getParent();
-      CGF.EmitDeleteCall(Dtor->getOperatorDelete(), CGF.LoadCXXThis(),
+      CGF.EmitDeleteCall(Dtor->getOperatorDelete(),
+                         LoadThisForDtorDelete(CGF, Dtor),
                          CGF.getContext().getTagDeclType(ClassDecl));
     }
   };
+
+  void EmitConditionalDtorDeleteCall(CodeGenFunction &CGF,
+                                     llvm::Value *ShouldDeleteCondition,
+                                     bool ReturnAfterDelete) {
+    llvm::BasicBlock *callDeleteBB = CGF.createBasicBlock("dtor.call_delete");
+    llvm::BasicBlock *continueBB = CGF.createBasicBlock("dtor.continue");
+    llvm::Value *ShouldCallDelete
+      = CGF.Builder.CreateIsNull(ShouldDeleteCondition);
+    CGF.Builder.CreateCondBr(ShouldCallDelete, continueBB, callDeleteBB);
+
+    CGF.EmitBlock(callDeleteBB);
+    const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CGF.CurCodeDecl);
+    const CXXRecordDecl *ClassDecl = Dtor->getParent();
+    CGF.EmitDeleteCall(Dtor->getOperatorDelete(),
+                       LoadThisForDtorDelete(CGF, Dtor),
+                       CGF.getContext().getTagDeclType(ClassDecl));
+    assert(Dtor->getOperatorDelete()->isDestroyingOperatorDelete() ==
+               ReturnAfterDelete &&
+           "unexpected value for ReturnAfterDelete");
+    if (ReturnAfterDelete)
+      CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
+    else
+      CGF.Builder.CreateBr(continueBB);
+
+    CGF.EmitBlock(continueBB);
+  }
 
   struct CallDtorDeleteConditional final : EHScopeStack::Cleanup {
     llvm::Value *ShouldDeleteCondition;
@@ -1534,20 +1571,8 @@ namespace {
     }
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
-      llvm::BasicBlock *callDeleteBB = CGF.createBasicBlock("dtor.call_delete");
-      llvm::BasicBlock *continueBB = CGF.createBasicBlock("dtor.continue");
-      llvm::Value *ShouldCallDelete
-        = CGF.Builder.CreateIsNull(ShouldDeleteCondition);
-      CGF.Builder.CreateCondBr(ShouldCallDelete, continueBB, callDeleteBB);
-
-      CGF.EmitBlock(callDeleteBB);
-      const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CGF.CurCodeDecl);
-      const CXXRecordDecl *ClassDecl = Dtor->getParent();
-      CGF.EmitDeleteCall(Dtor->getOperatorDelete(), CGF.LoadCXXThis(),
-                         CGF.getContext().getTagDeclType(ClassDecl));
-      CGF.Builder.CreateBr(continueBB);
-
-      CGF.EmitBlock(continueBB);
+      EmitConditionalDtorDeleteCall(CGF, ShouldDeleteCondition,
+                                    /*ReturnAfterDelete*/false);
     }
   };
 
@@ -1577,6 +1602,7 @@ namespace {
 
  static void EmitSanitizerDtorCallback(CodeGenFunction &CGF, llvm::Value *Ptr,
              CharUnits::QuantityType PoisonSize) {
+   CodeGenFunction::SanitizerScope SanScope(&CGF);
    // Pass in void pointer and size of region as arguments to runtime
    // function
    llvm::Value *Args[] = {CGF.Builder.CreateBitCast(Ptr, CGF.VoidPtrTy),
@@ -1705,6 +1731,9 @@ namespace {
 /// \brief Emit all code that comes at the end of class's
 /// destructor. This is to call destructors on members and base classes
 /// in reverse order of their construction.
+///
+/// For a deleting destructor, this also handles the case where a destroying
+/// operator delete completely overrides the definition.
 void CodeGenFunction::EnterDtorCleanups(const CXXDestructorDecl *DD,
                                         CXXDtorType DtorType) {
   assert((!DD->isTrivial() || DD->hasAttr<DLLExportAttr>()) &&
@@ -1717,11 +1746,23 @@ void CodeGenFunction::EnterDtorCleanups(const CXXDestructorDecl *DD,
            "operator delete missing - EnterDtorCleanups");
     if (CXXStructorImplicitParamValue) {
       // If there is an implicit param to the deleting dtor, it's a boolean
-      // telling whether we should call delete at the end of the dtor.
-      EHStack.pushCleanup<CallDtorDeleteConditional>(
-          NormalAndEHCleanup, CXXStructorImplicitParamValue);
+      // telling whether this is a deleting destructor.
+      if (DD->getOperatorDelete()->isDestroyingOperatorDelete())
+        EmitConditionalDtorDeleteCall(*this, CXXStructorImplicitParamValue,
+                                      /*ReturnAfterDelete*/true);
+      else
+        EHStack.pushCleanup<CallDtorDeleteConditional>(
+            NormalAndEHCleanup, CXXStructorImplicitParamValue);
     } else {
-      EHStack.pushCleanup<CallDtorDelete>(NormalAndEHCleanup);
+      if (DD->getOperatorDelete()->isDestroyingOperatorDelete()) {
+        const CXXRecordDecl *ClassDecl = DD->getParent();
+        EmitDeleteCall(DD->getOperatorDelete(),
+                       LoadThisForDtorDelete(*this, DD),
+                       getContext().getTagDeclType(ClassDecl));
+        EmitBranchThroughCleanup(ReturnBlock);
+      } else {
+        EHStack.pushCleanup<CallDtorDelete>(NormalAndEHCleanup);
+      }
     }
     return;
   }
@@ -2382,7 +2423,7 @@ void CodeGenFunction::InitializeVTablePointer(const VPtr &Vptr) {
   VTableAddressPoint = Builder.CreateBitCast(VTableAddressPoint, VTablePtrTy);
 
   llvm::StoreInst *Store = Builder.CreateStore(VTableAddressPoint, VTableField);
-  CGM.DecorateInstructionWithTBAA(Store, CGM.getTBAAInfoForVTablePtr());
+  CGM.DecorateInstructionWithTBAA(Store, CGM.getTBAAVTablePtrAccessInfo());
   if (CGM.getCodeGenOpts().OptimizationLevel > 0 &&
       CGM.getCodeGenOpts().StrictVTablePointers)
     CGM.DecorateInstructionWithInvariantGroup(Store, Vptr.VTableClass);
@@ -2476,7 +2517,7 @@ llvm::Value *CodeGenFunction::GetVTablePtr(Address This,
                                            const CXXRecordDecl *RD) {
   Address VTablePtrSrc = Builder.CreateElementBitCast(This, VTableTy);
   llvm::Instruction *VTable = Builder.CreateLoad(VTablePtrSrc, "vtable");
-  CGM.DecorateInstructionWithTBAA(VTable, CGM.getTBAAInfoForVTablePtr());
+  CGM.DecorateInstructionWithTBAA(VTable, CGM.getTBAAVTablePtrAccessInfo());
 
   if (CGM.getCodeGenOpts().OptimizationLevel > 0 &&
       CGM.getCodeGenOpts().StrictVTablePointers)
@@ -2523,8 +2564,10 @@ LeastDerivedClassWithSameLayout(const CXXRecordDecl *RD) {
 void CodeGenFunction::EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
                                                    llvm::Value *VTable,
                                                    SourceLocation Loc) {
-  if (CGM.getCodeGenOpts().WholeProgramVTables &&
-      CGM.HasHiddenLTOVisibility(RD)) {
+  if (SanOpts.has(SanitizerKind::CFIVCall))
+    EmitVTablePtrCheckForCall(RD, VTable, CodeGenFunction::CFITCK_VCall, Loc);
+  else if (CGM.getCodeGenOpts().WholeProgramVTables &&
+           CGM.HasHiddenLTOVisibility(RD)) {
     llvm::Metadata *MD =
         CGM.CreateMetadataIdentifierForType(QualType(RD->getTypeForDecl(), 0));
     llvm::Value *TypeId =
@@ -2536,9 +2579,6 @@ void CodeGenFunction::EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
                            {CastedVTable, TypeId});
     Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::assume), TypeTest);
   }
-
-  if (SanOpts.has(SanitizerKind::CFIVCall))
-    EmitVTablePtrCheckForCall(RD, VTable, CodeGenFunction::CFITCK_VCall, Loc);
 }
 
 void CodeGenFunction::EmitVTablePtrCheckForCall(const CXXRecordDecl *RD,
@@ -2604,28 +2644,34 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
       !CGM.HasHiddenLTOVisibility(RD))
     return;
 
-  std::string TypeName = RD->getQualifiedNameAsString();
-  if (getContext().getSanitizerBlacklist().isBlacklistedType(TypeName))
-    return;
-
-  SanitizerScope SanScope(this);
+  SanitizerMask M;
   llvm::SanitizerStatKind SSK;
   switch (TCK) {
   case CFITCK_VCall:
+    M = SanitizerKind::CFIVCall;
     SSK = llvm::SanStat_CFI_VCall;
     break;
   case CFITCK_NVCall:
+    M = SanitizerKind::CFINVCall;
     SSK = llvm::SanStat_CFI_NVCall;
     break;
   case CFITCK_DerivedCast:
+    M = SanitizerKind::CFIDerivedCast;
     SSK = llvm::SanStat_CFI_DerivedCast;
     break;
   case CFITCK_UnrelatedCast:
+    M = SanitizerKind::CFIUnrelatedCast;
     SSK = llvm::SanStat_CFI_UnrelatedCast;
     break;
   case CFITCK_ICall:
     llvm_unreachable("not expecting CFITCK_ICall");
   }
+
+  std::string TypeName = RD->getQualifiedNameAsString();
+  if (getContext().getSanitizerBlacklist().isBlacklistedType(M, TypeName))
+    return;
+
+  SanitizerScope SanScope(this);
   EmitSanitizerStatReport(SSK);
 
   llvm::Metadata *MD =
@@ -2635,24 +2681,6 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   llvm::Value *CastedVTable = Builder.CreateBitCast(VTable, Int8PtrTy);
   llvm::Value *TypeTest = Builder.CreateCall(
       CGM.getIntrinsic(llvm::Intrinsic::type_test), {CastedVTable, TypeId});
-
-  SanitizerMask M;
-  switch (TCK) {
-  case CFITCK_VCall:
-    M = SanitizerKind::CFIVCall;
-    break;
-  case CFITCK_NVCall:
-    M = SanitizerKind::CFINVCall;
-    break;
-  case CFITCK_DerivedCast:
-    M = SanitizerKind::CFIDerivedCast;
-    break;
-  case CFITCK_UnrelatedCast:
-    M = SanitizerKind::CFIUnrelatedCast;
-    break;
-  case CFITCK_ICall:
-    llvm_unreachable("not expecting CFITCK_ICall");
-  }
 
   llvm::Constant *StaticData[] = {
       llvm::ConstantInt::get(Int8Ty, TCK),
@@ -2688,7 +2716,8 @@ bool CodeGenFunction::ShouldEmitVTableTypeCheckedLoad(const CXXRecordDecl *RD) {
     return false;
 
   std::string TypeName = RD->getQualifiedNameAsString();
-  return !getContext().getSanitizerBlacklist().isBlacklistedType(TypeName);
+  return !getContext().getSanitizerBlacklist().isBlacklistedType(
+      SanitizerKind::CFIVCall, TypeName);
 }
 
 llvm::Value *CodeGenFunction::EmitVTableTypeCheckedLoad(
@@ -2714,79 +2743,6 @@ llvm::Value *CodeGenFunction::EmitVTableTypeCheckedLoad(
   return Builder.CreateBitCast(
       Builder.CreateExtractValue(CheckedLoad, 0),
       cast<llvm::PointerType>(VTable->getType())->getElementType());
-}
-
-bool
-CodeGenFunction::CanDevirtualizeMemberFunctionCall(const Expr *Base,
-                                                   const CXXMethodDecl *MD) {
-  // When building with -fapple-kext, all calls must go through the vtable since
-  // the kernel linker can do runtime patching of vtables.
-  if (getLangOpts().AppleKext)
-    return false;
-
-  // If the member function is marked 'final', we know that it can't be
-  // overridden and can therefore devirtualize it unless it's pure virtual.
-  if (MD->hasAttr<FinalAttr>())
-    return !MD->isPure();
-
-  // If the base expression (after skipping derived-to-base conversions) is a
-  // class prvalue, then we can devirtualize.
-  Base = Base->getBestDynamicClassTypeExpr();
-  if (Base->isRValue() && Base->getType()->isRecordType())
-    return true;
-
-  // If we don't even know what we would call, we can't devirtualize.
-  const CXXRecordDecl *BestDynamicDecl = Base->getBestDynamicClassType();
-  if (!BestDynamicDecl)
-    return false;
-
-  // There may be a method corresponding to MD in a derived class.
-  const CXXMethodDecl *DevirtualizedMethod =
-      MD->getCorrespondingMethodInClass(BestDynamicDecl);
-
-  // If that method is pure virtual, we can't devirtualize. If this code is
-  // reached, the result would be UB, not a direct call to the derived class
-  // function, and we can't assume the derived class function is defined.
-  if (DevirtualizedMethod->isPure())
-    return false;
-
-  // If that method is marked final, we can devirtualize it.
-  if (DevirtualizedMethod->hasAttr<FinalAttr>())
-    return true;
-
-  // Similarly, if the class itself is marked 'final' it can't be overridden
-  // and we can therefore devirtualize the member function call.
-  if (BestDynamicDecl->hasAttr<FinalAttr>())
-    return true;
-
-  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Base)) {
-    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-      // This is a record decl. We know the type and can devirtualize it.
-      return VD->getType()->isRecordType();
-    }
-
-    return false;
-  }
-
-  // We can devirtualize calls on an object accessed by a class member access
-  // expression, since by C++11 [basic.life]p6 we know that it can't refer to
-  // a derived class object constructed in the same location.
-  if (const MemberExpr *ME = dyn_cast<MemberExpr>(Base))
-    if (const ValueDecl *VD = dyn_cast<ValueDecl>(ME->getMemberDecl()))
-      return VD->getType()->isRecordType();
-
-  // Likewise for calls on an object accessed by a (non-reference) pointer to
-  // member access.
-  if (auto *BO = dyn_cast<BinaryOperator>(Base)) {
-    if (BO->isPtrMemOp()) {
-      auto *MPT = BO->getRHS()->getType()->castAs<MemberPointerType>();
-      if (MPT->getPointeeType()->isRecordType())
-        return true;
-    }
-  }
-
-  // We can't devirtualize the call.
-  return false;
 }
 
 void CodeGenFunction::EmitForwardingCallToLambda(
@@ -2828,6 +2784,15 @@ void CodeGenFunction::EmitLambdaBlockInvokeBody() {
   const BlockDecl *BD = BlockInfo->getBlockDecl();
   const VarDecl *variable = BD->capture_begin()->getVariable();
   const CXXRecordDecl *Lambda = variable->getType()->getAsCXXRecordDecl();
+  const CXXMethodDecl *CallOp = Lambda->getLambdaCallOperator();
+
+  if (CallOp->isVariadic()) {
+    // FIXME: Making this work correctly is nasty because it requires either
+    // cloning the body of the call operator or making the call operator
+    // forward.
+    CGM.ErrorUnsupported(CurCodeDecl, "lambda conversion to variadic function");
+    return;
+  }
 
   // Start building arguments for forwarding call
   CallArgList CallArgs;
@@ -2842,18 +2807,7 @@ void CodeGenFunction::EmitLambdaBlockInvokeBody() {
 
   assert(!Lambda->isGenericLambda() &&
             "generic lambda interconversion to block not implemented");
-  EmitForwardingCallToLambda(Lambda->getLambdaCallOperator(), CallArgs);
-}
-
-void CodeGenFunction::EmitLambdaToBlockPointerBody(FunctionArgList &Args) {
-  if (cast<CXXMethodDecl>(CurCodeDecl)->isVariadic()) {
-    // FIXME: Making this work correctly is nasty because it requires either
-    // cloning the body of the call operator or making the call operator forward.
-    CGM.ErrorUnsupported(CurCodeDecl, "lambda conversion to variadic function");
-    return;
-  }
-
-  EmitFunctionBody(Args, cast<FunctionDecl>(CurGD.getDecl())->getBody());
+  EmitForwardingCallToLambda(CallOp, CallArgs);
 }
 
 void CodeGenFunction::EmitLambdaDelegatingInvokeBody(const CXXMethodDecl *MD) {
@@ -2886,7 +2840,7 @@ void CodeGenFunction::EmitLambdaDelegatingInvokeBody(const CXXMethodDecl *MD) {
   EmitForwardingCallToLambda(CallOp, CallArgs);
 }
 
-void CodeGenFunction::EmitLambdaStaticInvokeFunction(const CXXMethodDecl *MD) {
+void CodeGenFunction::EmitLambdaStaticInvokeBody(const CXXMethodDecl *MD) {
   if (MD->isVariadic()) {
     // FIXME: Making this work correctly is nasty because it requires either
     // cloning the body of the call operator or making the call operator forward.

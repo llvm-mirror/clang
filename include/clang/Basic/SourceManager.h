@@ -80,8 +80,18 @@ namespace SrcMgr {
   /// system_header is seen or in various other cases.
   ///
   enum CharacteristicKind {
-    C_User, C_System, C_ExternCSystem
+    C_User, C_System, C_ExternCSystem, C_User_ModuleMap, C_System_ModuleMap
   };
+
+  /// Determine whether a file / directory characteristic is for system code.
+  inline bool isSystem(CharacteristicKind CK) {
+    return CK != C_User && CK != C_User_ModuleMap;
+  }
+
+  /// Determine whether a file characteristic is for a module map.
+  inline bool isModuleMap(CharacteristicKind CK) {
+    return CK == C_User_ModuleMap || CK == C_System_ModuleMap;
+  }
 
   /// \brief One instance of this struct is kept for every file loaded or used.
   ///
@@ -202,12 +212,6 @@ namespace SrcMgr {
     /// this content cache.  This is used for performance analysis.
     llvm::MemoryBuffer::BufferKind getMemoryBufferKind() const;
 
-    void setBuffer(std::unique_ptr<llvm::MemoryBuffer> B) {
-      assert(!Buffer.getPointer() && "MemoryBuffer already set.");
-      Buffer.setPointer(B.release());
-      Buffer.setInt(0);
-    }
-
     /// \brief Get the underlying buffer, returning NULL if the buffer is not
     /// yet available.
     llvm::MemoryBuffer *getRawBuffer() const { return Buffer.getPointer(); }
@@ -251,12 +255,14 @@ namespace SrcMgr {
     /// preprocessing of this \#include, including this SLocEntry.
     ///
     /// Zero means the preprocessor didn't provide such info for this SLocEntry.
-    unsigned NumCreatedFIDs;
+    unsigned NumCreatedFIDs : 31;
 
-    /// \brief Contains the ContentCache* and the bits indicating the
-    /// characteristic of the file and whether it has \#line info, all
-    /// bitmangled together.
-    uintptr_t Data;
+    /// \brief Whether this FileInfo has any \#line directives.
+    unsigned HasLineDirectives : 1;
+
+    /// \brief The content cache and the characteristic of the file.
+    llvm::PointerIntPair<const ContentCache*, 3, CharacteristicKind>
+        ContentAndKind;
 
     friend class clang::SourceManager;
     friend class clang::ASTWriter;
@@ -269,10 +275,9 @@ namespace SrcMgr {
       FileInfo X;
       X.IncludeLoc = IL.getRawEncoding();
       X.NumCreatedFIDs = 0;
-      X.Data = (uintptr_t)Con;
-      assert((X.Data & 7) == 0 &&"ContentCache pointer insufficiently aligned");
-      assert((unsigned)FileCharacter < 4 && "invalid file character");
-      X.Data |= (unsigned)FileCharacter;
+      X.HasLineDirectives = false;
+      X.ContentAndKind.setPointer(Con);
+      X.ContentAndKind.setInt(FileCharacter);
       return X;
     }
 
@@ -280,22 +285,22 @@ namespace SrcMgr {
       return SourceLocation::getFromRawEncoding(IncludeLoc);
     }
 
-    const ContentCache* getContentCache() const {
-      return reinterpret_cast<const ContentCache*>(Data & ~uintptr_t(7));
+    const ContentCache *getContentCache() const {
+      return ContentAndKind.getPointer();
     }
 
     /// \brief Return whether this is a system header or not.
     CharacteristicKind getFileCharacteristic() const {
-      return (CharacteristicKind)(Data & 3);
+      return ContentAndKind.getInt();
     }
 
     /// \brief Return true if this FileID has \#line directives in it.
-    bool hasLineDirectives() const { return (Data & 4) != 0; }
+    bool hasLineDirectives() const { return HasLineDirectives; }
 
     /// \brief Set the flag that indicates that this FileID has
     /// line table entries associated with it.
     void setHasLineDirectives() {
-      Data |= 4;
+      HasLineDirectives = true;
     }
   };
 
@@ -407,6 +412,8 @@ namespace SrcMgr {
     };
 
   public:
+    SLocEntry() : Offset(), IsExpansion(), File() {}
+
     unsigned getOffset() const { return Offset; }
 
     bool isExpansion() const { return IsExpansion; }
@@ -722,6 +729,10 @@ public:
 
   void clearIDTables();
 
+  /// Initialize this source manager suitably to replay the compilation
+  /// described by \p Old. Requires that \p Old outlive \p *this.
+  void initializeForReplay(const SourceManager &Old);
+
   DiagnosticsEngine &getDiagnostics() const { return Diag; }
 
   FileManager &getFileManager() const { return FileMgr; }
@@ -785,9 +796,8 @@ public:
   FileID createFileID(const FileEntry *SourceFile, SourceLocation IncludePos,
                       SrcMgr::CharacteristicKind FileCharacter,
                       int LoadedID = 0, unsigned LoadedOffset = 0) {
-    const SrcMgr::ContentCache *
-      IR = getOrCreateContentCache(SourceFile,
-                              /*isSystemFile=*/FileCharacter != SrcMgr::C_User);
+    const SrcMgr::ContentCache *IR =
+        getOrCreateContentCache(SourceFile, isSystem(FileCharacter));
     assert(IR && "getOrCreateContentCache() cannot return NULL");
     return createFileID(IR, IncludePos, FileCharacter, LoadedID, LoadedOffset);
   }
@@ -800,7 +810,22 @@ public:
                       SrcMgr::CharacteristicKind FileCharacter = SrcMgr::C_User,
                       int LoadedID = 0, unsigned LoadedOffset = 0,
                       SourceLocation IncludeLoc = SourceLocation()) {
-    return createFileID(createMemBufferContentCache(std::move(Buffer)),
+    return createFileID(
+        createMemBufferContentCache(Buffer.release(), /*DoNotFree*/ false),
+        IncludeLoc, FileCharacter, LoadedID, LoadedOffset);
+  }
+
+  enum UnownedTag { Unowned };
+
+  /// \brief Create a new FileID that represents the specified memory buffer.
+  ///
+  /// This does no caching of the buffer and takes ownership of the
+  /// MemoryBuffer, so only pass a MemoryBuffer to this once.
+  FileID createFileID(UnownedTag, llvm::MemoryBuffer *Buffer,
+                      SrcMgr::CharacteristicKind FileCharacter = SrcMgr::C_User,
+                      int LoadedID = 0, unsigned LoadedOffset = 0,
+                      SourceLocation IncludeLoc = SourceLocation()) {
+    return createFileID(createMemBufferContentCache(Buffer, /*DoNotFree*/true),
                         IncludeLoc, FileCharacter, LoadedID, LoadedOffset);
   }
 
@@ -865,7 +890,7 @@ public:
                             const FileEntry *NewFile);
 
   /// \brief Returns true if the file contents have been overridden.
-  bool isFileOverridden(const FileEntry *File) {
+  bool isFileOverridden(const FileEntry *File) const {
     if (OverriddenFilesInfo) {
       if (OverriddenFilesInfo->OverriddenFilesWithBuffer.count(File))
         return true;
@@ -1356,7 +1381,7 @@ public:
 
   /// \brief Returns if a SourceLocation is in a system header.
   bool isInSystemHeader(SourceLocation Loc) const {
-    return getFileCharacteristic(Loc) != SrcMgr::C_User;
+    return isSystem(getFileCharacteristic(Loc));
   }
 
   /// \brief Returns if a SourceLocation is in an "extern C" system header.
@@ -1399,10 +1424,9 @@ public:
   /// specified by Loc.
   ///
   /// If FilenameID is -1, it is considered to be unspecified.
-  void AddLineNote(SourceLocation Loc, unsigned LineNo, int FilenameID);
   void AddLineNote(SourceLocation Loc, unsigned LineNo, int FilenameID,
                    bool IsFileEntry, bool IsFileExit,
-                   bool IsSystemHeader, bool IsExternCHeader);
+                   SrcMgr::CharacteristicKind FileKind);
 
   /// \brief Determine if the source manager has a line table.
   bool hasLineTable() const { return LineTable != nullptr; }
@@ -1474,6 +1498,17 @@ public:
   /// \returns true if LHS source location comes before RHS, false otherwise.
   bool isBeforeInTranslationUnit(SourceLocation LHS, SourceLocation RHS) const;
 
+  /// \brief Determines whether the two decomposed source location is in the
+  ///        same translation unit. As a byproduct, it also calculates the order
+  ///        of the source locations in case they are in the same TU.
+  ///
+  /// \returns Pair of bools the first component is true if the two locations
+  ///          are in the same TU. The second bool is true if the first is true
+  ///          and \p LOffs is before \p ROffs.
+  std::pair<bool, bool>
+  isInTheSameTranslationUnit(std::pair<FileID, unsigned> &LOffs,
+                             std::pair<FileID, unsigned> &ROffs) const;
+
   /// \brief Determines the order of 2 source locations in the "source location
   /// address space".
   bool isBeforeInSLocAddrSpace(SourceLocation LHS, SourceLocation RHS) const {
@@ -1492,6 +1527,14 @@ public:
       return LHSOffset < RHS;
 
     return LHSLoaded;
+  }
+
+  /// Return true if the Point is within Start and End.
+  bool isPointWithin(SourceLocation Location, SourceLocation Start,
+                     SourceLocation End) const {
+    return Location == Start || Location == End ||
+           (isBeforeInTranslationUnit(Start, Location) &&
+            isBeforeInTranslationUnit(Location, End));
   }
 
   // Iterators over FileInfos.
@@ -1665,7 +1708,7 @@ private:
 
   /// \brief Create a new ContentCache for the specified  memory buffer.
   const SrcMgr::ContentCache *
-  createMemBufferContentCache(std::unique_ptr<llvm::MemoryBuffer> Buf);
+  createMemBufferContentCache(llvm::MemoryBuffer *Buf, bool DoNotFree);
 
   FileID getFileIDSlow(unsigned SLocOffset) const;
   FileID getFileIDLocal(unsigned SLocOffset) const;

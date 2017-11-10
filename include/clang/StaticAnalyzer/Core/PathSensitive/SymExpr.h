@@ -42,6 +42,12 @@ private:
 protected:
   SymExpr(Kind k) : K(k) {}
 
+  static bool isValidTypeForSymbol(QualType T) {
+    // FIXME: Depending on whether we choose to deprecate structural symbols,
+    // this may become much stricter.
+    return !T.isNull() && !T->isVoidType();
+  }
+
 public:
   virtual ~SymExpr() {}
 
@@ -92,6 +98,12 @@ public:
   virtual const MemRegion *getOriginRegion() const { return nullptr; }
 };
 
+inline raw_ostream &operator<<(raw_ostream &os,
+                               const clang::ento::SymExpr *SE) {
+  SE->dumpToStream(os);
+  return os;
+}
+
 typedef const SymExpr *SymbolRef;
 typedef SmallVector<SymbolRef, 2> SymbolRefSmallVectorTy;
 
@@ -103,7 +115,9 @@ class SymbolData : public SymExpr {
   const SymbolID Sym;
 
 protected:
-  SymbolData(Kind k, SymbolID sym) : SymExpr(k), Sym(sym) {}
+  SymbolData(Kind k, SymbolID sym) : SymExpr(k), Sym(sym) {
+    assert(classof(this));
+  }
 
 public:
   ~SymbolData() override {}

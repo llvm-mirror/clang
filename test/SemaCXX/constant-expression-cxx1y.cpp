@@ -982,3 +982,42 @@ constexpr void PR28739(int n) { // expected-error {{never produces a constant}}
   int *p = &n;
   p += (__int128)(unsigned long)-1; // expected-note {{cannot refer to element 18446744073709551615 of non-array object in a constant expression}}
 }
+
+constexpr void Void(int n) {
+  void(n + 1);
+  void();
+}
+constexpr int void_test = (Void(0), 1);
+
+namespace PR19741 {
+constexpr void addone(int &m) { m++; }
+
+struct S {
+  int m = 0;
+  constexpr S() { addone(m); }
+};
+constexpr bool evalS() {
+  constexpr S s;
+  return s.m == 1;
+}
+static_assert(evalS(), "");
+
+struct Nested {
+  struct First { int x = 42; };
+  union {
+    First first;
+    int second;
+  };
+  int x;
+  constexpr Nested(int x) : first(), x(x) { x = 4; }
+  constexpr Nested() : Nested(42) {
+    addone(first.x);
+    x = 3;
+  }
+};
+constexpr bool evalNested() {
+  constexpr Nested N;
+  return N.first.x == 43;
+}
+static_assert(evalNested(), "");
+} // namespace PR19741

@@ -39,6 +39,13 @@ void AddRunTimeLibs(const ToolChain &TC, const Driver &D,
                     llvm::opt::ArgStringList &CmdArgs,
                     const llvm::opt::ArgList &Args);
 
+void AddOpenMPLinkerScript(const ToolChain &TC, Compilation &C,
+                           const InputInfo &Output,
+                           const InputInfoList &Inputs,
+                           const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs,
+                           const JobAction &JA);
+
 const char *SplitDebugName(const llvm::opt::ArgList &Args,
                            const InputInfo &Input);
 
@@ -59,10 +66,13 @@ void AddAssemblerKPIC(const ToolChain &ToolChain,
 
 void addArchSpecificRPath(const ToolChain &TC, const llvm::opt::ArgList &Args,
                           llvm::opt::ArgStringList &CmdArgs);
-void addOpenMPRuntime(llvm::opt::ArgStringList &CmdArgs, const ToolChain &TC,
-                      const llvm::opt::ArgList &Args);
+/// Returns true, if an OpenMP runtime has been added.
+bool addOpenMPRuntime(llvm::opt::ArgStringList &CmdArgs, const ToolChain &TC,
+                      const llvm::opt::ArgList &Args,
+                      bool IsOffloadingHost = false, bool GompNeedsRT = false);
 
 llvm::opt::Arg *getLastProfileUseArg(const llvm::opt::ArgList &Args);
+llvm::opt::Arg *getLastProfileSampleUseArg(const llvm::opt::ArgList &Args);
 
 bool isObjCAutoRefCount(const llvm::opt::ArgList &Args);
 

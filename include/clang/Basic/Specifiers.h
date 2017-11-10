@@ -52,6 +52,7 @@ namespace clang {
     TST_int,
     TST_int128,
     TST_half,         // OpenCL half, ARM NEON __fp16
+    TST_Float16,      // C11 extension ISO/IEC TS 18661-3
     TST_float,
     TST_double,
     TST_float128,
@@ -236,7 +237,7 @@ namespace clang {
     CC_X86ThisCall, // __attribute__((thiscall))
     CC_X86VectorCall, // __attribute__((vectorcall))
     CC_X86Pascal,   // __attribute__((pascal))
-    CC_X86_64Win64, // __attribute__((ms_abi))
+    CC_Win64,       // __attribute__((ms_abi))
     CC_X86_64SysV,  // __attribute__((sysv_abi))
     CC_X86RegCall, // __attribute__((regcall))
     CC_AAPCS,       // __attribute__((pcs("aapcs")))

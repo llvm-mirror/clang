@@ -43,6 +43,10 @@ public:
 
   /// \brief Replaces the whitespace in front of \p Tok. Only call once for
   /// each \c AnnotatedToken.
+  ///
+  /// \p StartOfTokenColumn is the column at which the token will start after
+  /// this replacement. It is needed for determining how \p Spaces is turned
+  /// into tabs and spaces for some format styles.
   void replaceWhitespace(FormatToken &Tok, unsigned Newlines, unsigned Spaces,
                          unsigned StartOfTokenColumn,
                          bool InPPDirective = false);
@@ -52,6 +56,8 @@ public:
   /// Needs to be called for every token for which \c replaceWhitespace
   /// was not called.
   void addUntouchableToken(const FormatToken &Tok, bool InPPDirective);
+
+  llvm::Error addReplacement(const tooling::Replacement &Replacement);
 
   /// \brief Inserts or replaces whitespace in the middle of a token.
   ///
@@ -149,6 +155,13 @@ public:
     // the alignment process.
     const Change *StartOfBlockComment;
     int IndentationOffset;
+
+    // A combination of indent level and nesting level, which are used in
+    // tandem to compute lexical scope, for the purposes of deciding
+    // when to stop consecutive alignment runs.
+    std::pair<unsigned, unsigned> indentAndNestingLevel() const {
+      return std::make_pair(Tok->IndentLevel, Tok->NestingLevel);
+    }
   };
 
 private:
@@ -183,9 +196,9 @@ private:
   /// \brief Stores \p Text as the replacement for the whitespace in \p Range.
   void storeReplacement(SourceRange Range, StringRef Text);
   void appendNewlineText(std::string &Text, unsigned Newlines);
-  void appendNewlineText(std::string &Text, unsigned Newlines,
-                         unsigned PreviousEndOfTokenColumn,
-                         unsigned EscapedNewlineColumn);
+  void appendEscapedNewlineText(std::string &Text, unsigned Newlines,
+                                unsigned PreviousEndOfTokenColumn,
+                                unsigned EscapedNewlineColumn);
   void appendIndentText(std::string &Text, unsigned IndentLevel,
                         unsigned Spaces, unsigned WhitespaceStartColumn);
 

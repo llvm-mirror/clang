@@ -29,6 +29,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
@@ -100,7 +101,6 @@ clang::CompilerInvocation *newInvocation(
       *Diagnostics);
   Invocation->getFrontendOpts().DisableFree = false;
   Invocation->getCodeGenOpts().DisableFree = false;
-  Invocation->getDependencyOutputOpts() = DependencyOutputOptions();
   return Invocation;
 }
 
@@ -140,9 +140,11 @@ bool runToolOnCodeWithArgs(
   OverlayFileSystem->pushOverlay(InMemoryFileSystem);
   llvm::IntrusiveRefCntPtr<FileManager> Files(
       new FileManager(FileSystemOptions(), OverlayFileSystem));
-  ToolInvocation Invocation(getSyntaxOnlyToolArgs(ToolName, Args, FileNameRef),
-                            ToolAction, Files.get(),
-                            std::move(PCHContainerOps));
+  ArgumentsAdjuster Adjuster = getClangStripDependencyFileAdjuster();
+  ToolInvocation Invocation(
+      getSyntaxOnlyToolArgs(ToolName, Adjuster(Args, FileNameRef), FileNameRef),
+      ToolAction, Files.get(),
+      std::move(PCHContainerOps));
 
   SmallString<1024> CodeStorage;
   InMemoryFileSystem->addFile(FileNameRef, 0,
@@ -189,11 +191,12 @@ void addTargetAndModeForProgramName(std::vector<std::string> &CommandLine,
     }
     auto TargetMode =
         clang::driver::ToolChain::getTargetAndModeFromProgramName(InvokedAs);
-    if (!AlreadyHasMode && !TargetMode.second.empty()) {
-      CommandLine.insert(++CommandLine.begin(), TargetMode.second);
+    if (!AlreadyHasMode && TargetMode.DriverMode) {
+      CommandLine.insert(++CommandLine.begin(), TargetMode.DriverMode);
     }
-    if (!AlreadyHasTarget && !TargetMode.first.empty()) {
-      CommandLine.insert(++CommandLine.begin(), {"-target", TargetMode.first});
+    if (!AlreadyHasTarget && TargetMode.TargetIsValid) {
+      CommandLine.insert(++CommandLine.begin(), {"-target",
+                                                 TargetMode.TargetPrefix});
     }
   }
 }
@@ -260,6 +263,8 @@ bool ToolInvocation::run() {
   Driver->setCheckInputsExist(false);
   const std::unique_ptr<clang::driver::Compilation> Compilation(
       Driver->BuildCompilation(llvm::makeArrayRef(Argv)));
+  if (!Compilation)
+    return false;
   const llvm::opt::ArgStringList *const CC1Args = getCC1Arguments(
       &Diagnostics, Compilation.get());
   if (!CC1Args) {
@@ -333,6 +338,7 @@ ClangTool::ClangTool(const CompilationDatabase &Compilations,
   OverlayFileSystem->pushOverlay(InMemoryFileSystem);
   appendArgumentsAdjuster(getClangStripOutputAdjuster());
   appendArgumentsAdjuster(getClangSyntaxOnlyAdjuster());
+  appendArgumentsAdjuster(getClangStripDependencyFileAdjuster());
 }
 
 ClangTool::~ClangTool() {}
@@ -342,11 +348,7 @@ void ClangTool::mapVirtualFile(StringRef FilePath, StringRef Content) {
 }
 
 void ClangTool::appendArgumentsAdjuster(ArgumentsAdjuster Adjuster) {
-  if (ArgsAdjuster)
-    ArgsAdjuster =
-        combineAdjusters(std::move(ArgsAdjuster), std::move(Adjuster));
-  else
-    ArgsAdjuster = std::move(Adjuster);
+  ArgsAdjuster = combineAdjusters(std::move(ArgsAdjuster), std::move(Adjuster));
 }
 
 void ClangTool::clearArgumentsAdjusters() {
@@ -508,7 +510,8 @@ buildASTFromCode(const Twine &Code, const Twine &FileName,
 std::unique_ptr<ASTUnit> buildASTFromCodeWithArgs(
     const Twine &Code, const std::vector<std::string> &Args,
     const Twine &FileName, const Twine &ToolName,
-    std::shared_ptr<PCHContainerOperations> PCHContainerOps) {
+    std::shared_ptr<PCHContainerOperations> PCHContainerOps,
+    ArgumentsAdjuster Adjuster) {
   SmallString<16> FileNameStorage;
   StringRef FileNameRef = FileName.toNullTerminatedStringRef(FileNameStorage);
 
@@ -521,8 +524,10 @@ std::unique_ptr<ASTUnit> buildASTFromCodeWithArgs(
   OverlayFileSystem->pushOverlay(InMemoryFileSystem);
   llvm::IntrusiveRefCntPtr<FileManager> Files(
       new FileManager(FileSystemOptions(), OverlayFileSystem));
-  ToolInvocation Invocation(getSyntaxOnlyToolArgs(ToolName, Args, FileNameRef),
-                            &Action, Files.get(), std::move(PCHContainerOps));
+
+  ToolInvocation Invocation(
+      getSyntaxOnlyToolArgs(ToolName, Adjuster(Args, FileNameRef), FileNameRef),
+      &Action, Files.get(), std::move(PCHContainerOps));
 
   SmallString<1024> CodeStorage;
   InMemoryFileSystem->addFile(FileNameRef, 0,

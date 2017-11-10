@@ -632,6 +632,9 @@ protected:
   /// pointer, as opposed to inheriting one from a primary base class.
   bool HasOwnVFPtr;
 
+  /// \brief the flag of field offset changing due to packed attribute.
+  bool HasPackedField;
+
   typedef llvm::DenseMap<const CXXRecordDecl *, CharUnits> BaseOffsetsMapTy;
 
   /// Bases - base classes and their offsets in the record.
@@ -666,7 +669,7 @@ protected:
         NonVirtualSize(CharUnits::Zero()),
         NonVirtualAlignment(CharUnits::One()), PrimaryBase(nullptr),
         PrimaryBaseIsVirtual(false), HasOwnVFPtr(false),
-        FirstNearlyEmptyVBase(nullptr) {}
+        HasPackedField(false), FirstNearlyEmptyVBase(nullptr) {}
 
   void Layout(const RecordDecl *D);
   void Layout(const CXXRecordDecl *D);
@@ -1166,7 +1169,6 @@ ItaniumRecordLayoutBuilder::LayoutBase(const BaseSubobjectInfo *Base) {
   // Query the external layout to see if it provides an offset.
   bool HasExternalLayout = false;
   if (UseExternalLayout) {
-    llvm::DenseMap<const CXXRecordDecl *, CharUnits>::iterator Known;
     if (Base->IsVirtual)
       HasExternalLayout = External.getExternalNVBaseOffset(Base->Class, Offset);
     else
@@ -1729,7 +1731,7 @@ void ItaniumRecordLayoutBuilder::LayoutField(const FieldDecl *D,
     const ArrayType* ATy = Context.getAsArrayType(D->getType());
     FieldAlign = Context.getTypeAlignInChars(ATy->getElementType());
   } else if (const ReferenceType *RT = D->getType()->getAs<ReferenceType>()) {
-    unsigned AS = RT->getPointeeType().getAddressSpace();
+    unsigned AS = Context.getTargetAddressSpace(RT->getPointeeType());
     FieldSize = 
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(AS));
     FieldAlign = 
@@ -1847,7 +1849,6 @@ void ItaniumRecordLayoutBuilder::FinishLayout(const NamedDecl *D) {
   uint64_t UnpaddedSize = getSizeInBits() - UnfilledBitsInLastUnit;
   uint64_t UnpackedSizeInBits =
       llvm::alignTo(getSizeInBits(), Context.toBits(UnpackedAlignment));
-  CharUnits UnpackedSize = Context.toCharUnitsFromBits(UnpackedSizeInBits);
   uint64_t RoundedSize =
       llvm::alignTo(getSizeInBits(), Context.toBits(Alignment));
 
@@ -1882,10 +1883,11 @@ void ItaniumRecordLayoutBuilder::FinishLayout(const NamedDecl *D) {
           << (InBits ? 1 : 0); // (byte|bit)
     }
 
-    // Warn if we packed it unnecessarily. If the alignment is 1 byte don't
-    // bother since there won't be alignment issues.
-    if (Packed && UnpackedAlignment > CharUnits::One() && 
-        getSize() == UnpackedSize)
+    // Warn if we packed it unnecessarily, when the unpacked alignment is not
+    // greater than the one after packing, the size in bits doesn't change and
+    // the offset of each field is identical.
+    if (Packed && UnpackedAlignment <= Alignment &&
+        UnpackedSizeInBits == getSizeInBits() && !HasPackedField)
       Diag(D->getLocation(), diag::warn_unnecessary_packed)
           << Context.getTypeDeclType(RD);
   }
@@ -1977,13 +1979,10 @@ void ItaniumRecordLayoutBuilder::CheckFieldPadding(
           << Context.getTypeDeclType(D->getParent())
           << PadSize
           << (InBits ? 1 : 0); // (byte|bit)
-  }
-
-  // Warn if we packed it unnecessarily. If the alignment is 1 byte don't
-  // bother since there won't be alignment issues.
-  if (isPacked && UnpackedAlign > CharBitNum && Offset == UnpackedOffset)
-    Diag(D->getLocation(), diag::warn_unnecessary_packed)
-        << D->getIdentifier();
+ }
+ if (isPacked && Offset != UnpackedOffset) {
+   HasPackedField = true;
+ }
 }
 
 static const CXXMethodDecl *computeKeyFunction(ASTContext &Context,
@@ -2084,7 +2083,7 @@ static bool mustSkipTailPadding(TargetCXXABI ABI, const CXXRecordDecl *RD) {
     // rules, we should implement the restrictions about over-sized
     // bitfields:
     //
-    // http://mentorembedded.github.com/cxx-abi/abi.html#POD :
+    // http://itanium-cxx-abi.github.io/cxx-abi/abi.html#POD :
     //   In general, a type is considered a POD for the purposes of
     //   layout if it is a POD type (in the sense of ISO C++
     //   [basic.types]). However, a POD-struct or POD-union (in the
@@ -3071,6 +3070,41 @@ uint64_t ASTContext::getFieldOffset(const ValueDecl *VD) const {
   }
 
   return OffsetInBits;
+}
+
+uint64_t ASTContext::lookupFieldBitOffset(const ObjCInterfaceDecl *OID,
+                                          const ObjCImplementationDecl *ID,
+                                          const ObjCIvarDecl *Ivar) const {
+  const ObjCInterfaceDecl *Container = Ivar->getContainingInterface();
+
+  // FIXME: We should eliminate the need to have ObjCImplementationDecl passed
+  // in here; it should never be necessary because that should be the lexical
+  // decl context for the ivar.
+
+  // If we know have an implementation (and the ivar is in it) then
+  // look up in the implementation layout.
+  const ASTRecordLayout *RL;
+  if (ID && declaresSameEntity(ID->getClassInterface(), Container))
+    RL = &getASTObjCImplementationLayout(ID);
+  else
+    RL = &getASTObjCInterfaceLayout(Container);
+
+  // Compute field index.
+  //
+  // FIXME: The index here is closely tied to how ASTContext::getObjCLayout is
+  // implemented. This should be fixed to get the information from the layout
+  // directly.
+  unsigned Index = 0;
+
+  for (const ObjCIvarDecl *IVD = Container->all_declared_ivar_begin();
+       IVD; IVD = IVD->getNextIvar()) {
+    if (Ivar == IVD)
+      break;
+    ++Index;
+  }
+  assert(Index < RL->getFieldCount() && "Ivar is not inside record layout!");
+
+  return RL->getFieldOffset(Index);
 }
 
 /// getObjCLayout - Get or compute information about the layout of the

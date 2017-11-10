@@ -31,6 +31,8 @@
 
 // TCHECK: [[ENTTY:%.+]] = type { i8*, i8*, i{{32|64}}, i32, i32 }
 
+// CHECK-DAG: $[[REGFN:\.omp_offloading\..+]] = comdat
+
 // We have 6 target regions
 
 // CHECK-DAG: @{{.*}} = private constant i8 0
@@ -52,11 +54,11 @@
 // CHECK: [[ENTEND:@.+]] = external constant [[ENTTY]]
 // CHECK: [[DEVBEGIN:@.+]] = external constant i8
 // CHECK: [[DEVEND:@.+]] = external constant i8
-// CHECK: [[IMAGES:@.+]] = internal unnamed_addr constant [1 x [[DEVTY]]] [{{.+}} { i8* [[DEVBEGIN]], i8* [[DEVEND]], [[ENTTY]]* [[ENTBEGIN]], [[ENTTY]]* [[ENTEND]] }]
-// CHECK: [[DESC:@.+]] = internal constant [[DSCTY]] { i32 1, [[DEVTY]]* getelementptr inbounds ([1 x [[DEVTY]]], [1 x [[DEVTY]]]* [[IMAGES]], i32 0, i32 0), [[ENTTY]]* [[ENTBEGIN]], [[ENTTY]]* [[ENTEND]] }
+// CHECK: [[IMAGES:@.+]] = internal unnamed_addr constant [1 x [[DEVTY]]] [{{.+}} { i8* [[DEVBEGIN]], i8* [[DEVEND]], [[ENTTY]]* [[ENTBEGIN]], [[ENTTY]]* [[ENTEND]] }], comdat($[[REGFN]])
+// CHECK: [[DESC:@.+]] = internal constant [[DSCTY]] { i32 1, [[DEVTY]]* getelementptr inbounds ([1 x [[DEVTY]]], [1 x [[DEVTY]]]* [[IMAGES]], i32 0, i32 0), [[ENTTY]]* [[ENTBEGIN]], [[ENTTY]]* [[ENTEND]] }, comdat($[[REGFN]])
 
 // Check target registration is registered as a Ctor.
-// CHECK: appending global [1 x { i32, void ()*, i8* }] [{ i32, void ()*, i8* } { i32 0, void ()* bitcast (void (i8*)* [[REGFN:@.+]] to void ()*), i8* null }]
+// CHECK: appending global [1 x { i32, void ()*, i8* }] [{ i32, void ()*, i8* } { i32 0, void ()* bitcast (void (i8*)* @[[REGFN]] to void ()*), i8* bitcast (void (i8*)* @[[REGFN]] to i8*) }]
 
 
 template<typename tx>
@@ -146,9 +148,7 @@ int bar(int n){
 // CHECK:       [[THREADS:%.+]] = load i32, i32* [[CAPE_ADDR]], align
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 3, {{.*}}, i32 1, i32 [[THREADS]])
-// CHECK:       store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK:       [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK:       br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]
@@ -159,9 +159,7 @@ int bar(int n){
 //
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 1, {{.+}}, i32 1, i32 1024)
-// CHECK:       store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK:       [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK:       br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]
@@ -189,9 +187,7 @@ int bar(int n){
 // CHECK:       [[THREADS:%.+]] = load i32, i32* [[CAPE_ADDR]], align
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 1, {{.*}}, i32 1, i32 [[THREADS]])
-// CHECK:       store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK:       [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK:       br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]
@@ -212,9 +208,7 @@ int bar(int n){
 // CHECK:       [[THREADS:%.+]] = load i32, i32* [[CAPE_ADDR]], align
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 1, {{.*}}, i32 1, i32 [[THREADS]])
-// CHECK:       store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK:       [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK:       br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]
@@ -232,9 +226,7 @@ int bar(int n){
 // CHECK: define {{.*}}[[FTEMPLATE]]
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 0, {{.*}}, i32 1, i32 20)
-// CHECK-NEXT:  store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK-NEXT:  [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK-NEXT:  [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK-NEXT:  [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK-NEXT:  br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]
@@ -256,9 +248,7 @@ int bar(int n){
 // CHECK:       [[THREADS:%.+]] = sext i16 [[T]] to i32
 //
 // CHECK-DAG:   [[RET:%.+]] = call i32 @__tgt_target_teams(i32 -1, i8* @{{[^,]+}}, i32 3, {{.*}}, i32 1, i32 [[THREADS]])
-// CHECK:       store i32 [[RET]], i32* [[RHV:%.+]], align
-// CHECK:       [[RET2:%.+]] = load i32, i32* [[RHV]], align
-// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET2]], 0
+// CHECK:       [[ERROR:%.+]] = icmp ne i32 [[RET]], 0
 // CHECK:       br i1 [[ERROR]], label %[[FAIL:.+]], label %[[END:[^,]+]]
 //
 // CHECK:       [[FAIL]]

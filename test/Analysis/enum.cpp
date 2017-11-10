@@ -24,3 +24,46 @@ void testCasting(int i) {
     clang_analyzer_eval(j == 0); // expected-warning{{FALSE}}
   }
 }
+
+enum class EnumBool : bool {
+  F = false,
+  T = true
+};
+
+bool testNoCrashOnSwitchEnumBool(EnumBool E) {
+  switch (E) {
+  case EnumBool::F:
+    return false;
+  }
+  return true;
+}
+
+bool testNoCrashOnSwitchEnumBoolConstant() {
+  EnumBool E = EnumBool::F;
+  switch (E) {
+    case EnumBool::F:
+      return false; 
+  }
+  return true; 
+}
+
+typedef __INTPTR_TYPE__ intptr_t;
+bool testNoCrashOnSwitchEnumBoolConstantCastedFromNullptr() {
+  EnumBool E = static_cast<EnumBool>((intptr_t)nullptr);
+  switch (E) {
+  case EnumBool::F:
+    return false;
+  }
+  return true;
+}
+
+bool testNoCrashOnSwitchEnumBoolConstantCastedFromPtr() {
+  int X;
+  intptr_t P = (intptr_t)&X;
+  EnumBool E = static_cast<EnumBool>(P);
+  switch (E) {
+  case EnumBool::F:
+    return false;
+  }
+  return true;
+}

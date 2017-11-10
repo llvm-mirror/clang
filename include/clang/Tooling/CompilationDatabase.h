@@ -60,16 +60,6 @@ struct CompileCommand {
 
   /// The output file associated with the command.
   std::string Output;
-
-  /// \brief An optional mapping from each file's path to its content for all
-  /// files needed for the compilation that are not available via the file
-  /// system.
-  ///
-  /// Note that a tool implementation is required to fall back to the file
-  /// system if a source file is not provided in the mapped sources, as
-  /// compilation databases will usually not provide all files in mapped sources
-  /// for performance reasons.
-  std::vector<std::pair<std::string, std::string> > MappedSources;
 };
 
 /// \brief Interface for compilation databases.
@@ -114,7 +104,7 @@ public:
   /// \brief Returns all compile commands in which the specified file was
   /// compiled.
   ///
-  /// This includes compile comamnds that span multiple source files.
+  /// This includes compile commands that span multiple source files.
   /// For example, consider a project with the following compilations:
   /// $ clang++ -o test a.cc b.cc t.cc
   /// $ clang++ -o production a.cc b.cc -DPRODUCTION
@@ -186,10 +176,11 @@ public:
   /// the number of arguments before "--", if "--" was found in the argument
   /// list.
   /// \param Argv Points to the command line arguments.
+  /// \param ErrorMsg Contains error text if the function returns null pointer.
   /// \param Directory The base directory used in the FixedCompilationDatabase.
-  static FixedCompilationDatabase *loadFromCommandLine(int &Argc,
-                                                       const char *const *Argv,
-                                                       Twine Directory = ".");
+  static std::unique_ptr<FixedCompilationDatabase> loadFromCommandLine(
+      int &Argc, const char *const *Argv, std::string &ErrorMsg,
+      Twine Directory = ".");
 
   /// \brief Constructs a compilation data base from a specified directory
   /// and command line.

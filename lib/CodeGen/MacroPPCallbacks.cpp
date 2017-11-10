@@ -26,8 +26,8 @@ void MacroPPCallbacks::writeMacroDefinition(const IdentifierInfo &II,
 
   if (MI.isFunctionLike()) {
     Name << '(';
-    if (!MI.arg_empty()) {
-      MacroInfo::arg_iterator AI = MI.arg_begin(), E = MI.arg_end();
+    if (!MI.param_empty()) {
+      MacroInfo::param_iterator AI = MI.param_begin(), E = MI.param_end();
       for (; AI + 1 != E; ++AI) {
         Name << (*AI)->getName();
         Name << ',';
@@ -198,7 +198,8 @@ void MacroPPCallbacks::MacroDefined(const Token &MacroNameTok,
 }
 
 void MacroPPCallbacks::MacroUndefined(const Token &MacroNameTok,
-                                      const MacroDefinition &MD) {
+                                      const MacroDefinition &MD,
+                                      const MacroDirective *Undef) {
   IdentifierInfo *Id = MacroNameTok.getIdentifierInfo();
   SourceLocation location = getCorrectLocation(MacroNameTok.getLocation());
   Gen->getCGDebugInfo()->CreateMacro(getCurrentScope(),

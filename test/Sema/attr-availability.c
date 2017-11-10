@@ -21,6 +21,9 @@ ATSFontGetPostScriptName(int flags) __attribute__((availability(macosx,introduce
 extern void
 PartiallyAvailable() __attribute__((availability(macosx,introduced=10.8)));
 
+#ifdef WARN_PARTIAL
+// expected-note@+2 2 {{marked partial here}}
+#endif
 enum __attribute__((availability(macosx,introduced=10.8))) PartialEnum {
   kPartialEnumConstant,
 };
@@ -30,16 +33,24 @@ void test_10095131() {
   ATSFontGetPostScriptName(100); // expected-error {{'ATSFontGetPostScriptName' is unavailable: obsoleted in macOS 9.0 - use ATSFontGetFullPostScriptName}}
 
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'PartiallyAvailable' in an @available check to silence this warning}}
+  // expected-warning@+2 {{is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'PartiallyAvailable' in a __builtin_available check to silence this warning}}
 #endif
   PartiallyAvailable();
 }
 
+#ifdef WARN_PARTIAL
+// FIXME: This note should point to the declaration with the availability
+// attribute.
+// expected-note@+2 {{marked partial here}}
+#endif
 extern void PartiallyAvailable() ;
 void with_redeclaration() {
-  PartiallyAvailable();  // Don't warn.
-
-  // enums should never warn.
+#ifdef WARN_PARTIAL
+  // expected-warning@+4 {{'PartiallyAvailable' is only available on macOS 10.8 or newer}} expected-note@+4 {{__builtin_available}}
+  // expected-warning@+4 {{'PartialEnum' is only available on macOS 10.8 or newer}} expected-note@+4 {{__builtin_available}}
+  // expected-warning@+3 {{'kPartialEnumConstant' is only available on macOS 10.8 or newer}} expected-note@+3 {{__builtin_available}}
+#endif
+  PartiallyAvailable();
   enum PartialEnum p = kPartialEnumConstant;
 }
 
@@ -74,7 +85,7 @@ extern int x;
 
 void f8() {
   int (^b)(int);
-  b = ^ (int i) __attribute__((availability(macosx,introduced=10.2))) { return 1; }; // expected-warning {{'availability' attribute ignored}}
+  b = ^ (int i) __attribute__((availability(macosx,introduced=10.2))) { return 1; }; // expected-warning {{'availability' attribute only applies to named declarations}}
 }
 
 extern int x2 __attribute__((availability(macosx,introduced=10.2))); // expected-note {{previous attribute is here}}
@@ -86,13 +97,13 @@ enum Original {
   OriginalUnavailable __attribute__((availability(macosx, unavailable))) // expected-note + {{'OriginalUnavailable' has been explicitly marked unavailable here}}
 };
 
-enum AllDeprecated {
-  AllDeprecatedCase, // expected-note + {{'AllDeprecatedCase' has been explicitly marked deprecated here}}
+enum AllDeprecated { // expected-note + {{'AllDeprecated' has been explicitly marked deprecated here}}
+  AllDeprecatedCase,
   AllDeprecatedUnavailable __attribute__((availability(macosx, unavailable))) // expected-note + {{'AllDeprecatedUnavailable' has been explicitly marked unavailable here}}
 } __attribute__((availability(macosx, deprecated=10.2)));
 
-enum AllUnavailable {
-  AllUnavailableCase, // expected-note + {{'AllUnavailableCase' has been explicitly marked unavailable here}}
+enum AllUnavailable { // expected-note + {{'AllUnavailable' has been explicitly marked unavailable here}}
+  AllUnavailableCase,
 } __attribute__((availability(macosx, unavailable)));
 
 enum User {

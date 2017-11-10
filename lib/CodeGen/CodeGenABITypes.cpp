@@ -17,6 +17,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CodeGen/CodeGenABITypes.h"
+#include "CGRecordLayout.h"
 #include "CodeGenModule.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
@@ -63,4 +64,26 @@ CodeGen::arrangeFreeFunctionCall(CodeGenModule &CGM,
   return CGM.getTypes().arrangeLLVMFunctionInfo(
       returnType, /*IsInstanceMethod=*/false, /*IsChainCall=*/false, argTypes,
       info, {}, args);
+}
+
+llvm::FunctionType *
+CodeGen::convertFreeFunctionType(CodeGenModule &CGM, const FunctionDecl *FD) {
+  assert(FD != nullptr && "Expected a non-null function declaration!");
+  llvm::Type *T = CGM.getTypes().ConvertFunctionType(FD->getType(), FD);
+
+  if (auto FT = dyn_cast<llvm::FunctionType>(T))
+    return FT;
+
+  return nullptr;
+}
+
+llvm::Type *
+CodeGen::convertTypeForMemory(CodeGenModule &CGM, QualType T) {
+  return CGM.getTypes().ConvertTypeForMem(T);
+}
+
+unsigned CodeGen::getLLVMFieldNumber(CodeGenModule &CGM,
+                                     const RecordDecl *RD,
+                                     const FieldDecl *FD) {
+  return CGM.getTypes().getCGRecordLayout(RD).getLLVMFieldNo(FD);
 }

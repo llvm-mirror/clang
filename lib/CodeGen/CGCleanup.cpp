@@ -51,8 +51,7 @@ DominatingValue<RValue>::saved_type::save(CodeGenFunction &CGF, RValue rv) {
   if (rv.isComplex()) {
     CodeGenFunction::ComplexPairTy V = rv.getComplexVal();
     llvm::Type *ComplexTy =
-      llvm::StructType::get(V.first->getType(), V.second->getType(),
-                            (void*) nullptr);
+        llvm::StructType::get(V.first->getType(), V.second->getType());
     Address addr = CGF.CreateDefaultAlignTempAlloca(ComplexTy, "saved-complex");
     CGF.Builder.CreateStore(V.first,
                             CGF.Builder.CreateStructGEP(addr, 0, CharUnits()));
@@ -449,6 +448,13 @@ void CodeGenFunction::PopCleanupBlocks(
     auto *Inst = dyn_cast_or_null<llvm::Instruction>(*ReloadedValue);
     if (!Inst)
       continue;
+
+    // Don't spill static allocas, they dominate all cleanups. These are created
+    // by binding a reference to a local variable or temporary.
+    auto *AI = dyn_cast<llvm::AllocaInst>(Inst);
+    if (AI && AI->isStaticAlloca())
+      continue;
+
     Address Tmp =
         CreateDefaultAlignTempAlloca(Inst->getType(), "tmp.exprcleanup");
 
@@ -609,7 +615,7 @@ static void destroyOptimisticNormalEntry(CodeGenFunction &CGF,
     llvm::SwitchInst *si = cast<llvm::SwitchInst>(use.getUser());
     if (si->getNumCases() == 1 && si->getDefaultDest() == unreachableBB) {
       // Replace the switch with a branch.
-      llvm::BranchInst::Create(si->case_begin().getCaseSuccessor(), si);
+      llvm::BranchInst::Create(si->case_begin()->getCaseSuccessor(), si);
 
       // The switch operand is a load from the cleanup-dest alloca.
       llvm::LoadInst *condition = cast<llvm::LoadInst>(si->getCondition());
@@ -1090,7 +1096,7 @@ void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest) {
         break;
       }
 
-      // Otherwise, tell the scope that there's a jump propoagating
+      // Otherwise, tell the scope that there's a jump propagating
       // through it.  If this isn't new information, all the rest of
       // the work has been done before.
       if (!Scope.addBranchThrough(Dest.getBlock()))

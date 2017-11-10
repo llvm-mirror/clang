@@ -179,3 +179,33 @@ void TestExternalSourceSymbolAttr5()
 __attribute__((external_source_symbol(generated_declaration, defined_in="module", language="Swift")));
 // CHECK: FunctionDecl{{.*}} TestExternalSourceSymbolAttr5
 // CHECK-NEXT: ExternalSourceSymbolAttr{{.*}} "Swift" "module" GeneratedDeclaration
+
+namespace TestNoEscape {
+  void noescapeFunc(int *p0, __attribute__((noescape)) int *p1) {}
+  // CHECK: `-FunctionDecl{{.*}} noescapeFunc 'void (int *, __attribute__((noescape)) int *)'
+  // CHECK-NEXT: ParmVarDecl
+  // CHECK-NEXT: ParmVarDecl
+  // CHECK-NEXT: NoEscapeAttr
+}
+
+namespace TestSuppress {
+  [[gsl::suppress("at-namespace")]];
+  // CHECK: NamespaceDecl{{.*}} TestSuppress
+  // CHECK-NEXT: EmptyDecl{{.*}}
+  // CHECK-NEXT: SuppressAttr{{.*}} at-namespace
+  [[gsl::suppress("on-decl")]]
+  void TestSuppressFunction();
+  // CHECK: FunctionDecl{{.*}} TestSuppressFunction
+  // CHECK-NEXT SuppressAttr{{.*}} on-decl
+
+  void f() {
+      int *i;
+
+      [[gsl::suppress("on-stmt")]] {
+      // CHECK: AttributedStmt
+      // CHECK-NEXT: SuppressAttr{{.*}} on-stmt
+      // CHECK-NEXT: CompoundStmt
+        i = reinterpret_cast<int*>(7);
+      }
+    }
+}

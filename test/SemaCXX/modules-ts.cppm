@@ -1,24 +1,31 @@
-// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -o %t.pcm -verify -DTEST=0
-// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -o %t.pcm -verify -Dmodule=int -DTEST=1
-// RUN: not %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -fmodule-file=%t.pcm -o %t.pcm -DTEST=2 2>&1 | FileCheck %s --check-prefix=CHECK-2
-// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -fmodule-file=%t.pcm -o %t.pcm -verify -Dfoo=bar -DTEST=3
+// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -o %t.0.pcm -verify -DTEST=0
+// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -o %t.1.pcm -verify -DTEST=1
+// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -fmodule-file=%t.0.pcm -o %t.2.pcm -verify -DTEST=2
+// RUN:     %clang_cc1 -std=c++1z -fmodules-ts -emit-module-interface %s -fmodule-file=%t.0.pcm -o %t.3.pcm -verify -Dfoo=bar -DTEST=3
 
 #if TEST == 0
 // expected-no-diagnostics
 #endif
 
-module foo;
-#if TEST == 1
-// expected-error@-2 {{expected module declaration at start of module interface}}
-#elif TEST == 2
-// CHECK-2: error: redefinition of module 'foo'
+export module foo;
+#if TEST == 2
+// expected-error@-2 {{redefinition of module 'foo'}}
+// expected-note@modules-ts.cppm:* {{loaded from}}
 #endif
 
-static int m; // ok, internal linkage, so no redefinition error
-int n;
-#if TEST == 3
+static int m;
+#if TEST == 2
 // expected-error@-2 {{redefinition of '}}
-// expected-note@-3 {{previous}}
+// expected-note@-3 {{unguarded header; consider using #ifdef guards or #pragma once}}
+// FIXME: We should drop the "header from" in this diagnostic.
+// expected-note-re@modules-ts.cppm:1 {{'{{.*}}modules-ts.cppm' included multiple times, additional include site in header from module 'foo'}}
+#endif
+int n;
+#if TEST == 2
+// expected-error@-2 {{redefinition of '}}
+// expected-note@-3 {{unguarded header; consider using #ifdef guards or #pragma once}}
+// FIXME: We should drop the "header from" in this diagnostic.
+// expected-note-re@modules-ts.cppm:1 {{'{{.*}}modules-ts.cppm' included multiple times, additional include site in header from module 'foo'}}
 #endif
 
 #if TEST == 0
@@ -53,7 +60,7 @@ int use_b = b;
 int use_n = n; // FIXME: this should not be visible, because it is not exported
 
 extern int n;
-static_assert(&n == p); // FIXME: these are not the same entity
+static_assert(&n != p);
 #endif
 
 

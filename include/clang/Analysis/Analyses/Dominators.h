@@ -14,7 +14,7 @@
 #ifndef LLVM_CLANG_ANALYSIS_ANALYSES_DOMINATORS_H
 #define LLVM_CLANG_ANALYSIS_ANALYSES_DOMINATORS_H
 
-#include "clang/Analysis/AnalysisContext.h"
+#include "clang/Analysis/AnalysisDeclContext.h"
 #include "clang/Analysis/CFG.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/Support/GenericDomTree.h"
@@ -38,15 +38,15 @@ typedef llvm::DomTreeNodeBase<CFGBlock> DomTreeNode;
 class DominatorTree : public ManagedAnalysis {
   virtual void anchor();
 public:
-  llvm::DominatorTreeBase<CFGBlock>* DT;
+  llvm::DomTreeBase<CFGBlock>* DT;
 
   DominatorTree() {
-    DT = new llvm::DominatorTreeBase<CFGBlock>(false);
+    DT = new llvm::DomTreeBase<CFGBlock>();
   }
 
   ~DominatorTree() override { delete DT; }
 
-  llvm::DominatorTreeBase<CFGBlock>& getBase() { return *DT; }
+  llvm::DomTreeBase<CFGBlock>& getBase() { return *DT; }
 
   /// \brief This method returns the root CFGBlock of the dominators tree.
   ///

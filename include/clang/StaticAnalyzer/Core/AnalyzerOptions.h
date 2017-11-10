@@ -205,9 +205,18 @@ private:
   /// Controls which C++ member functions will be considered for inlining.
   CXXInlineableMemberKind CXXMemberInliningMode;
   
+  /// \sa includeImplicitDtorsInCFG
+  Optional<bool> IncludeImplicitDtorsInCFG;
+
   /// \sa includeTemporaryDtorsInCFG
   Optional<bool> IncludeTemporaryDtorsInCFG;
-  
+
+  /// \sa IncludeLifetimeInCFG
+  Optional<bool> IncludeLifetimeInCFG;
+
+  /// \sa IncludeLoopExitInCFG
+  Optional<bool> IncludeLoopExitInCFG;
+
   /// \sa mayInlineCXXStandardLibrary
   Optional<bool> InlineCXXStandardLibrary;
   
@@ -268,6 +277,9 @@ private:
 
   /// \sa shouldWidenLoops
   Optional<bool> WidenLoops;
+
+  /// \sa shouldUnrollLoops
+  Optional<bool> UnrollLoops;
 
   /// \sa shouldDisplayNotesAsEvents
   Optional<bool> DisplayNotesAsEvents;
@@ -394,6 +406,27 @@ public:
   /// This is controlled by the 'cfg-temporary-dtors' config option, which
   /// accepts the values "true" and "false".
   bool includeTemporaryDtorsInCFG();
+
+  /// Returns whether or not implicit destructors for C++ objects should
+  /// be included in the CFG.
+  ///
+  /// This is controlled by the 'cfg-implicit-dtors' config option, which
+  /// accepts the values "true" and "false".
+  bool includeImplicitDtorsInCFG();
+
+  /// Returns whether or not end-of-lifetime information should be included in
+  /// the CFG.
+  ///
+  /// This is controlled by the 'cfg-lifetime' config option, which accepts
+  /// the values "true" and "false".
+  bool includeLifetimeInCFG();
+
+  /// Returns whether or not the end of the loop information should be included
+  /// in the CFG.
+  ///
+  /// This is controlled by the 'cfg-loopexit' config option, which accepts
+  /// the values "true" and "false".
+  bool includeLoopExitInCFG();
 
   /// Returns whether or not C++ standard library functions may be considered
   /// for inlining.
@@ -539,6 +572,10 @@ public:
   /// Returns true if the analysis should try to widen loops.
   /// This is controlled by the 'widen-loops' config option.
   bool shouldWidenLoops();
+
+  /// Returns true if the analysis should try to unroll loops with known bounds.
+  /// This is controlled by the 'unroll-loops' config option.
+  bool shouldUnrollLoops();
 
   /// Returns true if the bug reporter should transparently treat extra note
   /// diagnostic pieces as event diagnostic pieces. Useful when the diagnostic

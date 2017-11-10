@@ -97,6 +97,10 @@ testImport(const std::string &FromCode, Language FromLang,
   llvm::raw_svector_ostream ToNothing(ImportChecker);
   ToCtx.getTranslationUnitDecl()->print(ToNothing);
 
+  // This traverses the AST to catch certain bugs like poorly or not
+  // implemented subtrees.
+  Imported->dump(ToNothing);
+
   return Verifier.match(Imported, AMatcher);
 }
 
@@ -252,35 +256,28 @@ AST_MATCHER_P(TemplateDecl, hasTemplateDecl,
 
 TEST(ImportExpr, ImportParenListExpr) {
   MatchVerifier<Decl> Verifier;
+  EXPECT_TRUE(testImport(
+      "template<typename T> class dummy { void f() { dummy X(*this); } };"
+      "typedef dummy<int> declToImport;"
+      "template class dummy<int>;",
+      Lang_CXX, "", Lang_CXX, Verifier,
+      typedefDecl(hasType(templateSpecializationType(
+          hasDeclaration(classTemplateSpecializationDecl(hasSpecializedTemplate(
+              classTemplateDecl(hasTemplateDecl(cxxRecordDecl(hasMethod(allOf(
+                  hasName("f"),
+                  hasBody(compoundStmt(has(declStmt(hasSingleDecl(
+                      varDecl(hasInitializer(parenListExpr(has(unaryOperator(
+                          hasOperatorName("*"),
+                          hasUnaryOperand(cxxThisExpr()))))))))))))))))))))))));
+}
+
+TEST(ImportExpr, ImportSwitch) {
+  MatchVerifier<Decl> Verifier;
   EXPECT_TRUE(
-        testImport(
-          "template<typename T> class dummy { void f() { dummy X(*this); } };"
-          "typedef dummy<int> declToImport;"
-          "template class dummy<int>;",
-          Lang_CXX, "", Lang_CXX, Verifier,
-          typedefDecl(
-            hasType(
-              templateSpecializationType(
-                hasDeclaration(
-                  classTemplateDecl(
-                    hasTemplateDecl(
-                      cxxRecordDecl(
-                        hasMethod(
-                        allOf(
-                          hasName("f"),
-                          hasBody(
-                            compoundStmt(
-                              has(
-                                declStmt(
-                                  hasSingleDecl(
-                                    varDecl(
-                                      hasInitializer(
-                                        parenListExpr(
-                                          has(
-                                            unaryOperator(
-                                              hasOperatorName("*"),
-                                              hasUnaryOperand(cxxThisExpr())
-                                              )))))))))))))))))))));
+      testImport("void declToImport() { int b; switch (b) { case 1: break; } }",
+                 Lang_CXX, "", Lang_CXX, Verifier,
+                 functionDecl(hasBody(compoundStmt(
+                     has(switchStmt(has(compoundStmt(has(caseStmt()))))))))));
 }
 
 TEST(ImportExpr, ImportStmtExpr) {

@@ -12,10 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RAIIObjectsForParser.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Parse/Parser.h"
+#include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/LoopHint.h"
 #include "clang/Sema/PrettyDeclStackTrace.h"
@@ -97,7 +97,7 @@ StmtResult Parser::ParseStatement(SourceLocation *TrailingElseLoc,
 ///
 StmtResult
 Parser::ParseStatementOrDeclaration(StmtVector &Stmts,
-                                    AllowedContsructsKind Allowed,
+                                    AllowedConstructsKind Allowed,
                                     SourceLocation *TrailingElseLoc) {
 
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
@@ -150,7 +150,7 @@ private:
 
 StmtResult
 Parser::ParseStatementOrDeclarationAfterAttributes(StmtVector &Stmts,
-          AllowedContsructsKind Allowed, SourceLocation *TrailingElseLoc,
+          AllowedConstructsKind Allowed, SourceLocation *TrailingElseLoc,
           ParsedAttributesWithRange &Attrs) {
   const char *SemiError = nullptr;
   StmtResult Res;
@@ -203,6 +203,7 @@ Retry:
     }
 
     // Fall through
+    LLVM_FALLTHROUGH;
   }
 
   default: {
@@ -338,7 +339,13 @@ Retry:
   case tok::annot_pragma_fp_contract:
     ProhibitAttributes(Attrs);
     Diag(Tok, diag::err_pragma_fp_contract_scope);
-    ConsumeToken();
+    ConsumeAnnotationToken();
+    return StmtError();
+
+  case tok::annot_pragma_fp:
+    ProhibitAttributes(Attrs);
+    Diag(Tok, diag::err_pragma_fp_scope);
+    ConsumeAnnotationToken();
     return StmtError();
 
   case tok::annot_pragma_opencl_extension:
@@ -375,6 +382,10 @@ Retry:
 
   case tok::annot_pragma_dump:
     HandlePragmaDump();
+    return StmtEmpty();
+
+  case tok::annot_pragma_attribute:
+    HandlePragmaAttribute();
     return StmtEmpty();
   }
 
@@ -442,9 +453,10 @@ StmtResult Parser::ParseSEHTryBlock() {
   if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
-  StmtResult TryBlock(ParseCompoundStatement(/*isStmtExpr=*/false,
-                      Scope::DeclScope | Scope::SEHTryScope));
-  if(TryBlock.isInvalid())
+  StmtResult TryBlock(ParseCompoundStatement(
+      /*isStmtExpr=*/false,
+      Scope::DeclScope | Scope::CompoundStmtScope | Scope::SEHTryScope));
+  if (TryBlock.isInvalid())
     return TryBlock;
 
   StmtResult Handler;
@@ -829,7 +841,8 @@ StmtResult Parser::ParseDefaultStatement() {
 }
 
 StmtResult Parser::ParseCompoundStatement(bool isStmtExpr) {
-  return ParseCompoundStatement(isStmtExpr, Scope::DeclScope);
+  return ParseCompoundStatement(isStmtExpr,
+                                Scope::DeclScope | Scope::CompoundStmtScope);
 }
 
 /// ParseCompoundStatement - Parse a "{}" block.
@@ -899,6 +912,9 @@ void Parser::ParseCompoundStatementLeadingPragmas() {
       break;
     case tok::annot_pragma_fp_contract:
       HandlePragmaFPContract();
+      break;
+    case tok::annot_pragma_fp:
+      HandlePragmaFP();
       break;
     case tok::annot_pragma_ms_pointers_to_members:
       HandlePragmaMSPointersToMembers();
@@ -1179,7 +1195,8 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
   StmtResult ThenStmt;
   {
     EnterExpressionEvaluationContext PotentiallyDiscarded(
-        Actions, Sema::DiscardedStatement, nullptr, false,
+        Actions, Sema::ExpressionEvaluationContext::DiscardedStatement, nullptr,
+        false,
         /*ShouldEnter=*/ConstexprCondition && !*ConstexprCondition);
     ThenStmt = ParseStatement(&InnerStatementTrailingElseLoc);
   }
@@ -1212,7 +1229,8 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
                           Tok.is(tok::l_brace));
 
     EnterExpressionEvaluationContext PotentiallyDiscarded(
-        Actions, Sema::DiscardedStatement, nullptr, false,
+        Actions, Sema::ExpressionEvaluationContext::DiscardedStatement, nullptr,
+        false,
         /*ShouldEnter=*/ConstexprCondition && *ConstexprCondition);
     ElseStmt = ParseStatement();
 
@@ -1461,6 +1479,9 @@ StmtResult Parser::ParseDoStatement() {
   DiagnoseAndSkipCXX11Attributes();
 
   ExprResult Cond = ParseExpression();
+  // Correct the typos in condition before closing the scope.
+  if (Cond.isUsable())
+    Cond = Actions.CorrectDelayedTyposInExpr(Cond);
   T.consumeClose();
   DoScope.Exit();
 
@@ -1903,7 +1924,7 @@ StmtResult Parser::ParseReturnStatement() {
 }
 
 StmtResult Parser::ParsePragmaLoopHint(StmtVector &Stmts,
-                                       AllowedContsructsKind Allowed,
+                                       AllowedConstructsKind Allowed,
                                        SourceLocation *TrailingElseLoc,
                                        ParsedAttributesWithRange &Attrs) {
   // Create temporary attribute list.
@@ -2069,9 +2090,10 @@ StmtResult Parser::ParseCXXTryBlockCommon(SourceLocation TryLoc, bool FnTry) {
   if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
-  StmtResult TryBlock(ParseCompoundStatement(/*isStmtExpr=*/false,
-                      Scope::DeclScope | Scope::TryScope |
-                        (FnTry ? Scope::FnTryCatchScope : 0)));
+  StmtResult TryBlock(ParseCompoundStatement(
+      /*isStmtExpr=*/false, Scope::DeclScope | Scope::TryScope |
+                                Scope::CompoundStmtScope |
+                                (FnTry ? Scope::FnTryCatchScope : 0)));
   if (TryBlock.isInvalid())
     return TryBlock;
 

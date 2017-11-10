@@ -86,6 +86,18 @@ std::string ppc::getPPCTargetCPU(const ArgList &Args) {
   return "";
 }
 
+const char *ppc::getPPCAsmModeForCPU(StringRef Name) {
+  return llvm::StringSwitch<const char *>(Name)
+        .Case("pwr7", "-mpower7")
+        .Case("power7", "-mpower7")
+        .Case("pwr8", "-mpower8")
+        .Case("power8", "-mpower8")
+        .Case("ppc64le", "-mpower8")
+        .Case("pwr9", "-mpower9")
+        .Case("power9", "-mpower9")
+        .Default("-many");
+}
+
 void ppc::getPPCTargetFeatures(const Driver &D, const llvm::Triple &Triple,
                                const ArgList &Args,
                                std::vector<StringRef> &Features) {
@@ -94,10 +106,6 @@ void ppc::getPPCTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   ppc::FloatABI FloatABI = ppc::getPPCFloatABI(D, Args);
   if (FloatABI == ppc::FloatABI::Soft)
     Features.push_back("-hard-float");
-
-  // Altivec is a bit weird, allow overriding of the Altivec feature here.
-  AddTargetFeature(Args, Features, options::OPT_faltivec,
-                   options::OPT_fno_altivec, "altivec");
 }
 
 ppc::FloatABI ppc::getPPCFloatABI(const Driver &D, const ArgList &Args) {

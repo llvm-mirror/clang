@@ -1186,7 +1186,7 @@ class Predicate
 /// @brief A C++ wrapper class for providing threaded access to a value
 /// of type T.
 ///
-/// A template specilization class.
+/// A template specialization class.
 //----------------------------------------------------------------------
 template<> class Predicate<int, char>
 {
@@ -1210,3 +1210,97 @@ template <class T> T test_function (T arg);
 /*!     @function test_function<int>
 */
 template <> int test_function<int> (int arg);
+
+namespace AllowParamAndReturnsOnFunctionPointerVars {
+
+/**
+ * functionPointerVariable
+ *
+ * @param i is integer.
+ * @returns integer.
+ */
+int (*functionPointerVariable)(int i);
+
+struct HasFields {
+  /**
+   * functionPointerField
+   *
+   * @param i is integer.
+   * @returns integer.
+   */
+  int (*functionPointerField)(int i);
+};
+
+// expected-warning@+5 {{'\returns' command used in a comment that is attached to a function returning void}}
+/**
+ * functionPointerVariable
+ *
+ * \param p not here.
+ * \returns integer.
+ */
+void (*functionPointerVariableThatLeadsNowhere)();
+
+// Still warn about param/returns commands for variables that don't specify
+// the type directly:
+
+/**
+ * FunctionPointerTypedef
+ *
+ * \param i is integer.
+ * \returns integer.
+ */
+typedef int (*FunctionPointerTypedef)(int i);
+
+/**
+ * FunctionPointerTypealias
+ *
+ * \param i is integer.
+ * \returns integer.
+ */
+using FunctionPointerTypealias = int (*)(int i);
+
+// expected-warning@+5 {{'@param' command used in a comment that is not attached to a function declaration}}
+// expected-warning@+5 {{'@returns' command used in a comment that is not attached to a function or method declaration}}
+/**
+ * functionPointerVariable
+ *
+ * @param i is integer.
+ * @returns integer.
+ */
+FunctionPointerTypedef functionPointerTypedefVariable;
+
+struct HasMoreFields {
+  // expected-warning@+5 {{'\param' command used in a comment that is not attached to a function declaration}}
+  // expected-warning@+5 {{'\returns' command used in a comment that is not attached to a function or method declaration}}
+  /**
+   * functionPointerTypealiasField
+   *
+   * \param i is integer.
+   * \returns integer.
+   */
+  FunctionPointerTypealias functionPointerTypealiasField;
+};
+
+}
+
+/*!
+ * Function pointer typedef with variadic params.
+ *
+ * @param a
+ * works
+ *
+ * @param ...
+ * now should work too.
+ */
+typedef void (*VariadicFnType)(int a, ...);
+
+/*!
+ * Function pointer type alias with variadic params.
+ *
+ * @param a
+ * works
+ *
+ * @param ...
+ * now should work too.
+ */
+using VariadicFnType2 = void (*)(int a, ...);

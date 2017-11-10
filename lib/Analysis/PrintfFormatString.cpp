@@ -441,6 +441,7 @@ ArgType PrintfSpecifier::getArgType(ASTContext &Ctx,
       case LengthModifier::AsShort:
         if (Ctx.getTargetInfo().getTriple().isOSMSVCRT())
           return Ctx.IntTy;
+        LLVM_FALLTHROUGH;
       default:
         return ArgType::Invalid();
     }
@@ -465,8 +466,7 @@ ArgType PrintfSpecifier::getArgType(ASTContext &Ctx,
       case LengthModifier::AsIntMax:
         return ArgType(Ctx.getIntMaxType(), "intmax_t");
       case LengthModifier::AsSizeT:
-        // FIXME: How to get the corresponding signed version of size_t?
-        return ArgType();
+        return ArgType(Ctx.getSignedSizeType(), "ssize_t");
       case LengthModifier::AsInt3264:
         return Ctx.getTargetInfo().getTriple().isArch64Bit()
                    ? ArgType(Ctx.LongLongTy, "__int64")
@@ -505,9 +505,7 @@ ArgType PrintfSpecifier::getArgType(ASTContext &Ctx,
                    ? ArgType(Ctx.UnsignedLongLongTy, "unsigned __int64")
                    : ArgType(Ctx.UnsignedIntTy, "unsigned __int32");
       case LengthModifier::AsPtrDiff:
-        // FIXME: How to get the corresponding unsigned
-        // version of ptrdiff_t?
-        return ArgType();
+        return ArgType(Ctx.getUnsignedPointerDiffType(), "unsigned ptrdiff_t");
       case LengthModifier::AsAllocate:
       case LengthModifier::AsMAllocate:
       case LengthModifier::AsWide:
@@ -536,7 +534,7 @@ ArgType PrintfSpecifier::getArgType(ASTContext &Ctx,
       case LengthModifier::AsIntMax:
         return ArgType::PtrTo(ArgType(Ctx.getIntMaxType(), "intmax_t"));
       case LengthModifier::AsSizeT:
-        return ArgType(); // FIXME: ssize_t
+        return ArgType::PtrTo(ArgType(Ctx.getSignedSizeType(), "ssize_t"));
       case LengthModifier::AsPtrDiff:
         return ArgType::PtrTo(ArgType(Ctx.getPointerDiffType(), "ptrdiff_t"));
       case LengthModifier::AsLongDouble:
@@ -654,6 +652,7 @@ bool PrintfSpecifier::fixType(QualType QT, const LangOptions &LangOpt,
   case BuiltinType::UInt128:
   case BuiltinType::Int128:
   case BuiltinType::Half:
+  case BuiltinType::Float16:
   case BuiltinType::Float128:
     // Various types which are non-trivial to correct.
     return false;

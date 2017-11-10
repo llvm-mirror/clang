@@ -524,11 +524,14 @@ namespace shadowed_template {
 template <typename T> class Fizbin {};  // expected-note {{'::shadowed_template::Fizbin' declared here}}
 class Baz {
    int Fizbin();
-   // TODO: Teach the parser to recover from the typo correction instead of
-   // continuing to treat the template name as an implicit-int declaration.
-   Fizbin<int> qux;  // expected-error {{unknown type name 'Fizbin'; did you mean '::shadowed_template::Fizbin'?}} \
-                     // expected-error {{expected member name or ';' after declaration specifiers}}
+   Fizbin<int> qux;  // expected-error {{no template named 'Fizbin'; did you mean '::shadowed_template::Fizbin'?}}
 };
+}
+
+namespace no_correct_template_id_to_non_template {
+  struct Frobnatz {}; // expected-note {{declared here}}
+  Frobnats fn; // expected-error {{unknown type name 'Frobnats'; did you mean 'Frobnatz'?}}
+  Frobnats<int> fni; // expected-error-re {{no template named 'Frobnats'{{$}}}}
 }
 
 namespace PR18852 {
@@ -678,4 +681,31 @@ int g() {
   0 [                 // expected-error {{subscripted value is not an array}}
       sizeof(c0is0)]; // expected-error {{use of undeclared identifier}}
 };
+}
+
+namespace avoidRedundantRedefinitionErrors {
+class Class {
+  void function(int pid); // expected-note {{'function' declared here}}
+};
+
+void Class::function2(int pid) { // expected-error {{out-of-line definition of 'function2' does not match any declaration in 'avoidRedundantRedefinitionErrors::Class'; did you mean 'function'?}}
+}
+
+// Expected no redefinition error here.
+void Class::function(int pid) { // expected-note {{previous definition is here}}
+}
+
+void Class::function(int pid) { // expected-error {{redefinition of 'function'}}
+}
+
+namespace ns {
+void create_test(); // expected-note {{'create_test' declared here}}
+}
+
+void ns::create_test2() { // expected-error {{out-of-line definition of 'create_test2' does not match any declaration in namespace 'avoidRedundantRedefinitionErrors::ns'; did you mean 'create_test'?}}
+}
+
+// Expected no redefinition error here.
+void ns::create_test() {
+}
 }

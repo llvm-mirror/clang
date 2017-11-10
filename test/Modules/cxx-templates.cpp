@@ -49,8 +49,14 @@ void g() {
   // expected-note@Inputs/cxx-templates-a.h:11 {{candidate}}
   // expected-note@Inputs/cxx-templates-b.h:11 {{candidate}}
 
-  template_param_kinds_3<Tmpl_T_T_A>();
-  template_param_kinds_3<Tmpl_T_T_B>();
+  // FIXME: This should be valid, but we incorrectly match the template template
+  // argument against both template template parameters.
+  template_param_kinds_3<Tmpl_T_T_A>(); // expected-error {{ambiguous}}
+  // expected-note@Inputs/cxx-templates-a.h:12 {{candidate}}
+  // expected-note@Inputs/cxx-templates-b.h:12 {{candidate}}
+  template_param_kinds_3<Tmpl_T_T_B>(); // expected-error {{ambiguous}}
+  // expected-note@Inputs/cxx-templates-a.h:12 {{candidate}}
+  // expected-note@Inputs/cxx-templates-b.h:12 {{candidate}}
 
   // Trigger the instantiation of a template in 'a' that uses a type defined in
   // 'common'. That type is not visible here.
@@ -245,8 +251,22 @@ namespace Std {
 // CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev {{.*}} SomeTemplate
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [2]'
 // CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} SomeTemplate definition
+// CHECK-DUMP-NEXT:     DefinitionData
+// CHECK-DUMP-NEXT:       DefaultConstructor
+// CHECK-DUMP-NEXT:       CopyConstructor
+// CHECK-DUMP-NEXT:       MoveConstructor
+// CHECK-DUMP-NEXT:       CopyAssignment
+// CHECK-DUMP-NEXT:       MoveAssignment
+// CHECK-DUMP-NEXT:       Destructor
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [2]'
 // CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev {{.*}} SomeTemplate
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [1]'
 // CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} SomeTemplate definition
+// CHECK-DUMP-NEXT:     DefinitionData
+// CHECK-DUMP-NEXT:       DefaultConstructor
+// CHECK-DUMP-NEXT:       CopyConstructor
+// CHECK-DUMP-NEXT:       MoveConstructor
+// CHECK-DUMP-NEXT:       CopyAssignment
+// CHECK-DUMP-NEXT:       MoveAssignment
+// CHECK-DUMP-NEXT:       Destructor
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [1]'

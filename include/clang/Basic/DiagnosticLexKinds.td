@@ -71,6 +71,8 @@ def ext_token_used : Extension<"extension used">,
 
 def warn_cxx11_keyword : Warning<"'%0' is a keyword in C++11">,
   InGroup<CXX11Compat>, DefaultIgnore;
+def warn_cxx2a_keyword : Warning<"'%0' is a keyword in C++2a">,
+  InGroup<CXX2aCompat>, DefaultIgnore;
 
 def ext_unterminated_char_or_string : ExtWarn<
   "missing terminating %select{'|'\"'}0 character">, InGroup<InvalidPPToken>;
@@ -173,26 +175,24 @@ def warn_char_constant_too_large : Warning<
 def err_multichar_utf_character_literal : Error<
   "Unicode character literals may not contain multiple characters">;
 def err_exponent_has_no_digits : Error<"exponent has no digits">;
-def ext_imaginary_constant : Extension<
-  "imaginary constants are a GNU extension">, InGroup<GNUImaginaryConstant>;
 def err_hex_constant_requires : Error<
   "hexadecimal floating %select{constant|literal}0 requires "
   "%select{an exponent|a significand}1">;
 def ext_hex_constant_invalid : Extension<
   "hexadecimal floating constants are a C99 feature">, InGroup<C99>;
 def ext_hex_literal_invalid : Extension<
-  "hexadecimal floating literals are a C++1z feature">, InGroup<CXX1z>;
-def warn_cxx1z_hex_literal : Warning<
+  "hexadecimal floating literals are a C++17 feature">, InGroup<CXX17>;
+def warn_cxx17_hex_literal : Warning<
   "hexadecimal floating literals are incompatible with "
-  "C++ standards before C++1z">,
-  InGroup<CXXPre1zCompatPedantic>, DefaultIgnore;
+  "C++ standards before C++17">,
+  InGroup<CXXPre17CompatPedantic>, DefaultIgnore;
 def ext_binary_literal : Extension<
   "binary integer literals are a GNU extension">, InGroup<GNUBinaryLiteral>;
 def ext_binary_literal_cxx14 : Extension<
   "binary integer literals are a C++14 extension">, InGroup<CXX14BinaryLiteral>;
 def warn_cxx11_compat_binary_literal : Warning<
   "binary integer literals are incompatible with C++ standards before C++14">,
-  InGroup<CXXPre14CompatPedantic>, DefaultIgnore;
+  InGroup<CXXPre14CompatBinaryLiteral>, DefaultIgnore;
 def err_pascal_string_too_long : Error<"Pascal string is too long">;
 def err_escape_too_large : Error<
   "%select{hex|octal}0 escape sequence out of range">;
@@ -208,8 +208,8 @@ def warn_cxx98_compat_unicode_literal : Warning<
   "unicode literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def warn_cxx14_compat_u8_character_literal : Warning<
-  "unicode literals are incompatible with C++ standards before C++1z">,
-  InGroup<CXXPre1zCompat>, DefaultIgnore;
+  "unicode literals are incompatible with C++ standards before C++17">,
+  InGroup<CXXPre17Compat>, DefaultIgnore;
 def warn_cxx11_compat_user_defined_literal : Warning<
   "identifier after literal will be treated as a user-defined literal suffix "
   "in C++11">, InGroup<CXX11Compat>, DefaultIgnore;
@@ -242,6 +242,7 @@ def warn_bad_character_encoding : ExtWarn<
   "illegal character encoding in character literal">,
   InGroup<InvalidSourceEncoding>;
 def err_lexing_string : Error<"failure when lexing a string">;
+def err_placeholder_in_source : Error<"editor placeholder in source file">;
 
 
 //===----------------------------------------------------------------------===//
@@ -345,6 +346,23 @@ def ext_pp_extra_tokens_at_eol : ExtWarn<
 def ext_pp_comma_expr : Extension<"comma operator in operand of #if">;
 def ext_pp_bad_vaargs_use : Extension<
   "__VA_ARGS__ can only appear in the expansion of a C99 variadic macro">;
+
+def ext_pp_bad_vaopt_use
+    : ExtWarn<
+          "__VA_OPT__ can only appear in the expansion of a variadic macro">,
+      InGroup<VariadicMacros>;
+
+def err_pp_missing_lparen_in_vaopt_use : Error<
+  "missing '(' following __VA_OPT__">;
+def err_pp_vaopt_nested_use : Error<
+  "__VA_OPT__ cannot be nested within its own replacement tokens">;
+
+def err_vaopt_paste_at_start : Error<
+  "'##' cannot appear at start of __VA_OPT__ argument">;
+
+def err_vaopt_paste_at_end
+    : Error<"'##' cannot appear at end of __VA_OPT__ argument">;
+
 def ext_pp_macro_redef : ExtWarn<"%0 macro redefined">, InGroup<MacroRedefined>;
 def ext_variadic_macro : Extension<"variadic macros are a C99 feature">,
   InGroup<VariadicMacros>;
@@ -502,12 +520,34 @@ def warn_pragma_diagnostic_invalid_token :
    InGroup<UnknownPragmas>;
 def warn_pragma_diagnostic_unknown_warning :
    ExtWarn<"unknown warning group '%0', ignored">,
-   InGroup<UnknownPragmas>;
+   InGroup<UnknownWarningOption>;
 // - #pragma __debug
 def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">, InGroup<IgnoredPragmas>;
 def warn_pragma_debug_missing_argument : Warning<
   "missing argument to debug command '%0'">, InGroup<IgnoredPragmas>;
+// #pragma module
+def err_pp_expected_module_name : Error<
+  "expected %select{identifier after '.' in |}0module name">;
+def err_pp_module_begin_wrong_module : Error<
+  "must specify '-fmodule-name=%0' to enter %select{|submodule of }1"
+  "this module%select{ (current module is %3)|}2">;
+def err_pp_module_begin_no_module_map : Error<
+  "no module map available for module %0">;
+def err_pp_module_begin_no_submodule : Error<
+  "submodule %0.%1 not declared in module map">;
+def err_pp_module_begin_without_module_end : Error<
+  "no matching '#pragma clang module end' for this "
+  "'#pragma clang module begin'">;
+def err_pp_module_end_without_module_begin : Error<
+  "no matching '#pragma clang module begin' for this "
+  "'#pragma clang module end'">;
+def note_pp_module_begin_here : Note<
+  "entering module '%0' due to this pragma">;
+def err_pp_module_build_pth : Error<
+  "'#pragma clang module build' not supported in pretokenized header">;
+def err_pp_module_build_missing_end : Error<
+  "no matching '#pragma clang module endbuild' for this '#pragma clang module build'">;
 
 def err_defined_macro_name : Error<"'defined' cannot be used as a macro name">;
 def err_paste_at_start : Error<
@@ -594,8 +634,6 @@ def err_mmap_expected_mmap_file : Error<"expected a module map file name">;
 def err_mmap_module_redefinition : Error<
   "redefinition of module '%0'">;
 def note_mmap_prev_definition : Note<"previously defined here">;
-def err_mmap_umbrella_dir_not_found : Error<
-  "umbrella directory '%0' not found">;
 def err_mmap_umbrella_clash : Error<
   "umbrella for module '%0' already covers this directory">;
 def err_mmap_module_id : Error<
@@ -647,6 +685,19 @@ def warn_mmap_mismatched_top_level_private : Warning<
   InGroup<PrivateModule>;
 def note_mmap_rename_top_level_private_as_submodule : Note<
   "make '%0' a submodule of '%1' to ensure it can be found by name">;
+def err_mmap_duplicate_header_attribute : Error<
+  "header attribute '%0' specified multiple times">;
+def err_mmap_invalid_header_attribute_value : Error<
+  "expected integer literal as value for header attribute '%0'">;
+def err_mmap_expected_header_attribute : Error<
+  "expected a header attribute name ('size' or 'mtime')">;
+def err_mmap_conflicting_export_as : Error<
+  "conflicting re-export of module '%0' as '%1' or '%2'">;
+def warn_mmap_redundant_export_as : Warning<
+  "module '%0' already re-exported as '%1'">,
+  InGroup<PrivateModule>;
+def err_mmap_submodule_export_as : Error<
+  "only top-level modules can be re-exported as public">;
 
 def warn_auto_module_import : Warning<
   "treating #%select{include|import|include_next|__include_macros}0 as an "
@@ -655,6 +706,9 @@ def note_implicit_top_level_module_import_here : Note<
   "submodule of top-level module '%0' implicitly imported here">;
 def warn_uncovered_module_header : Warning<
   "umbrella header for module '%0' does not include header '%1'">, 
+  InGroup<IncompleteUmbrella>;
+def warn_mmap_umbrella_dir_not_found : Warning<
+  "umbrella directory '%0' not found">,
   InGroup<IncompleteUmbrella>;
 def err_expected_id_building_module : Error<
   "expected a module name in '__building_module' expression">;

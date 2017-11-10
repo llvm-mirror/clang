@@ -4,24 +4,6 @@ set(LLVM_LINK_COMPONENTS
   Support
   )
 
-# Figure out if we can track VC revisions.
-function(find_first_existing_file out_var)
-  foreach(file ${ARGN})
-    if(EXISTS "${file}")
-      set(${out_var} "${file}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-endfunction()
-
-macro(find_first_existing_vc_file out_var path)
-  find_first_existing_file(${out_var}
-    "${path}/.git/logs/HEAD" # Git
-    "${path}/.svn/wc.db"     # SVN 1.7
-    "${path}/.svn/entries"   # SVN 1.6
-    )
-endmacro()
-
 find_first_existing_vc_file(llvm_vc "${LLVM_MAIN_SRC_DIR}")
 find_first_existing_vc_file(clang_vc "${CLANG_SOURCE_DIR}")
 
@@ -74,21 +56,46 @@ add_clang_library(clangBasic
   FileSystemStatCache.cpp
   IdentifierTable.cpp
   LangOptions.cpp
+  MemoryBufferCache.cpp
   Module.cpp
   ObjCRuntime.cpp
   OpenMPKinds.cpp
   OperatorPrecedence.cpp
   SanitizerBlacklist.cpp
+  SanitizerSpecialCaseList.cpp
   Sanitizers.cpp
   SourceLocation.cpp
   SourceManager.cpp
   TargetInfo.cpp
   Targets.cpp
+  Targets/AArch64.cpp
+  Targets/AMDGPU.cpp
+  Targets/ARM.cpp
+  Targets/AVR.cpp
+  Targets/BPF.cpp
+  Targets/Hexagon.cpp
+  Targets/Lanai.cpp
+  Targets/Le64.cpp
+  Targets/MSP430.cpp
+  Targets/Mips.cpp
+  Targets/NVPTX.cpp
+  Targets/Nios2.cpp
+  Targets/OSTargets.cpp
+  Targets/PNaCl.cpp
+  Targets/PPC.cpp
+  Targets/SPIR.cpp
+  Targets/Sparc.cpp
+  Targets/SystemZ.cpp
+  Targets/TCE.cpp
+  Targets/WebAssembly.cpp
+  Targets/X86.cpp
+  Targets/XCore.cpp
   TokenKinds.cpp
   Version.cpp
   VersionTuple.cpp
   VirtualFileSystem.cpp
   Warnings.cpp
+  XRayLists.cpp
   ${version_inc}
   )
 

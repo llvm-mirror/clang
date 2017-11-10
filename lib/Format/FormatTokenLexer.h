@@ -36,7 +36,7 @@ enum LexerState {
 
 class FormatTokenLexer {
 public:
-  FormatTokenLexer(const SourceManager &SourceMgr, FileID ID,
+  FormatTokenLexer(const SourceManager &SourceMgr, FileID ID, unsigned Column,
                    const FormatStyle &Style, encoding::Encoding Encoding);
 
   ArrayRef<FormatToken *> lex();
@@ -47,6 +47,7 @@ private:
   void tryMergePreviousTokens();
 
   bool tryMergeLessLess();
+  bool tryMergeNSStringLiteral();
 
   bool tryMergeTokens(ArrayRef<tok::TokenKind> Kinds, TokenType NewType);
 

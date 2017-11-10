@@ -116,11 +116,11 @@
 
 // RUN: %clang_cc1 -triple nvptx-unknown -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=NVPTX
-// NVPTX: target datalayout = "e-p:32:32-i64:64-v16:16-v32:32-n16:32:64"
+// NVPTX: target datalayout = "e-p:32:32-i64:64-i128:128-v16:16-v32:32-n16:32:64"
 
 // RUN: %clang_cc1 -triple nvptx64-unknown -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=NVPTX64
-// NVPTX64: target datalayout = "e-i64:64-v16:16-v32:32-n16:32:64"
+// NVPTX64: target datalayout = "e-i64:64-i128:128-v16:16-v32:32-n16:32:64"
 
 // RUN: %clang_cc1 -triple r600-unknown -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=R600
@@ -171,11 +171,15 @@
 // RUN: FileCheck %s -check-prefix=SYSTEMZ-VECTOR
 // RUN: %clang_cc1 -triple s390x-unknown -target-cpu arch11 -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=SYSTEMZ-VECTOR
+// RUN: %clang_cc1 -triple s390x-unknown -target-cpu z14 -o - -emit-llvm %s | \
+// RUN: FileCheck %s -check-prefix=SYSTEMZ-VECTOR
+// RUN: %clang_cc1 -triple s390x-unknown -target-cpu arch12 -o - -emit-llvm %s | \
+// RUN: FileCheck %s -check-prefix=SYSTEMZ-VECTOR
 // SYSTEMZ-VECTOR: target datalayout = "E-m:e-i1:8:16-i8:8:16-i64:64-f128:64-v128:64-a:8:16-n32:64"
 
 // RUN: %clang_cc1 -triple msp430-unknown -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=MSP430
-// MSP430: target datalayout = "e-m:e-p:16:16-i32:16:32-a:16-n8:16"
+// MSP430: target datalayout = "e-m:e-p:16:16-i32:16-i64:16-f32:16-f64:16-a:8-n8:16-S16"
 
 // RUN: %clang_cc1 -triple tce-unknown -o - -emit-llvm %s | \
 // RUN: FileCheck %s -check-prefix=TCE

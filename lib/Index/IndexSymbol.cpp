@@ -61,17 +61,21 @@ bool index::isFunctionLocalSymbol(const Decl *D) {
   if (isa<ObjCTypeParamDecl>(D))
     return true;
 
+  if (isa<UsingDirectiveDecl>(D))
+    return false;
   if (!D->getParentFunctionOrMethod())
     return false;
 
   if (const NamedDecl *ND = dyn_cast<NamedDecl>(D)) {
     switch (ND->getFormalLinkage()) {
       case NoLinkage:
-      case VisibleNoLinkage:
       case InternalLinkage:
         return true;
+      case VisibleNoLinkage:
       case UniqueExternalLinkage:
+      case ModuleInternalLinkage:
         llvm_unreachable("Not a sema linkage");
+      case ModuleLinkage:
       case ExternalLinkage:
         return false;
     }
@@ -197,25 +201,22 @@ SymbolInfo index::getSymbolInfo(const Decl *D) {
         Info.Properties |= (unsigned)SymbolProperty::UnitTest;
       break;
     }
-    case Decl::ObjCMethod:
-      if (cast<ObjCMethodDecl>(D)->isInstanceMethod()) {
-        const ObjCMethodDecl *MD = cast<ObjCMethodDecl>(D);
-        Info.Kind = SymbolKind::InstanceMethod;
-        if (MD->isPropertyAccessor()) {
-          if (MD->param_size())
-            Info.SubKind = SymbolSubKind::AccessorSetter;
-          else
-            Info.SubKind = SymbolSubKind::AccessorGetter;
-        }
-      } else {
-        Info.Kind = SymbolKind::ClassMethod;
+    case Decl::ObjCMethod: {
+      const ObjCMethodDecl *MD = cast<ObjCMethodDecl>(D);
+      Info.Kind = MD->isInstanceMethod() ? SymbolKind::InstanceMethod : SymbolKind::ClassMethod;
+      if (MD->isPropertyAccessor()) {
+        if (MD->param_size())
+          Info.SubKind = SymbolSubKind::AccessorSetter;
+        else
+          Info.SubKind = SymbolSubKind::AccessorGetter;
       }
       Info.Lang = SymbolLanguage::ObjC;
-      if (isUnitTest(cast<ObjCMethodDecl>(D)))
+      if (isUnitTest(MD))
         Info.Properties |= (unsigned)SymbolProperty::UnitTest;
       if (D->hasAttr<IBActionAttr>())
         Info.Properties |= (unsigned)SymbolProperty::IBAnnotated;
       break;
+    }
     case Decl::ObjCProperty:
       Info.Kind = SymbolKind::InstanceProperty;
       Info.Lang = SymbolLanguage::ObjC;
@@ -299,6 +300,22 @@ SymbolInfo index::getSymbolInfo(const Decl *D) {
       Info.Kind = SymbolKind::TypeAlias;
       Info.Lang = SymbolLanguage::CXX;
       break;
+    case Decl::UnresolvedUsingTypename:
+      Info.Kind = SymbolKind::Using;
+      Info.SubKind = SymbolSubKind::UsingTypename;
+      Info.Lang = SymbolLanguage::CXX;
+      Info.Properties |= (unsigned)SymbolProperty::Generic;
+      break;
+    case Decl::UnresolvedUsingValue:
+      Info.Kind = SymbolKind::Using;
+      Info.SubKind = SymbolSubKind::UsingValue;
+      Info.Lang = SymbolLanguage::CXX;
+      Info.Properties |= (unsigned)SymbolProperty::Generic;
+      break;
+    case Decl::Binding:
+      Info.Kind = SymbolKind::Variable;
+      Info.Lang = SymbolLanguage::CXX;
+      break;
     default:
       break;
     }
@@ -318,14 +335,20 @@ SymbolInfo index::getSymbolInfo(const Decl *D) {
   if (Info.Properties & (unsigned)SymbolProperty::Generic)
     Info.Lang = SymbolLanguage::CXX;
 
+  if (auto *attr = D->getExternalSourceSymbolAttr()) {
+    if (attr->getLanguage() == "Swift")
+      Info.Lang = SymbolLanguage::Swift;
+  }
+
   return Info;
 }
 
-void index::applyForEachSymbolRole(SymbolRoleSet Roles,
-                                   llvm::function_ref<void(SymbolRole)> Fn) {
+bool index::applyForEachSymbolRoleInterruptible(SymbolRoleSet Roles,
+                                   llvm::function_ref<bool(SymbolRole)> Fn) {
 #define APPLY_FOR_ROLE(Role) \
   if (Roles & (unsigned)SymbolRole::Role) \
-    Fn(SymbolRole::Role)
+    if (!Fn(SymbolRole::Role)) \
+      return false;
 
   APPLY_FOR_ROLE(Declaration);
   APPLY_FOR_ROLE(Definition);
@@ -345,8 +368,19 @@ void index::applyForEachSymbolRole(SymbolRoleSet Roles,
   APPLY_FOR_ROLE(RelationAccessorOf);
   APPLY_FOR_ROLE(RelationContainedBy);
   APPLY_FOR_ROLE(RelationIBTypeOf);
+  APPLY_FOR_ROLE(RelationSpecializationOf);
 
 #undef APPLY_FOR_ROLE
+
+  return true;
+}
+
+void index::applyForEachSymbolRole(SymbolRoleSet Roles,
+                                   llvm::function_ref<void(SymbolRole)> Fn) {
+  applyForEachSymbolRoleInterruptible(Roles, [&](SymbolRole r) -> bool {
+    Fn(r);
+    return true;
+  });
 }
 
 void index::printSymbolRoles(SymbolRoleSet Roles, raw_ostream &OS) {
@@ -375,6 +409,7 @@ void index::printSymbolRoles(SymbolRoleSet Roles, raw_ostream &OS) {
     case SymbolRole::RelationAccessorOf: OS << "RelAcc"; break;
     case SymbolRole::RelationContainedBy: OS << "RelCont"; break;
     case SymbolRole::RelationIBTypeOf: OS << "RelIBType"; break;
+    case SymbolRole::RelationSpecializationOf: OS << "RelSpecialization"; break;
     }
   });
 }
@@ -425,6 +460,7 @@ StringRef index::getSymbolKindString(SymbolKind K) {
   case SymbolKind::Destructor: return "destructor";
   case SymbolKind::ConversionFunction: return "coversion-func";
   case SymbolKind::Parameter: return "param";
+  case SymbolKind::Using: return "using";
   }
   llvm_unreachable("invalid symbol kind");
 }
@@ -436,6 +472,8 @@ StringRef index::getSymbolSubKindString(SymbolSubKind K) {
   case SymbolSubKind::CXXMoveConstructor: return "cxx-move-ctor";
   case SymbolSubKind::AccessorGetter: return "acc-get";
   case SymbolSubKind::AccessorSetter: return "acc-set";
+  case SymbolSubKind::UsingTypename: return "using-typename";
+  case SymbolSubKind::UsingValue: return "using-value";
   }
   llvm_unreachable("invalid symbol subkind");
 }
@@ -445,6 +483,7 @@ StringRef index::getSymbolLanguageString(SymbolLanguage K) {
   case SymbolLanguage::C: return "C";
   case SymbolLanguage::ObjC: return "ObjC";
   case SymbolLanguage::CXX: return "C++";
+  case SymbolLanguage::Swift: return "Swift";
   }
   llvm_unreachable("invalid symbol language kind");
 }

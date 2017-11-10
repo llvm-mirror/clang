@@ -35,17 +35,32 @@ public:
 
 namespace toolchains {
 
-class LLVM_LIBRARY_VISIBILITY Fuchsia : public Generic_ELF {
+class LLVM_LIBRARY_VISIBILITY Fuchsia : public ToolChain {
 public:
   Fuchsia(const Driver &D, const llvm::Triple &Triple,
           const llvm::opt::ArgList &Args);
 
-  bool isPIEDefault() const override { return true; }
   bool HasNativeLLVMSupport() const override { return true; }
   bool IsIntegratedAssemblerDefault() const override { return true; }
+  bool IsMathErrnoDefault() const override { return false; }
+  RuntimeLibType GetDefaultRuntimeLibType() const override {
+    return ToolChain::RLT_CompilerRT;
+  }
+  CXXStdlibType GetDefaultCXXStdlibType() const override {
+    return ToolChain::CST_Libcxx;
+  }
+  bool IsUnwindTablesDefault(const llvm::opt::ArgList &Args) const override {
+    return true;
+  }
+  bool isPICDefault() const override { return false; }
+  bool isPIEDefault() const override { return true; }
+  bool isPICDefaultForced() const override { return false; }
   llvm::DebuggerKind getDefaultDebuggerTuning() const override {
     return llvm::DebuggerKind::GDB;
   }
+
+  std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
+                                          types::ID InputType) const override;
 
   SanitizerMask getSupportedSanitizers() const override;
 
@@ -55,20 +70,22 @@ public:
   GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
 
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                             llvm::opt::ArgStringList &CC1Args) const override;
+                             llvm::opt::ArgStringList &CC1Args,
+                             Action::OffloadKind DeviceOffloadKind) const override;
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                             llvm::opt::ArgStringList &CC1Args) const override;
-  std::string findLibCxxIncludePath() const override;
+  void
+  AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                               llvm::opt::ArgStringList &CC1Args) const override;
   void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
   const char *getDefaultLinker() const override {
-    return "lld";
+    return "ld.lld";
   }
 
 protected:
-  Tool *buildAssembler() const override;
   Tool *buildLinker() const override;
 };
 

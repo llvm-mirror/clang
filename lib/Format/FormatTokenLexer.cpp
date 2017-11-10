@@ -24,10 +24,10 @@ namespace clang {
 namespace format {
 
 FormatTokenLexer::FormatTokenLexer(const SourceManager &SourceMgr, FileID ID,
-                                   const FormatStyle &Style,
+                                   unsigned Column, const FormatStyle &Style,
                                    encoding::Encoding Encoding)
     : FormatTok(nullptr), IsFirstToken(true), StateStack({LexerState::NORMAL}),
-      Column(0), TrailingWhitespace(0), SourceMgr(SourceMgr), ID(ID),
+      Column(Column), TrailingWhitespace(0), SourceMgr(SourceMgr), ID(ID),
       Style(Style), IdentTable(getFormattingLangOpts(Style)),
       Keywords(IdentTable), Encoding(Encoding), FirstInLineIndex(0),
       FormattingDisabled(false), MacroBlockBeginRegex(Style.MacroBlockBegin),
@@ -64,6 +64,8 @@ void FormatTokenLexer::tryMergePreviousTokens() {
     return;
   if (tryMergeLessLess())
     return;
+  if (tryMergeNSStringLiteral())
+    return;
 
   if (Style.Language == FormatStyle::LK_JavaScript) {
     static const tok::TokenKind JSIdentity[] = {tok::equalequal, tok::equal};
@@ -72,6 +74,10 @@ void FormatTokenLexer::tryMergePreviousTokens() {
     static const tok::TokenKind JSShiftEqual[] = {tok::greater, tok::greater,
                                                   tok::greaterequal};
     static const tok::TokenKind JSRightArrow[] = {tok::equal, tok::greater};
+    static const tok::TokenKind JSExponentiation[] = {tok::star, tok::star};
+    static const tok::TokenKind JSExponentiationEqual[] = {tok::star,
+                                                           tok::starequal};
+
     // FIXME: Investigate what token type gives the correct operator priority.
     if (tryMergeTokens(JSIdentity, TT_BinaryOperator))
       return;
@@ -81,7 +87,36 @@ void FormatTokenLexer::tryMergePreviousTokens() {
       return;
     if (tryMergeTokens(JSRightArrow, TT_JsFatArrow))
       return;
+    if (tryMergeTokens(JSExponentiation, TT_JsExponentiation))
+      return;
+    if (tryMergeTokens(JSExponentiationEqual, TT_JsExponentiationEqual)) {
+      Tokens.back()->Tok.setKind(tok::starequal);
+      return;
+    }
   }
+
+  if (Style.Language == FormatStyle::LK_Java) {
+    static const tok::TokenKind JavaRightLogicalShiftAssign[] = {
+        tok::greater, tok::greater, tok::greaterequal};
+    if (tryMergeTokens(JavaRightLogicalShiftAssign, TT_BinaryOperator))
+      return;
+  }
+}
+
+bool FormatTokenLexer::tryMergeNSStringLiteral() {
+  if (Tokens.size() < 2)
+    return false;
+  auto &At = *(Tokens.end() - 2);
+  auto &String = *(Tokens.end() - 1);
+  if (!At->is(tok::at) || !String->is(tok::string_literal))
+    return false;
+  At->Tok.setKind(tok::string_literal);
+  At->TokenText = StringRef(At->TokenText.begin(),
+                            String->TokenText.end() - At->TokenText.begin());
+  At->ColumnWidth += String->ColumnWidth;
+  At->Type = TT_ObjCStringLiteral;
+  Tokens.erase(Tokens.end() - 1);
+  return true;
 }
 
 bool FormatTokenLexer::tryMergeLessLess() {
@@ -121,9 +156,8 @@ bool FormatTokenLexer::tryMergeTokens(ArrayRef<tok::TokenKind> Kinds,
     return false;
   unsigned AddLength = 0;
   for (unsigned i = 1; i < Kinds.size(); ++i) {
-    if (!First[i]->is(Kinds[i]) ||
-        First[i]->WhitespaceRange.getBegin() !=
-            First[i]->WhitespaceRange.getEnd())
+    if (!First[i]->is(Kinds[i]) || First[i]->WhitespaceRange.getBegin() !=
+                                       First[i]->WhitespaceRange.getEnd())
       return false;
     AddLength += First[i]->TokenText.size();
   }
@@ -436,6 +470,9 @@ FormatToken *FormatTokenLexer::getNextToken() {
       if (pos >= 0 && Text[pos] == '\r')
         --pos;
       // See whether there is an odd number of '\' before this.
+      // FIXME: This is wrong. A '\' followed by a newline is always removed,
+      // regardless of whether there is another '\' before it.
+      // FIXME: Newlines can also be escaped by a '?' '?' '/' trigraph.
       unsigned count = 0;
       for (; pos >= 0; --pos, ++count)
         if (Text[pos] != '\\')
@@ -485,17 +522,53 @@ FormatToken *FormatTokenLexer::getNextToken() {
     readRawToken(*FormatTok);
   }
 
+  // JavaScript and Java do not allow to escape the end of the line with a
+  // backslash. Backslashes are syntax errors in plain source, but can occur in
+  // comments. When a single line comment ends with a \, it'll cause the next
+  // line of code to be lexed as a comment, breaking formatting. The code below
+  // finds comments that contain a backslash followed by a line break, truncates
+  // the comment token at the backslash, and resets the lexer to restart behind
+  // the backslash.
+  if ((Style.Language == FormatStyle::LK_JavaScript ||
+       Style.Language == FormatStyle::LK_Java) &&
+      FormatTok->is(tok::comment) && FormatTok->TokenText.startswith("//")) {
+    size_t BackslashPos = FormatTok->TokenText.find('\\');
+    while (BackslashPos != StringRef::npos) {
+      if (BackslashPos + 1 < FormatTok->TokenText.size() &&
+          FormatTok->TokenText[BackslashPos + 1] == '\n') {
+        const char *Offset = Lex->getBufferLocation();
+        Offset -= FormatTok->TokenText.size();
+        Offset += BackslashPos + 1;
+        resetLexer(SourceMgr.getFileOffset(Lex->getSourceLocation(Offset)));
+        FormatTok->TokenText = FormatTok->TokenText.substr(0, BackslashPos + 1);
+        FormatTok->ColumnWidth = encoding::columnWidthWithTabs(
+            FormatTok->TokenText, FormatTok->OriginalColumn, Style.TabWidth,
+            Encoding);
+        break;
+      }
+      BackslashPos = FormatTok->TokenText.find('\\', BackslashPos + 1);
+    }
+  }
+
   // In case the token starts with escaped newlines, we want to
   // take them into account as whitespace - this pattern is quite frequent
   // in macro definitions.
   // FIXME: Add a more explicit test.
-  while (FormatTok->TokenText.size() > 1 && FormatTok->TokenText[0] == '\\' &&
-         FormatTok->TokenText[1] == '\n') {
+  while (FormatTok->TokenText.size() > 1 && FormatTok->TokenText[0] == '\\') {
+    unsigned SkippedWhitespace = 0;
+    if (FormatTok->TokenText.size() > 2 &&
+        (FormatTok->TokenText[1] == '\r' && FormatTok->TokenText[2] == '\n'))
+      SkippedWhitespace = 3;
+    else if (FormatTok->TokenText[1] == '\n')
+      SkippedWhitespace = 2;
+    else
+      break;
+
     ++FormatTok->NewlinesBefore;
-    WhitespaceLength += 2;
-    FormatTok->LastNewlineOffset = 2;
+    WhitespaceLength += SkippedWhitespace;
+    FormatTok->LastNewlineOffset = SkippedWhitespace;
     Column = 0;
-    FormatTok->TokenText = FormatTok->TokenText.substr(2);
+    FormatTok->TokenText = FormatTok->TokenText.substr(SkippedWhitespace);
   }
 
   FormatTok->WhitespaceRange = SourceRange(
@@ -560,7 +633,7 @@ FormatToken *FormatTokenLexer::getNextToken() {
     Column = FormatTok->LastLineColumnWidth;
   }
 
-  if (Style.IsCpp()) {
+  if (Style.isCpp()) {
     if (!(Tokens.size() > 0 && Tokens.back()->Tok.getIdentifierInfo() &&
           Tokens.back()->Tok.getIdentifierInfo()->getPPKeywordID() ==
               tok::pp_define) &&

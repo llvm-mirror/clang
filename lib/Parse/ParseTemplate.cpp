@@ -11,11 +11,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RAIIObjectsForParser.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
+#include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Scope.h"
@@ -112,7 +112,7 @@ Parser::ParseTemplateDeclarationOrSpecialization(unsigned Context,
 
     // Parse the '<' template-parameter-list '>'
     SourceLocation LAngleLoc, RAngleLoc;
-    SmallVector<Decl*, 4> TemplateParams;
+    SmallVector<NamedDecl*, 4> TemplateParams;
     if (ParseTemplateParameters(CurTemplateDepthTracker.getDepth(),
                                 TemplateParams, LAngleLoc, RAngleLoc)) {
       // Skip until the semi-colon or a '}'.
@@ -197,10 +197,11 @@ Parser::ParseSingleDeclarationAfterTemplate(
   MaybeParseCXX11Attributes(prefixAttrs);
 
   if (Tok.is(tok::kw_using)) {
-    // FIXME: We should return the DeclGroup to the caller.
-    ParseUsingDirectiveOrDeclaration(Context, TemplateInfo, DeclEnd,
-                                     prefixAttrs);
-    return nullptr;
+    auto usingDeclPtr = ParseUsingDirectiveOrDeclaration(Context, TemplateInfo, DeclEnd,
+                                                         prefixAttrs);
+    if (!usingDeclPtr || !usingDeclPtr.get().isSingleDecl())
+      return nullptr;
+    return usingDeclPtr.get().getSingleDecl();
   }
 
   // Parse the declaration specifiers, stealing any diagnostics from
@@ -329,10 +330,9 @@ Parser::ParseSingleDeclarationAfterTemplate(
 /// that enclose this template parameter list.
 ///
 /// \returns true if an error occurred, false otherwise.
-bool Parser::ParseTemplateParameters(unsigned Depth,
-                               SmallVectorImpl<Decl*> &TemplateParams,
-                                     SourceLocation &LAngleLoc,
-                                     SourceLocation &RAngleLoc) {
+bool Parser::ParseTemplateParameters(
+    unsigned Depth, SmallVectorImpl<NamedDecl *> &TemplateParams,
+    SourceLocation &LAngleLoc, SourceLocation &RAngleLoc) {
   // Get the template parameter list.
   if (!TryConsumeToken(tok::less, LAngleLoc)) {
     Diag(Tok.getLocation(), diag::err_expected_less_after) << "template";
@@ -370,11 +370,12 @@ bool Parser::ParseTemplateParameters(unsigned Depth,
 ///         template-parameter-list ',' template-parameter
 bool
 Parser::ParseTemplateParameterList(unsigned Depth,
-                             SmallVectorImpl<Decl*> &TemplateParams) {
+                             SmallVectorImpl<NamedDecl*> &TemplateParams) {
   while (1) {
+    // FIXME: ParseTemplateParameter should probably just return a NamedDecl.
     if (Decl *TmpParam
           = ParseTemplateParameter(Depth, TemplateParams.size())) {
-      TemplateParams.push_back(TmpParam);
+      TemplateParams.push_back(dyn_cast<NamedDecl>(TmpParam));
     } else {
       // If we failed to parse a template parameter, skip until we find
       // a comma or closing brace.
@@ -569,7 +570,7 @@ Parser::ParseTemplateTemplateParameter(unsigned Depth, unsigned Position) {
 
   // Handle the template <...> part.
   SourceLocation TemplateLoc = ConsumeToken();
-  SmallVector<Decl*,8> TemplateParams;
+  SmallVector<NamedDecl*,8> TemplateParams;
   SourceLocation LAngleLoc, RAngleLoc;
   {
     ParseScope TemplateParmScope(this, Scope::TemplateParamScope);
@@ -674,7 +675,8 @@ Parser::ParseNonTypeTemplateParameter(unsigned Depth, unsigned Position) {
   // FIXME: The type should probably be restricted in some way... Not all
   // declarators (parts of declarators?) are accepted for parameters.
   DeclSpec DS(AttrFactory);
-  ParseDeclarationSpecifiers(DS);
+  ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS_none,
+                             DSC_template_param);
 
   // Parse this as a typename.
   Declarator ParamDecl(DS, Declarator::TemplateParamContext);
@@ -701,8 +703,8 @@ Parser::ParseNonTypeTemplateParameter(unsigned Depth, unsigned Position) {
     //   end of the template-parameter-list rather than a greater-than
     //   operator.
     GreaterThanIsOperatorScope G(GreaterThanIsOperator, false);
-    EnterExpressionEvaluationContext ConstantEvaluated(Actions,
-                                                       Sema::ConstantEvaluated);
+    EnterExpressionEvaluationContext ConstantEvaluated(
+        Actions, Sema::ExpressionEvaluationContext::ConstantEvaluated);
 
     DefaultArg = Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression());
     if (DefaultArg.isInvalid())
@@ -886,22 +888,12 @@ bool Parser::ParseGreaterThanInTemplateList(SourceLocation &RAngleLoc,
 /// list ('<' template-parameter-list [opt] '>') and placing the
 /// results into a form that can be transferred to semantic analysis.
 ///
-/// \param Template the template declaration produced by isTemplateName
-///
-/// \param TemplateNameLoc the source location of the template name
-///
-/// \param SS if non-NULL, the nested-name-specifier preceding the
-/// template name.
-///
 /// \param ConsumeLastToken if true, then we will consume the last
 /// token that forms the template-id. Otherwise, we will leave the
 /// last token in the stream (e.g., so that it can be replaced with an
 /// annotation token).
 bool
-Parser::ParseTemplateIdAfterTemplateName(TemplateTy Template,
-                                         SourceLocation TemplateNameLoc,
-                                         const CXXScopeSpec &SS,
-                                         bool ConsumeLastToken,
+Parser::ParseTemplateIdAfterTemplateName(bool ConsumeLastToken,
                                          SourceLocation &LAngleLoc,
                                          TemplateArgList &TemplateArgs,
                                          SourceLocation &RAngleLoc) {
@@ -983,9 +975,7 @@ bool Parser::AnnotateTemplateIdToken(TemplateTy Template, TemplateNameKind TNK,
   // Parse the enclosed template argument list.
   SourceLocation LAngleLoc, RAngleLoc;
   TemplateArgList TemplateArgs;
-  bool Invalid = ParseTemplateIdAfterTemplateName(Template, 
-                                                  TemplateNameLoc,
-                                                  SS, false, LAngleLoc,
+  bool Invalid = ParseTemplateIdAfterTemplateName(false, LAngleLoc,
                                                   TemplateArgs,
                                                   RAngleLoc);
 
@@ -1023,25 +1013,21 @@ bool Parser::AnnotateTemplateIdToken(TemplateTy Template, TemplateNameKind TNK,
     // Build a template-id annotation token that can be processed
     // later.
     Tok.setKind(tok::annot_template_id);
-    TemplateIdAnnotation *TemplateId
-      = TemplateIdAnnotation::Allocate(TemplateArgs.size(), TemplateIds);
-    TemplateId->TemplateNameLoc = TemplateNameLoc;
-    if (TemplateName.getKind() == UnqualifiedId::IK_Identifier) {
-      TemplateId->Name = TemplateName.Identifier;
-      TemplateId->Operator = OO_None;
-    } else {
-      TemplateId->Name = nullptr;
-      TemplateId->Operator = TemplateName.OperatorFunctionId.Operator;
-    }
-    TemplateId->SS = SS;
-    TemplateId->TemplateKWLoc = TemplateKWLoc;
-    TemplateId->Template = Template;
-    TemplateId->Kind = TNK;
-    TemplateId->LAngleLoc = LAngleLoc;
-    TemplateId->RAngleLoc = RAngleLoc;
-    ParsedTemplateArgument *Args = TemplateId->getTemplateArgs();
-    for (unsigned Arg = 0, ArgEnd = TemplateArgs.size(); Arg != ArgEnd; ++Arg)
-      Args[Arg] = ParsedTemplateArgument(TemplateArgs[Arg]);
+    
+    IdentifierInfo *TemplateII =
+        TemplateName.getKind() == UnqualifiedId::IK_Identifier
+            ? TemplateName.Identifier
+            : nullptr;
+
+    OverloadedOperatorKind OpKind =
+        TemplateName.getKind() == UnqualifiedId::IK_Identifier
+            ? OO_None
+            : TemplateName.OperatorFunctionId.Operator;
+
+    TemplateIdAnnotation *TemplateId = TemplateIdAnnotation::Create(
+      SS, TemplateKWLoc, TemplateNameLoc, TemplateII, OpKind, Template, TNK,
+      LAngleLoc, RAngleLoc, TemplateArgs, TemplateIds);
+    
     Tok.setAnnotationValue(TemplateId);
     if (TemplateKWLoc.isValid())
       Tok.setLocation(TemplateKWLoc);
@@ -1198,7 +1184,13 @@ ParsedTemplateArgument Parser::ParseTemplateArgument() {
   //   expression is resolved to a type-id, regardless of the form of
   //   the corresponding template-parameter.
   //
-  // Therefore, we initially try to parse a type-id.  
+  // Therefore, we initially try to parse a type-id - and isCXXTypeId might look
+  // up and annotate an identifier as an id-expression during disambiguation,
+  // so enter the appropriate context for a constant expression template
+  // argument before trying to disambiguate.
+
+  EnterExpressionEvaluationContext EnterConstantEvaluated(
+      Actions, Sema::ExpressionEvaluationContext::ConstantEvaluated);
   if (isCXXTypeId(TypeIdAsTemplateArgument)) {
     SourceLocation Loc = Tok.getLocation();
     TypeResult TypeArg = ParseTypeName(/*Range=*/nullptr,
@@ -1228,7 +1220,7 @@ ParsedTemplateArgument Parser::ParseTemplateArgument() {
   
   // Parse a non-type template argument. 
   SourceLocation Loc = Tok.getLocation();
-  ExprResult ExprArg = ParseConstantExpression(MaybeTypeCast);
+  ExprResult ExprArg = ParseConstantExpressionInExprEvalContext(MaybeTypeCast);
   if (ExprArg.isInvalid() || !ExprArg.get())
     return ParsedTemplateArgument();
 
@@ -1246,7 +1238,7 @@ bool Parser::IsTemplateArgumentList(unsigned Skip) {
   } Tentative(*this);
   
   while (Skip) {
-    ConsumeToken();
+    ConsumeAnyToken();
     --Skip;
   }
   
@@ -1260,7 +1252,7 @@ bool Parser::IsTemplateArgumentList(unsigned Skip) {
   
   // See whether we have declaration specifiers, which indicate a type.
   while (isCXXDeclarationSpecifier() == TPResult::True)
-    ConsumeToken();
+    ConsumeAnyToken();
   
   // If we have a '>' or a ',' then this is a template argument list.
   return Tok.isOneOf(tok::greater, tok::comma);
@@ -1274,8 +1266,7 @@ bool Parser::IsTemplateArgumentList(unsigned Skip) {
 ///         template-argument-list ',' template-argument
 bool
 Parser::ParseTemplateArgumentList(TemplateArgList &TemplateArgs) {
-  // Template argument lists are constant-evaluation contexts.
-  EnterExpressionEvaluationContext EvalContext(Actions,Sema::ConstantEvaluated);
+  
   ColonProtectionRAIIObject ColonProtection(*this, false);
 
   do {
@@ -1390,7 +1381,8 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplate &LPT) {
 
   // Parse the method body. Function body parsing code is similar enough
   // to be re-used for method bodies as well.
-  ParseScope FnScope(this, Scope::FnScope|Scope::DeclScope);
+  ParseScope FnScope(this, Scope::FnScope | Scope::DeclScope |
+                               Scope::CompoundStmtScope);
 
   // Recreate the containing function DeclContext.
   Sema::ContextRAII FunctionSavedContext(Actions,

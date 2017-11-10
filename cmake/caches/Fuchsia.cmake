@@ -19,6 +19,12 @@ if(NOT APPLE)
   set(BOOTSTRAP_LLVM_ENABLE_LLD ON CACHE BOOL "")
 endif()
 
+if(APPLE)
+  set(COMPILER_RT_ENABLE_IOS OFF CACHE BOOL "")
+  set(COMPILER_RT_ENABLE_TVOS OFF CACHE BOOL "")
+  set(COMPILER_RT_ENABLE_WATCHOS OFF CACHE BOOL "")
+endif()
+
 set(CLANG_BOOTSTRAP_TARGETS
   check-all
   check-llvm
@@ -32,9 +38,11 @@ set(CLANG_BOOTSTRAP_TARGETS
   install-distribution
   clang CACHE STRING "")
 
-if(FUCHSIA_SYSROOT)
-  set(EXTRA_ARGS -DFUCHSIA_SYSROOT=${FUCHSIA_SYSROOT})
-endif()
+foreach(target x86_64;aarch64)
+  if(FUCHSIA_${target}_SYSROOT)
+    list(APPEND EXTRA_ARGS -DFUCHSIA_${target}_SYSROOT=${FUCHSIA_${target}_SYSROOT})
+  endif()
+endforeach()
 
 # Setup the bootstrap build.
 set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")

@@ -336,6 +336,7 @@ bool Declarator::isDeclarationOfFunction() const {
     case TST_decimal32:
     case TST_decimal64:
     case TST_double:
+    case TST_Float16:
     case TST_float128:
     case TST_enum:
     case TST_error:
@@ -505,6 +506,7 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T,
   case DeclSpec::TST_half:        return "half";
   case DeclSpec::TST_float:       return "float";
   case DeclSpec::TST_double:      return "double";
+  case DeclSpec::TST_float16:     return "_Float16";
   case DeclSpec::TST_float128:    return "__float128";
   case DeclSpec::TST_bool:        return Policy.Bool ? "bool" : "_Bool";
   case DeclSpec::TST_decimal32:   return "_Decimal32";
@@ -1082,8 +1084,10 @@ void DeclSpec::Finish(Sema &S, const PrintingPolicy &Policy) {
                !S.getLangOpts().ZVector)
         S.Diag(TSTLoc, diag::err_invalid_vector_double_decl_spec);
     } else if (TypeSpecType == TST_float) {
-      // vector float is unsupported for ZVector.
-      if (S.getLangOpts().ZVector)
+      // vector float is unsupported for ZVector unless we have the
+      // vector-enhancements facility 1 (ISA revision 12).
+      if (S.getLangOpts().ZVector &&
+          !S.Context.getTargetInfo().hasFeature("arch12"))
         S.Diag(TSTLoc, diag::err_invalid_vector_float_decl_spec);
     } else if (TypeSpecWidth == TSW_long) {
       // vector long is unsupported for ZVector and deprecated for AltiVec.

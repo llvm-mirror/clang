@@ -82,6 +82,9 @@ void tools::MinGW::Linker::AddLibGCC(const ArgList &Args,
 
   CmdArgs.push_back("-lmoldname");
   CmdArgs.push_back("-lmingwex");
+  for (auto Lib : Args.getAllArgValues(options::OPT_l))
+    if (StringRef(Lib).startswith("msvcr") || Lib == "ucrtbase")
+      return;
   CmdArgs.push_back("-lmsvcrt");
 }
 
@@ -119,12 +122,24 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-s");
 
   CmdArgs.push_back("-m");
-  if (TC.getArch() == llvm::Triple::x86)
+  switch (TC.getArch()) {
+  case llvm::Triple::x86:
     CmdArgs.push_back("i386pe");
-  if (TC.getArch() == llvm::Triple::x86_64)
+    break;
+  case llvm::Triple::x86_64:
     CmdArgs.push_back("i386pep");
-  if (TC.getArch() == llvm::Triple::arm)
+    break;
+  case llvm::Triple::arm:
+  case llvm::Triple::thumb:
+    // FIXME: this is incorrect for WinCE
     CmdArgs.push_back("thumb2pe");
+    break;
+  case llvm::Triple::aarch64:
+    CmdArgs.push_back("arm64pe");
+    break;
+  default:
+    llvm_unreachable("Unsupported target architecture.");
+  }
 
   if (Args.hasArg(options::OPT_mwindows)) {
     CmdArgs.push_back("--subsystem");
@@ -185,8 +200,7 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   // TODO: Add profile stuff here
 
-  if (D.CCCIsCXX() &&
-      !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
+  if (TC.ShouldLinkCXXStdlib(Args)) {
     bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
                                !Args.hasArg(options::OPT_static);
     if (OnlyLibstdcxxStatic)
@@ -285,28 +299,30 @@ void toolchains::MinGW::findGccLibDir() {
   }
 }
 
+llvm::ErrorOr<std::string> toolchains::MinGW::findGcc() {
+  llvm::SmallVector<llvm::SmallString<32>, 2> Gccs;
+  Gccs.emplace_back(getTriple().getArchName());
+  Gccs[0] += "-w64-mingw32-gcc";
+  Gccs.emplace_back("mingw32-gcc");
+  // Please do not add "gcc" here
+  for (StringRef CandidateGcc : Gccs)
+    if (llvm::ErrorOr<std::string> GPPName = llvm::sys::findProgramByName(CandidateGcc))
+      return GPPName;
+  return make_error_code(std::errc::no_such_file_or_directory);
+}
+
 toolchains::MinGW::MinGW(const Driver &D, const llvm::Triple &Triple,
                          const ArgList &Args)
     : ToolChain(D, Triple, Args), CudaInstallation(D, Triple, Args) {
   getProgramPaths().push_back(getDriver().getInstalledDir());
 
-// In Windows there aren't any standard install locations, we search
-// for gcc on the PATH. In Linux the base is always /usr.
-#ifdef LLVM_ON_WIN32
   if (getDriver().SysRoot.size())
     Base = getDriver().SysRoot;
-  else if (llvm::ErrorOr<std::string> GPPName =
-               llvm::sys::findProgramByName("gcc"))
+  else if (llvm::ErrorOr<std::string> GPPName = findGcc())
     Base = llvm::sys::path::parent_path(
         llvm::sys::path::parent_path(GPPName.get()));
   else
     Base = llvm::sys::path::parent_path(getDriver().getInstalledDir());
-#else
-  if (getDriver().SysRoot.size())
-    Base = getDriver().SysRoot;
-  else
-    Base = "/usr";
-#endif
 
   Base += llvm::sys::path::get_separator();
   findGccLibDir();
@@ -345,7 +361,7 @@ Tool *toolchains::MinGW::buildLinker() const {
   return new tools::MinGW::Linker(*this);
 }
 
-bool toolchains::MinGW::IsUnwindTablesDefault() const {
+bool toolchains::MinGW::IsUnwindTablesDefault(const ArgList &Args) const {
   return getArch() == llvm::Triple::x86_64;
 }
 

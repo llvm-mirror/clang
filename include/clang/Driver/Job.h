@@ -11,6 +11,7 @@
 #define LLVM_CLANG_DRIVER_JOB_H
 
 #include "clang/Basic/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Option/Option.h"
@@ -69,6 +70,9 @@ class Command {
   /// file
   std::string ResponseFileFlag;
 
+  /// See Command::setEnvironment
+  std::vector<const char *> Environment;
+
   /// When a response file is needed, we try to put most arguments in an
   /// exclusive file, while others remains as regular command line arguments.
   /// This functions fills a vector with the regular command line arguments,
@@ -93,8 +97,8 @@ public:
   virtual void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
                      CrashReportInfo *CrashInfo = nullptr) const;
 
-  virtual int Execute(const StringRef **Redirects, std::string *ErrMsg,
-                      bool *ExecutionFailed) const;
+  virtual int Execute(ArrayRef<Optional<StringRef>> Redirects,
+                      std::string *ErrMsg, bool *ExecutionFailed) const;
 
   /// getSource - Return the Action which caused the creation of this job.
   const Action &getSource() const { return Source; }
@@ -110,6 +114,12 @@ public:
   void setInputFileList(llvm::opt::ArgStringList List) {
     InputFileList = std::move(List);
   }
+
+  /// \brief Sets the environment to be used by the new process.
+  /// \param NewEnvironment An array of environment variables.
+  /// \remark If the environment remains unset, then the environment
+  ///         from the parent process will be used.
+  void setEnvironment(llvm::ArrayRef<const char *> NewEnvironment);
 
   const char *getExecutable() const { return Executable; }
 
@@ -131,7 +141,7 @@ public:
   void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
              CrashReportInfo *CrashInfo = nullptr) const override;
 
-  int Execute(const StringRef **Redirects, std::string *ErrMsg,
+  int Execute(ArrayRef<Optional<StringRef>> Redirects, std::string *ErrMsg,
               bool *ExecutionFailed) const override;
 
 private:
@@ -148,7 +158,7 @@ public:
   void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
              CrashReportInfo *CrashInfo = nullptr) const override;
 
-  int Execute(const StringRef **Redirects, std::string *ErrMsg,
+  int Execute(ArrayRef<Optional<StringRef>> Redirects, std::string *ErrMsg,
               bool *ExecutionFailed) const override;
 };
 

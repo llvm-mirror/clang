@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -verify %s
+// RUN: %clang_cc1 -fsyntax-only -verify %s -fcxx-exceptions
 template<typename T>
 struct X0 {
   typedef T* type;
@@ -38,22 +38,27 @@ namespace PR18246 {
 
   template<typename T>
   template<int N>
-  void Baz<T>::bar() { // expected-note {{couldn't infer template argument 'N'}}
+  void Baz<T>::bar() {
   }
 
-  // FIXME: We shouldn't try to match this against a prior declaration if
-  // template parameter matching failed.
   template<typename T>
-  void Baz<T>::bar<0>() { // expected-error {{cannot specialize a member of an unspecialized template}} \
-                          // expected-error {{no function template matches}}
+  void Baz<T>::bar<0>() { // expected-error {{cannot specialize a member of an unspecialized template}}
   }
 }
 
 namespace PR19340 {
 template<typename T> struct Helper {
-  template<int N> static void func(const T *m) {} // expected-note {{failed template argument deduction}}
+  template<int N> static void func(const T *m) {}
 };
 
-template<typename T> void Helper<T>::func<2>() {} // expected-error {{cannot specialize a member}} \
-                                                  // expected-error {{no function template matches}}
+template<typename T> void Helper<T>::func<2>() {} // expected-error {{cannot specialize a member}}
+}
+
+namespace SpecLoc {
+  template <typename T> struct A {
+    static int n; // expected-note {{previous}}
+    static void f(); // expected-note {{previous}}
+  };
+  template<> float A<int>::n; // expected-error {{different type}}
+  template<> void A<int>::f() throw(); // expected-error {{does not match}}
 }

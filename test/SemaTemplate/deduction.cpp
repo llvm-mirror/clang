@@ -305,11 +305,11 @@ namespace nullptr_deduction {
 
   template<typename T, T v> struct X {};
   template<typename T, T v> void f(X<T, v>) {
-    static_assert(!v, "");
+    static_assert(!v, ""); // expected-warning 2{{implicit conversion of nullptr constant to 'bool'}}
   }
   void g() {
-    f(X<int*, nullptr>());
-    f(X<nullptr_t, nullptr>());
+    f(X<int*, nullptr>()); // expected-note {{instantiation of}}
+    f(X<nullptr_t, nullptr>()); // expected-note {{instantiation of}}
   }
 
   template<template<typename T, T> class X, typename T, typename U, int *P>
@@ -483,16 +483,15 @@ namespace check_extended_pack {
 }
 
 namespace dependent_template_template_param_non_type_param_type {
-  template<int N> struct A { // expected-note 2{{candidate}}
+  template<int N> struct A {
     template<typename V = int, V M = 12, V (*Y)[M], template<V (*v)[M]> class W>
-    A(W<Y>); // expected-note {{[with V = int, M = 12, Y = &dependent_template_template_param_non_type_param_type::n]}}
+    A(W<Y>);
   };
 
   int n[12];
   template<int (*)[12]> struct Q {};
   Q<&n> qn;
-  // FIXME: This should be accepted, but we somehow fail to deduce W.
-  A<0> a(qn); // expected-error {{no matching constructor for initialization}}
+  A<0> a(qn);
 }
 
 namespace dependent_list_deduction {

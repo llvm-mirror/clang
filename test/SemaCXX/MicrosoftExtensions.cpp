@@ -2,6 +2,7 @@
 // RUN: %clang_cc1 -std=c++98 %s -triple i686-pc-win32 -fsyntax-only -Wmicrosoft -Wc++11-extensions -Wno-long-long -verify -fms-extensions -fexceptions -fcxx-exceptions -DTEST1
 // RUN: %clang_cc1 -std=c++11 %s -triple i686-pc-win32 -fsyntax-only -Wmicrosoft -Wc++11-extensions -Wno-long-long -verify -fms-extensions -fexceptions -fcxx-exceptions -DTEST1
 // RUN: %clang_cc1 %s -triple i686-pc-win32 -fsyntax-only -Wmicrosoft -Wc++11-extensions -Wno-long-long -verify -fexceptions -fcxx-exceptions -DTEST2
+// RUN: %clang_cc1 %s -triple i686-pc-win32 -fsyntax-only -std=c++11 -fms-compatibility -verify -DTEST3
 
 #if TEST1
 
@@ -503,10 +504,31 @@ struct S {
 int S::fn() { return 0; } // expected-warning {{is missing exception specification}}
 }
 
+class PR34109_class {
+  PR34109_class() {}
+  virtual ~PR34109_class() {}
+};
+
+void operator delete(void *) throw();
+// expected-note@-1 {{previous declaration is here}}
+__declspec(dllexport) void operator delete(void *) throw();
+// expected-error@-1  {{redeclaration of 'operator delete' cannot add 'dllexport' attribute}}
+
+void PR34109(int* a) {
+  delete a;
+}
+
 #elif TEST2
 
 // Check that __unaligned is not recognized if MS extensions are not enabled
 typedef char __unaligned *aligned_type; // expected-error {{expected ';' after top level declarator}}
+
+#elif TEST3
+
+namespace PR32750 {
+template<typename T> struct A {};
+template<typename T> struct B : A<A<T>> { A<T>::C::D d; }; // expected-error {{missing 'typename' prior to dependent type name 'A<T>::C::D'}}
+}
 
 #else
 

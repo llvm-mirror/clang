@@ -107,7 +107,7 @@ Options to Control Error and Warning Messages
 
 .. option:: -Wno-error=foo
 
-  Turn warning "foo" into an warning even if :option:`-Werror` is specified.
+  Turn warning "foo" into a warning even if :option:`-Werror` is specified.
 
 .. option:: -Wfoo
 
@@ -322,18 +322,40 @@ output format of the diagnostics that it generates.
    by category, so it should be a high level category. We want dozens
    of these, not hundreds or thousands of them.
 
+.. _opt_fsave-optimization-record:
+
+**-fsave-optimization-record**
+   Write optimization remarks to a YAML file.
+
+   This option, which defaults to off, controls whether Clang writes
+   optimization reports to a YAML file. By recording diagnostics in a file,
+   using a structured YAML format, users can parse or sort the remarks in a
+   convenient way.
+
+.. _opt_foptimization-record-file:
+
+**-foptimization-record-file**
+   Control the file to which optimization reports are written.
+
+   When optimization reports are being output (see
+   :ref:`-fsave-optimization-record <opt_fsave-optimization-record>`), this
+   option controls the file to which those reports are written.
+
+   If this option is not used, optimization records are output to a file named
+   after the primary file being compiled. If that's "foo.c", for example,
+   optimization records are output to "foo.opt.yaml".
+
 .. _opt_fdiagnostics-show-hotness:
 
 **-f[no-]diagnostics-show-hotness**
    Enable profile hotness information in diagnostic line.
 
-   This option, which defaults to off, controls whether Clang prints the
-   profile hotness associated with a diagnostics in the presence of
-   profile-guided optimization information.  This is currently supported with
-   optimization remarks (see :ref:`Options to Emit Optimization Reports
-   <rpass>`).  The hotness information allows users to focus on the hot
-   optimization remarks that are likely to be more relevant for run-time
-   performance.
+   This option controls whether Clang prints the profile hotness associated
+   with diagnostics in the presence of profile-guided optimization information.
+   This is currently supported with optimization remarks (see
+   :ref:`Options to Emit Optimization Reports <rpass>`). The hotness information
+   allows users to focus on the hot optimization remarks that are likely to be
+   more relevant for run-time performance.
 
    For example, in this output, the block containing the callsite of `foo` was
    executed 3000 times according to the profile data:
@@ -343,6 +365,23 @@ output format of the diagnostics that it generates.
          s.c:7:10: remark: foo inlined into bar (hotness: 3000) [-Rpass-analysis=inline]
            sum += foo(x, x - 2);
                   ^
+
+   This option is implied when
+   :ref:`-fsave-optimization-record <opt_fsave-optimization-record>` is used.
+   Otherwise, it defaults to off.
+
+.. _opt_fdiagnostics-hotness-threshold:
+
+**-fdiagnostics-hotness-threshold**
+   Prevent optimization remarks from being output if they do not have at least
+   this hotness value.
+
+   This option, which defaults to zero, controls the minimum hotness an
+   optimization remark would need in order to be output by Clang. This is
+   currently supported with optimization remarks (see :ref:`Options to Emit
+   Optimization Reports <rpass>`) when profile hotness information in
+   diagnostics is enabled (see
+   :ref:`-fdiagnostics-show-hotness <opt_fdiagnostics-show-hotness>`).
 
 .. _opt_fdiagnostics-fixit-info:
 
@@ -562,6 +601,16 @@ control the crash diagnostics.
 The -fno-crash-diagnostics flag can be helpful for speeding the process
 of generating a delta reduced test case.
 
+Clang is also capable of generating preprocessed source file(s) and associated
+run script(s) even without a crash. This is specially useful when trying to
+generate a reproducer for warnings or errors while using modules.
+
+.. option:: -gen-reproducer
+
+  Generates preprocessed source files, a reproducer script and if relevant, a
+  cache containing: built module pcm's and all headers needed to rebuilt the
+  same modules.
+
 .. _rpass:
 
 Options to Emit Optimization Reports
@@ -628,7 +677,7 @@ Current limitations
 
 Other Options
 -------------
-Clang options that that don't fit neatly into other categories.
+Clang options that don't fit neatly into other categories.
 
 .. option:: -MV
 
@@ -1098,6 +1147,11 @@ are listed below.
    the behavior of sanitizers in the ``cfi`` group to allow checking
    of cross-DSO virtual and indirect calls.
 
+.. option:: -fsanitize-cfi-icall-generalize-pointers
+
+   Generalize pointers in return and argument types in function type signatures
+   checked by Control Flow Integrity indirect call checking. See
+   :doc:`ControlFlowIntegrity` for more details.
 
 .. option:: -fstrict-vtable-pointers
 
@@ -1389,7 +1443,7 @@ Sample Profile Text Format
 
 This section describes the ASCII text format for sampling profiles. It is,
 arguably, the easiest one to generate. If you are interested in generating any
-of the other two, consult the ``ProfileData`` library in in LLVM's source tree
+of the other two, consult the ``ProfileData`` library in LLVM's source tree
 (specifically, ``include/llvm/ProfileData/SampleProfReader.h``).
 
 .. code-block:: console
@@ -1405,7 +1459,7 @@ of the other two, consult the ``ProfileData`` library in in LLVM's source tree
       offsetB[.discriminator]: fnB:num_of_total_samples
        offsetB1[.discriminator]: number_of_samples [fn11:num fn12:num ... ]
 
-This is a nested tree in which the identation represents the nesting level
+This is a nested tree in which the indentation represents the nesting level
 of the inline stack. There are no blank lines in the file. And the spacing
 within a single line is fixed. Additional spaces will result in an error
 while reading the file.
@@ -2573,6 +2627,10 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /Brepro                 Emit an object file which can be reproduced over time
       /C                      Don't discard comments when preprocessing
       /c                      Compile only
+      /d1reportAllClassLayout Dump record layout information
+      /diagnostics:caret      Enable caret and column diagnostics (on by default)
+      /diagnostics:classic    Disable column and caret diagnostics
+      /diagnostics:column     Disable caret diagnostics but keep column info
       /D <macro[=value]>      Define macro
       /EH<value>              Exception handling model
       /EP                     Disable linemarker output and preprocess to stdout
@@ -2667,6 +2725,8 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /Zc:threadSafeInit      Enable thread-safe initialization of static variables
       /Zc:trigraphs-          Disable trigraphs (default)
       /Zc:trigraphs           Enable trigraphs
+      /Zc:twoPhase-           Disable two-phase name lookup in templates
+      /Zc:twoPhase            Enable two-phase name lookup in templates
       /Zd                     Emit debug line number tables only
       /Zi                     Alias for /Z7. Does not produce PDBs.
       /Zl                     Don't mention any default libraries in the object file
@@ -2679,12 +2739,14 @@ Execute ``clang-cl /?`` to see a list of supported options:
       --analyze               Run the static analyzer
       -fansi-escape-codes     Use ANSI escape codes for diagnostics
       -fcolor-diagnostics     Use colors in diagnostics
+      -fdebug-macro           Emit macro debug information
       -fdelayed-template-parsing
                               Parse templated function definitions at the end of the translation unit
       -fdiagnostics-absolute-paths
                               Print absolute paths in diagnostics
       -fdiagnostics-parseable-fixits
                               Print fix-its in machine parseable form
+      -flto=<value>           Set LTO mode to either 'full' or 'thin'
       -flto                   Enable LTO in 'full' mode
       -fms-compatibility-version=<value>
                               Dot-separated value representing the Microsoft compiler version
@@ -2693,12 +2755,27 @@ Execute ``clang-cl /?`` to see a list of supported options:
       -fms-extensions         Accept some non-standard constructs supported by the Microsoft compiler
       -fmsc-version=<value>   Microsoft compiler version number to report in _MSC_VER
                               (0 = don't define it (default))
+      -fno-debug-macro        Do not emit macro debug information
       -fno-delayed-template-parsing
                               Disable delayed template parsing
+      -fno-sanitize-address-use-after-scope
+                              Disable use-after-scope detection in AddressSanitizer
+      -fno-sanitize-blacklist Don't use blacklist file for sanitizers
+      -fno-sanitize-cfi-cross-dso
+                              Disable control flow integrity (CFI) checks for cross-DSO calls.
       -fno-sanitize-coverage=<value>
                               Disable specified features of coverage instrumentation for Sanitizers
+      -fno-sanitize-memory-track-origins
+                              Disable origins tracking in MemorySanitizer
       -fno-sanitize-recover=<value>
                               Disable recovery for specified sanitizers
+      -fno-sanitize-stats     Disable sanitizer statistics gathering.
+      -fno-sanitize-thread-atomics
+                              Disable atomic operations instrumentation in ThreadSanitizer
+      -fno-sanitize-thread-func-entry-exit
+                              Disable function entry/exit instrumentation in ThreadSanitizer
+      -fno-sanitize-thread-memory-access
+                              Disable memory access instrumentation in ThreadSanitizer
       -fno-sanitize-trap=<value>
                               Disable trapping for specified sanitizers
       -fno-standalone-debug   Limit debug information produced to reduce size of debug binary
@@ -2710,13 +2787,36 @@ Execute ``clang-cl /?`` to see a list of supported options:
                               (overridden by '=' form of option or LLVM_PROFILE_FILE env var)
       -fprofile-instr-use=<value>
                               Use instrumentation data for profile-guided optimization
+      -fsanitize-address-field-padding=<value>
+                              Level of field padding for AddressSanitizer
+      -fsanitize-address-globals-dead-stripping
+                              Enable linker dead stripping of globals in AddressSanitizer
+      -fsanitize-address-use-after-scope
+                              Enable use-after-scope detection in AddressSanitizer
       -fsanitize-blacklist=<value>
                               Path to blacklist file for sanitizers
+      -fsanitize-cfi-cross-dso
+                              Enable control flow integrity (CFI) checks for cross-DSO calls.
       -fsanitize-coverage=<value>
                               Specify the type of coverage instrumentation for Sanitizers
+      -fsanitize-memory-track-origins=<value>
+                              Enable origins tracking in MemorySanitizer
+      -fsanitize-memory-track-origins
+                              Enable origins tracking in MemorySanitizer
+      -fsanitize-memory-use-after-dtor
+                              Enable use-after-destroy detection in MemorySanitizer
       -fsanitize-recover=<value>
                               Enable recovery for specified sanitizers
+      -fsanitize-stats        Enable sanitizer statistics gathering.
+      -fsanitize-thread-atomics
+                              Enable atomic operations instrumentation in ThreadSanitizer (default)
+      -fsanitize-thread-func-entry-exit
+                              Enable function entry/exit instrumentation in ThreadSanitizer (default)
+      -fsanitize-thread-memory-access
+                              Enable memory access instrumentation in ThreadSanitizer (default)
       -fsanitize-trap=<value> Enable trapping for specified sanitizers
+      -fsanitize-undefined-strip-path-components=<number>
+                              Strip (or keep only, if negative) a given number of path components when emitting check metadata.
       -fsanitize=<check>      Turn on runtime checks for various forms of undefined or suspicious
                               behavior. See user manual for available checks
       -fstandalone-debug      Emit full debug info for all types used by the program
@@ -2724,6 +2824,7 @@ Execute ``clang-cl /?`` to see a list of supported options:
       -gline-tables-only      Emit debug line number tables only
       -miamcu                 Use Intel MCU ABI
       -mllvm <value>          Additional arguments to forward to LLVM's option processing
+      -nobuiltininc           Disable builtin #include directories
       -Qunused-arguments      Don't emit warning for unused driver arguments
       -R<remark>              Enable the specified remark
       --target=<value>        Generate code for the given target

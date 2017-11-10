@@ -262,6 +262,11 @@ public:
 
   TemplateName getUnderlying() const;
 
+  /// Get the template name to substitute when this template name is used as a
+  /// template template argument. This refers to the most recent declaration of
+  /// the template, including any default template arguments.
+  TemplateName getNameToSubstitute() const;
+
   /// \brief Determines whether this is a dependent template name.
   bool isDependent() const;
 
@@ -515,8 +520,7 @@ namespace llvm {
 
 /// \brief The clang::TemplateName class is effectively a pointer.
 template<>
-class PointerLikeTypeTraits<clang::TemplateName> {
-public:
+struct PointerLikeTypeTraits<clang::TemplateName> {
   static inline void *getAsVoidPointer(clang::TemplateName TN) {
     return TN.getAsVoidPointer();
   }

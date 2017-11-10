@@ -16,6 +16,7 @@
 #define LLVM_CLANG_TOOLING_REFACTOR_ATOMICCHANGE_H
 
 #include "clang/Basic/SourceManager.h"
+#include "clang/Format/Format.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -45,6 +46,14 @@ public:
   AtomicChange(llvm::StringRef FilePath, llvm::StringRef Key)
       : Key(Key), FilePath(FilePath) {}
 
+  AtomicChange(AtomicChange &&) = default;
+  AtomicChange(const AtomicChange &) = default;
+
+  AtomicChange &operator=(AtomicChange &&) = default;
+  AtomicChange &operator=(const AtomicChange &) = default;
+
+  bool operator==(const AtomicChange &Other) const;
+
   /// \brief Returns the atomic change as a YAML string.
   std::string toYAMLString();
 
@@ -69,6 +78,12 @@ public:
 
   /// \brief Returns the error message or an empty string if it does not exist.
   const std::string &getError() const { return Error; }
+
+  /// \brief Adds a replacement that replaces the given Range with
+  /// ReplacementText.
+  /// \returns An llvm::Error carrying ReplacementError on error.
+  llvm::Error replace(const SourceManager &SM, const CharSourceRange &Range,
+                      llvm::StringRef ReplacementText);
 
   /// \brief Adds a replacement that replaces range [Loc, Loc+Length) with
   /// \p Text.
@@ -122,6 +137,41 @@ private:
   std::vector<std::string> RemovedHeaders;
   tooling::Replacements Replaces;
 };
+
+using AtomicChanges = std::vector<AtomicChange>;
+
+// Defines specs for applying changes.
+struct ApplyChangesSpec {
+  // If true, cleans up redundant/erroneous code around changed code with
+  // clang-format's cleanup functionality, e.g. redundant commas around deleted
+  // parameter or empty namespaces introduced by deletions.
+  bool Cleanup = true;
+
+  format::FormatStyle Style = format::getNoStyle();
+
+  // Options for selectively formatting changes with clang-format:
+  // kAll: Format all changed lines.
+  // kNone: Don't format anything.
+  // kViolations: Format lines exceeding the `ColumnLimit` in `Style`.
+  enum FormatOption { kAll, kNone, kViolations };
+
+  FormatOption Format = kNone;
+};
+
+/// \brief Applies all AtomicChanges in \p Changes to the \p Code.
+///
+/// This completely ignores the file path in each change and replaces them with
+/// \p FilePath, i.e. callers are responsible for ensuring all changes are for
+/// the same file.
+///
+/// \returns The changed code if all changes are applied successfully;
+/// otherwise, an llvm::Error carrying llvm::StringError is returned (the Error
+/// message can be converted to string with `llvm::toString()` and the
+/// error_code should be ignored).
+llvm::Expected<std::string>
+applyAtomicChanges(llvm::StringRef FilePath, llvm::StringRef Code,
+                   llvm::ArrayRef<AtomicChange> Changes,
+                   const ApplyChangesSpec &Spec);
 
 } // end namespace tooling
 } // end namespace clang

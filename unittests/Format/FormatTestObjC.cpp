@@ -20,7 +20,6 @@
 #define DEBUG_TYPE "format-test"
 
 using clang::tooling::ReplacementTest;
-using clang::tooling::toReplacements;
 
 namespace clang {
 namespace format {
@@ -33,23 +32,24 @@ protected:
     Style.Language = FormatStyle::LK_ObjC;
   }
 
-  enum IncompleteCheck {
-    IC_ExpectComplete,
-    IC_ExpectIncomplete,
-    IC_DoNotCheck
+  enum StatusCheck {
+    SC_ExpectComplete,
+    SC_ExpectIncomplete,
+    SC_DoNotCheck
   };
 
   std::string format(llvm::StringRef Code,
-                     IncompleteCheck CheckIncomplete = IC_ExpectComplete) {
+                     StatusCheck CheckComplete = SC_ExpectComplete) {
     DEBUG(llvm::errs() << "---\n");
     DEBUG(llvm::errs() << Code << "\n\n");
     std::vector<tooling::Range> Ranges(1, tooling::Range(0, Code.size()));
-    bool IncompleteFormat = false;
+    FormattingAttemptStatus Status;
     tooling::Replacements Replaces =
-        reformat(Style, Code, Ranges, "<stdin>", &IncompleteFormat);
-    if (CheckIncomplete != IC_DoNotCheck) {
-      bool ExpectedIncompleteFormat = CheckIncomplete == IC_ExpectIncomplete;
-      EXPECT_EQ(ExpectedIncompleteFormat, IncompleteFormat) << Code << "\n\n";
+        reformat(Style, Code, Ranges, "<stdin>", &Status);
+    if (CheckComplete != SC_DoNotCheck) {
+      bool ExpectedCompleteFormat = CheckComplete == SC_ExpectComplete;
+      EXPECT_EQ(ExpectedCompleteFormat, Status.FormatComplete)
+          << Code << "\n\n";
     }
     auto Result = applyAllReplacements(Code, Replaces);
     EXPECT_TRUE(static_cast<bool>(Result));
@@ -62,7 +62,7 @@ protected:
   }
 
   void verifyIncompleteFormat(StringRef Code) {
-    EXPECT_EQ(Code.str(), format(test::messUp(Code), IC_ExpectIncomplete));
+    EXPECT_EQ(Code.str(), format(test::messUp(Code), SC_ExpectIncomplete));
   }
 
   FormatStyle Style;

@@ -1,4 +1,5 @@
 set(LLVM_LINK_COMPONENTS
+  BinaryFormat
   Option
   Support
   )
@@ -27,9 +28,10 @@ add_clang_library(clangDriver
   ToolChains/Arch/Sparc.cpp
   ToolChains/Arch/SystemZ.cpp
   ToolChains/Arch/X86.cpp
+  ToolChains/Ananas.cpp
   ToolChains/AMDGPU.cpp
   ToolChains/AVR.cpp
-  ToolChains/Bitrig.cpp
+  ToolChains/BareMetal.cpp
   ToolChains/Clang.cpp
   ToolChains/CloudABI.cpp
   ToolChains/CommonArgs.cpp
@@ -58,6 +60,7 @@ add_clang_library(clangDriver
   ToolChains/WebAssembly.cpp
   ToolChains/XCore.cpp
   Types.cpp
+  XRayArgs.cpp
 
   DEPENDS
   ClangDriverOptions

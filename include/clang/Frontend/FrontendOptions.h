@@ -23,6 +23,7 @@ class MemoryBuffer;
 }
 
 namespace clang {
+class FileEntry;
 
 namespace frontend {
   enum ActionKind {
@@ -62,46 +63,89 @@ namespace frontend {
   };
 }
 
-enum InputKind {
-  IK_None,
-  IK_Asm,
-  IK_C,
-  IK_CXX,
-  IK_ObjC,
-  IK_ObjCXX,
-  IK_PreprocessedC,
-  IK_PreprocessedCXX,
-  IK_PreprocessedObjC,
-  IK_PreprocessedObjCXX,
-  IK_OpenCL,
-  IK_CUDA,
-  IK_PreprocessedCuda,
-  IK_RenderScript,
-  IK_AST,
-  IK_LLVM_IR
-};
+/// The kind of a file that we've been handed as an input.
+class InputKind {
+private:
+  unsigned Lang : 4;
+  unsigned Fmt : 3;
+  unsigned Preprocessed : 1;
 
+public:
+  /// The language for the input, used to select and validate the language
+  /// standard and possible actions.
+  enum Language {
+    Unknown,
+
+    /// Assembly: we accept this only so that we can preprocess it.
+    Asm,
+
+    /// LLVM IR: we accept this so that we can run the optimizer on it,
+    /// and compile it to assembly or object code.
+    LLVM_IR,
+
+    ///@{ Languages that the frontend can parse and compile.
+    C,
+    CXX,
+    ObjC,
+    ObjCXX,
+    OpenCL,
+    CUDA,
+    RenderScript,
+    ///@}
+  };
+
+  /// The input file format.
+  enum Format {
+    Source,
+    ModuleMap,
+    Precompiled
+  };
+
+  constexpr InputKind(Language L = Unknown, Format F = Source,
+                      bool PP = false)
+      : Lang(L), Fmt(F), Preprocessed(PP) {}
+
+  Language getLanguage() const { return static_cast<Language>(Lang); }
+  Format getFormat() const { return static_cast<Format>(Fmt); }
+  bool isPreprocessed() const { return Preprocessed; }
+
+  /// Is the input kind fully-unknown?
+  bool isUnknown() const { return Lang == Unknown && Fmt == Source; }
+
+  /// Is the language of the input some dialect of Objective-C?
+  bool isObjectiveC() const { return Lang == ObjC || Lang == ObjCXX; }
+
+  InputKind getPreprocessed() const {
+    return InputKind(getLanguage(), getFormat(), true);
+  }
+  InputKind withFormat(Format F) const {
+    return InputKind(getLanguage(), F, isPreprocessed());
+  }
+};
 
 /// \brief An input file for the front end.
 class FrontendInputFile {
   /// \brief The file name, or "-" to read from standard input.
   std::string File;
 
-  llvm::MemoryBuffer *Buffer;
+  /// The input, if it comes from a buffer rather than a file. This object
+  /// does not own the buffer, and the caller is responsible for ensuring
+  /// that it outlives any users.
+  llvm::MemoryBuffer *Buffer = nullptr;
 
   /// \brief The kind of input, e.g., C source, AST file, LLVM IR.
   InputKind Kind;
 
   /// \brief Whether we're dealing with a 'system' input (vs. a 'user' input).
-  bool IsSystem;
+  bool IsSystem = false;
 
 public:
-  FrontendInputFile() : Buffer(nullptr), Kind(IK_None), IsSystem(false) { }
+  FrontendInputFile() { }
   FrontendInputFile(StringRef File, InputKind Kind, bool IsSystem = false)
-    : File(File.str()), Buffer(nullptr), Kind(Kind), IsSystem(IsSystem) { }
-  FrontendInputFile(llvm::MemoryBuffer *buffer, InputKind Kind,
+    : File(File.str()), Kind(Kind), IsSystem(IsSystem) { }
+  FrontendInputFile(llvm::MemoryBuffer *Buffer, InputKind Kind,
                     bool IsSystem = false)
-    : Buffer(buffer), Kind(Kind), IsSystem(IsSystem) { }
+    : Buffer(Buffer), Kind(Kind), IsSystem(IsSystem) { }
 
   InputKind getKind() const { return Kind; }
   bool isSystem() const { return IsSystem; }
@@ -109,13 +153,7 @@ public:
   bool isEmpty() const { return File.empty() && Buffer == nullptr; }
   bool isFile() const { return !isBuffer(); }
   bool isBuffer() const { return Buffer != nullptr; }
-  bool isPreprocessed() const {
-    return Kind == IK_PreprocessedC ||
-           Kind == IK_PreprocessedCXX ||
-           Kind == IK_PreprocessedObjC ||
-           Kind == IK_PreprocessedObjCXX ||
-           Kind == IK_PreprocessedCuda;
-  }
+  bool isPreprocessed() const { return Kind.isPreprocessed(); }
 
   StringRef getFile() const {
     assert(isFile());
@@ -224,6 +262,10 @@ public:
   /// The input files and their types.
   std::vector<FrontendInputFile> Inputs;
 
+  /// When the input is a module map, the original module map file from which
+  /// that map was inferred, if any (for umbrella modules).
+  std::string OriginalModuleMap;
+
   /// The output file, if any.
   std::string OutputFile;
 
@@ -278,8 +320,8 @@ public:
   /// \brief Auxiliary triple for CUDA compilation.
   std::string AuxTriple;
 
-  /// \brief If non-empty, search the pch input file as it was a header
-  // included by this file.
+  /// \brief If non-empty, search the pch input file as if it was a header
+  /// included by this file.
   std::string FindPchSource;
 
   /// Filename to write statistics to.
@@ -299,10 +341,10 @@ public:
   {}
 
   /// getInputKindForExtension - Return the appropriate input kind for a file
-  /// extension. For example, "c" would return IK_C.
+  /// extension. For example, "c" would return InputKind::C.
   ///
-  /// \return The input kind for the extension, or IK_None if the extension is
-  /// not recognized.
+  /// \return The input kind for the extension, or InputKind::Unknown if the
+  /// extension is not recognized.
   static InputKind getInputKindForExtension(StringRef Extension);
 };
 

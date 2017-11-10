@@ -674,10 +674,8 @@ void AnalysisConsumer::HandleCode(Decl *D, AnalysisMode Mode,
 
   DisplayFunction(D, Mode, IMode);
   CFG *DeclCFG = Mgr->getCFG(D);
-  if (DeclCFG) {
-    unsigned CFGSize = DeclCFG->size();
-    MaxCFGSize = MaxCFGSize < CFGSize ? CFGSize : MaxCFGSize;
-  }
+  if (DeclCFG)
+    MaxCFGSize.updateMax(DeclCFG->size());
 
   BugReporter BR(*Mgr);
 
@@ -856,8 +854,7 @@ UbigraphViz::~UbigraphViz() {
     Ubiviz = *Path;
   const char *args[] = {Ubiviz.c_str(), Filename.c_str(), nullptr};
 
-  if (llvm::sys::ExecuteAndWait(Ubiviz, &args[0], nullptr, nullptr, 0, 0,
-                                &ErrMsg)) {
+  if (llvm::sys::ExecuteAndWait(Ubiviz, &args[0], nullptr, {}, 0, 0, &ErrMsg)) {
     llvm::errs() << "Error viewing graph: " << ErrMsg << "\n";
   }
 

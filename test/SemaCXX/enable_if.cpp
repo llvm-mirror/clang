@@ -472,3 +472,44 @@ namespace instantiate_constexpr_in_enable_if {
   };
   void g() { X<int>().f(); }
 }
+
+namespace PR31934 {
+int foo(int a) __attribute__((enable_if(a, "")));
+int runFn(int (&)(int));
+
+void run() {
+  {
+    int (&bar)(int) = foo; // expected-error{{cannot take address of function 'foo'}}
+    int baz = runFn(foo); // expected-error{{cannot take address of function 'foo'}}
+  }
+
+  {
+    int (&bar)(int) = (foo); // expected-error{{cannot take address of function 'foo'}}
+    int baz = runFn((foo)); // expected-error{{cannot take address of function 'foo'}}
+  }
+
+  {
+    int (&bar)(int) = static_cast<int (&)(int)>(foo); // expected-error{{cannot take address of function 'foo'}}
+    int baz = runFn(static_cast<int (&)(int)>(foo)); // expected-error{{cannot take address of function 'foo'}}
+  }
+
+  {
+    int (&bar)(int) = static_cast<int (&)(int)>((foo)); // expected-error{{cannot take address of function 'foo'}}
+    int baz = runFn(static_cast<int (&)(int)>((foo))); // expected-error{{cannot take address of function 'foo'}}
+  }
+}
+}
+
+namespace TypeOfFn {
+  template <typename T, typename U>
+  struct is_same;
+
+  template <typename T> struct is_same<T, T> {
+    enum { value = 1 };
+  };
+
+  void foo(int a) __attribute__((enable_if(a, "")));
+  void foo(float a) __attribute__((enable_if(1, "")));
+
+  static_assert(is_same<__typeof__(foo)*, decltype(&foo)>::value, "");
+}

@@ -35,14 +35,8 @@ void foo() {
   union { int i; } u;
 
   // CHECK-COMMON:      %[[I8PTR:.*]] = bitcast i32* %[[PTR:.*]] to i8*
-  // CHECK-COMMON-NEXT: %[[SIZE:.*]] = call i64 @llvm.objectsize.i64.p0i8(i8* %[[I8PTR]], i1 false)
-  // CHECK-COMMON-NEXT: %[[CHECK0:.*]] = icmp uge i64 %[[SIZE]], 4
-
-  // CHECK-COMMON:      %[[PTRTOINT:.*]] = ptrtoint {{.*}}* %[[PTR]] to i64
-  // CHECK-COMMON-NEXT: %[[MISALIGN:.*]] = and i64 %[[PTRTOINT]], 3
-  // CHECK-COMMON-NEXT: %[[CHECK1:.*]] = icmp eq i64 %[[MISALIGN]], 0
-
-  // CHECK-COMMON:       %[[OK:.*]] = and i1 %[[CHECK0]], %[[CHECK1]]
+  // CHECK-COMMON-NEXT: %[[SIZE:.*]] = call i64 @llvm.objectsize.i64.p0i8(i8* %[[I8PTR]], i1 false, i1 false)
+  // CHECK-COMMON-NEXT: %[[OK:.*]] = icmp uge i64 %[[SIZE]], 4
 
   // CHECK-UBSAN: br i1 %[[OK]], {{.*}} !prof ![[WEIGHT_MD:.*]], !nosanitize
   // CHECK-TRAP:  br i1 %[[OK]], {{.*}}
@@ -65,8 +59,7 @@ int bar(int *a) {
   // CHECK-COMMON-NEXT: %[[MISALIGN:.*]] = and i64 %[[PTRINT]], 3
   // CHECK-COMMON-NEXT: icmp eq i64 %[[MISALIGN]], 0
 
-  // CHECK-UBSAN:      %[[ARG:.*]] = ptrtoint
-  // CHECK-UBSAN-NEXT: call void @__ubsan_handle_type_mismatch_v1(i8* bitcast ({{.*}} @[[LINE_200]] to i8*), i64 %[[ARG]])
+  // CHECK-UBSAN: call void @__ubsan_handle_type_mismatch_v1(i8* bitcast ({{.*}} @[[LINE_200]] to i8*), i64 %[[PTRINT]])
 
   // CHECK-TRAP:      call void @llvm.trap() [[NR_NUW]]
   // CHECK-TRAP-NEXT: unreachable

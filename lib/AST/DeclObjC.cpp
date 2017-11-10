@@ -539,9 +539,18 @@ void ObjCInterfaceDecl::getDesignatedInitializers(
 
 bool ObjCInterfaceDecl::isDesignatedInitializer(Selector Sel,
                                       const ObjCMethodDecl **InitMethod) const {
+  bool HasCompleteDef = isThisDeclarationADefinition();
+  // During deserialization the data record for the ObjCInterfaceDecl could
+  // be made invariant by reusing the canonical decl. Take this into account
+  // when checking for the complete definition.
+  if (!HasCompleteDef && getCanonicalDecl()->hasDefinition() &&
+      getCanonicalDecl()->getDefinition() == getDefinition())
+    HasCompleteDef = true;
+
   // Check for a complete definition and recover if not so.
-  if (!isThisDeclarationADefinition())
+  if (!HasCompleteDef)
     return false;
+
   if (data().ExternallyCompleted)
     LoadExternalDefinition();
 
@@ -979,12 +988,11 @@ ObjCMethodFamily ObjCMethodDecl::getMethodFamily() const {
     break;
       
   case OMF_performSelector:
-    if (!isInstanceMethod() ||
-        !(getReturnType()->isObjCIdType() || getReturnType()->isVoidType()))
+    if (!isInstanceMethod() || !getReturnType()->isObjCIdType())
       family = OMF_None;
     else {
       unsigned noParams = param_size();
-      if (noParams < 1 || noParams > 5)
+      if (noParams < 1 || noParams > 3)
         family = OMF_None;
       else {
         ObjCMethodDecl::param_type_iterator it = param_type_begin();
@@ -993,11 +1001,10 @@ ObjCMethodFamily ObjCMethodDecl::getMethodFamily() const {
           family = OMF_None;
           break;
         }
-        // The first type should generally always be 'id' or 'Thread *', the
-        // other types can vary.
-        if (noParams > 1) {
-          ArgT = *(it + 1);
-          if (!ArgT->isObjCObjectPointerType()) {
+        while (--noParams) {
+          it++;
+          ArgT = (*it);
+          if (!ArgT->isObjCIdType()) {
             family = OMF_None;
             break;
           }
@@ -1063,20 +1070,20 @@ void ObjCMethodDecl::createImplicitParams(ASTContext &Context,
   bool selfIsPseudoStrong, selfIsConsumed;
   QualType selfTy =
     getSelfType(Context, OID, selfIsPseudoStrong, selfIsConsumed);
-  ImplicitParamDecl *self
-    = ImplicitParamDecl::Create(Context, this, SourceLocation(),
-                                &Context.Idents.get("self"), selfTy);
-  setSelfDecl(self);
+  auto *Self = ImplicitParamDecl::Create(Context, this, SourceLocation(),
+                                         &Context.Idents.get("self"), selfTy,
+                                         ImplicitParamDecl::ObjCSelf);
+  setSelfDecl(Self);
 
   if (selfIsConsumed)
-    self->addAttr(NSConsumedAttr::CreateImplicit(Context));
+    Self->addAttr(NSConsumedAttr::CreateImplicit(Context));
 
   if (selfIsPseudoStrong)
-    self->setARCPseudoStrong(true);
+    Self->setARCPseudoStrong(true);
 
-  setCmdDecl(ImplicitParamDecl::Create(Context, this, SourceLocation(),
-                                       &Context.Idents.get("_cmd"),
-                                       Context.getObjCSelType()));
+  setCmdDecl(ImplicitParamDecl::Create(
+      Context, this, SourceLocation(), &Context.Idents.get("_cmd"),
+      Context.getObjCSelType(), ImplicitParamDecl::ObjCCmd));
 }
 
 ObjCInterfaceDecl *ObjCMethodDecl::getClassInterface() {
@@ -1882,25 +1889,23 @@ void ObjCProtocolDecl::collectPropertiesToImplement(PropertyMap &PM,
   }
 }
 
-    
 void ObjCProtocolDecl::collectInheritedProtocolProperties(
-                                                const ObjCPropertyDecl *Property,
-                                                ProtocolPropertyMap &PM) const {
+    const ObjCPropertyDecl *Property, ProtocolPropertySet &PS,
+    PropertyDeclOrder &PO) const {
   if (const ObjCProtocolDecl *PDecl = getDefinition()) {
-    bool MatchFound = false;
+    if (!PS.insert(PDecl).second)
+      return;
     for (auto *Prop : PDecl->properties()) {
       if (Prop == Property)
         continue;
       if (Prop->getIdentifier() == Property->getIdentifier()) {
-        PM[PDecl] = Prop;
-        MatchFound = true;
-        break;
+        PO.push_back(Prop);
+        return;
       }
     }
     // Scan through protocol's protocols which did not have a matching property.
-    if (!MatchFound)
-      for (const auto *PI : PDecl->protocols())
-        PI->collectInheritedProtocolProperties(Property, PM);
+    for (const auto *PI : PDecl->protocols())
+      PI->collectInheritedProtocolProperties(Property, PS, PO);
   }
 }
 

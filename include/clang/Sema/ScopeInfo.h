@@ -388,6 +388,8 @@ public:
           (HasBranchProtectedScope && HasBranchIntoScope));
   }
 
+  bool isCoroutine() const { return !FirstCoroutineStmtLoc.isInvalid(); }
+
   void setFirstCoroutineStmt(SourceLocation Loc, StringRef Keyword) {
     assert(FirstCoroutineStmtLoc.isInvalid() &&
                    "first coroutine statement location already set");
@@ -829,6 +831,12 @@ public:
 
   static bool classof(const FunctionScopeInfo *FSI) {
     return FSI->Kind == SK_Lambda;
+  }
+
+  /// Is this scope known to be for a generic lambda? (This will be false until
+  /// we parse the first 'auto'-typed parameter.
+  bool isGenericLambda() const {
+    return !AutoTemplateParams.empty() || GLTemplateParameterList;
   }
 
   ///

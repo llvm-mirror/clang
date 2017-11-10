@@ -52,6 +52,7 @@
 //  LL  -> long long
 //  LLL -> __int128_t (e.g. LLLi)
 //  W   -> int64_t
+//  N   -> 'int' size if target is LP64, 'L' otherwise.
 //  S   -> signed
 //  U   -> unsigned
 //  I   -> Required to constant fold to an integer constant expression.
@@ -699,6 +700,21 @@ BUILTIN(__atomic_signal_fence, "vi", "n")
 BUILTIN(__atomic_always_lock_free, "izvCD*", "n")
 BUILTIN(__atomic_is_lock_free, "izvCD*", "n")
 
+// OpenCL 2.0 atomic builtins.
+ATOMIC_BUILTIN(__opencl_atomic_init, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_load, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_store, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_exchange, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_compare_exchange_strong, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_compare_exchange_weak, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_add, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_sub, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_and, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_or, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_xor, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_min, "v.", "t")
+ATOMIC_BUILTIN(__opencl_atomic_fetch_max, "v.", "t")
+
 #undef ATOMIC_BUILTIN
 
 // Non-overloaded atomic builtins.
@@ -716,13 +732,14 @@ BUILTIN(__builtin_rindex, "c*cC*i", "Fn")
 
 // Microsoft builtins.  These are only active with -fms-extensions.
 LANGBUILTIN(_alloca,          "v*z", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(__annotation,     "wC*.","n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__assume,         "vb",  "n", ALL_MS_LANGUAGES)
 LIBBUILTIN(_byteswap_ushort, "UsUs",     "fnc", "stdlib.h", ALL_MS_LANGUAGES)
-LIBBUILTIN(_byteswap_ulong,  "ULiULi",   "fnc", "stdlib.h", ALL_MS_LANGUAGES)
+LIBBUILTIN(_byteswap_ulong,  "UNiUNi",   "fnc", "stdlib.h", ALL_MS_LANGUAGES)
 LIBBUILTIN(_byteswap_uint64, "ULLiULLi", "fnc", "stdlib.h", ALL_MS_LANGUAGES)
 LANGBUILTIN(__debugbreak,     "v",   "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(__exception_code, "ULi", "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_exception_code,  "ULi", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(__exception_code, "UNi", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_exception_code,  "UNi", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__exception_info, "v*",  "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_exception_info,  "v*",  "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__abnormal_termination, "i", "n", ALL_MS_LANGUAGES)
@@ -730,47 +747,47 @@ LANGBUILTIN(_abnormal_termination,  "i", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__GetExceptionInfo, "v*.", "ntu", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedAnd8,   "ccD*c",        "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedAnd16,  "ssD*s",        "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedAnd,    "LiLiD*Li",     "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedAnd,    "NiNiD*Ni",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedCompareExchange8,   "ccD*cc",         "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedCompareExchange16,  "ssD*ss",         "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedCompareExchange,    "LiLiD*LiLi",     "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedCompareExchange,    "NiNiD*NiNi",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedCompareExchange64,  "LLiLLiD*LLiLLi", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedCompareExchangePointer, "v*v*D*v*v*", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedDecrement16,        "ssD*",     "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedDecrement,          "LiLiD*",   "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedExchange,           "LiLiD*Li",     "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedDecrement,          "NiNiD*",   "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedExchange,           "NiNiD*Ni",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchange8,          "ccD*c",        "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchange16,         "ssD*s",        "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchangeAdd8,       "ccD*c",          "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchangeAdd16,      "ssD*s",          "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedExchangeAdd,        "LiLiD*Li",       "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedExchangeAdd,        "NiNiD*Ni",       "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchangePointer,    "v*v*D*v*",   "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchangeSub8,   "ccD*c",        "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedExchangeSub16,  "ssD*s",        "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedExchangeSub,    "LiLiD*Li",     "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedExchangeSub,    "NiNiD*Ni",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedIncrement16,        "ssD*",     "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedIncrement,          "LiLiD*",   "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedIncrement,          "NiNiD*",   "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedOr8,  "ccD*c",        "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedOr16, "ssD*s",        "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedOr,   "LiLiD*Li",     "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedOr,   "NiNiD*Ni",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedXor8,  "ccD*c",       "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_InterlockedXor16, "ssD*s",       "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_InterlockedXor,   "LiLiD*Li",    "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedXor,   "NiNiD*Ni",    "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_interlockedbittestandset, "UcNiD*Ni", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__noop,           "i.",  "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__popcnt16, "UsUs",     "nc", ALL_MS_LANGUAGES)
 LANGBUILTIN(__popcnt,   "UiUi",     "nc", ALL_MS_LANGUAGES)
 LANGBUILTIN(__popcnt64, "ULLiULLi", "nc", ALL_MS_LANGUAGES)
-LANGBUILTIN(__readfsdword,    "ULiULi", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_ReturnAddress, "v*", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotl8,  "UcUcUc",    "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotl16, "UsUsUc",    "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotl,   "UiUii",     "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_lrotl,  "ULiULii",   "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_lrotl,  "UNiUNii",   "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotl64, "ULLiULLii", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotr8,  "UcUcUc",    "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotr16, "UsUsUc",    "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotr,   "UiUii",     "n", ALL_MS_LANGUAGES)
-LANGBUILTIN(_lrotr,  "ULiULii",   "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_lrotr,  "UNiUNii",   "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotr64, "ULLiULLii", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__va_start,       "vc**.", "nt", ALL_MS_LANGUAGES)
 LANGBUILTIN(__fastfail, "vUi",    "nr", ALL_MS_LANGUAGES)
@@ -991,9 +1008,9 @@ LIBBUILTIN(modf, "ddd*", "fn", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(modff, "fff*", "fn", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(modfl, "LdLdLd*", "fn", "math.h", ALL_LANGUAGES)
 
-LIBBUILTIN(nan,  "dcC*", "fnc", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(nanf, "fcC*", "fnc", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(nanl, "LdcC*", "fnc", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nan,  "dcC*", "fUn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nanf, "fcC*", "fUn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nanl, "LdcC*", "fUn", "math.h", ALL_LANGUAGES)
 
 LIBBUILTIN(pow, "ddd", "fne", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(powf, "fff", "fne", "math.h", ALL_LANGUAGES)
@@ -1397,17 +1414,36 @@ LANGBUILTIN(get_pipe_max_packets, "Ui.", "tn", OCLC20_LANG)
 // OpenCL v2.0 s6.13.17 - Enqueue kernel functions.
 // Custom builtin check allows to perform special check of passed block arguments.
 LANGBUILTIN(enqueue_kernel, "i.", "tn", OCLC20_LANG)
-LANGBUILTIN(get_kernel_work_group_size, "i.", "tn", OCLC20_LANG)
-LANGBUILTIN(get_kernel_preferred_work_group_size_multiple, "i.", "tn", OCLC20_LANG)
+LANGBUILTIN(get_kernel_work_group_size, "Ui.", "tn", OCLC20_LANG)
+LANGBUILTIN(get_kernel_preferred_work_group_size_multiple, "Ui.", "tn", OCLC20_LANG)
+LANGBUILTIN(get_kernel_max_sub_group_size_for_ndrange, "Ui.", "tn", OCLC20_LANG)
+LANGBUILTIN(get_kernel_sub_group_count_for_ndrange, "Ui.", "tn", OCLC20_LANG)
 
 // OpenCL v2.0 s6.13.9 - Address space qualifier functions.
 LANGBUILTIN(to_global, "v*v*", "tn", OCLC20_LANG)
 LANGBUILTIN(to_local, "v*v*", "tn", OCLC20_LANG)
 LANGBUILTIN(to_private, "v*v*", "tn", OCLC20_LANG)
 
+// OpenCL half load/store builtin
+LANGBUILTIN(__builtin_store_half, "vdh*", "n", ALL_OCLC_LANGUAGES)
+LANGBUILTIN(__builtin_store_halff, "vfh*", "n", ALL_OCLC_LANGUAGES)
+LANGBUILTIN(__builtin_load_half, "dhC*", "nc", ALL_OCLC_LANGUAGES)
+LANGBUILTIN(__builtin_load_halff, "fhC*", "nc", ALL_OCLC_LANGUAGES)
+
 // Builtins for os_log/os_trace
 BUILTIN(__builtin_os_log_format_buffer_size, "zcC*.", "p:0:nut")
 BUILTIN(__builtin_os_log_format, "v*v*cC*.", "p:0:nt")
+
+// OpenMP 4.0
+LANGBUILTIN(omp_is_initial_device, "i", "nc", OMP_LANG)
+
+// Builtins for XRay
+BUILTIN(__xray_customevent, "vcC*z", "")
+
+// Win64-compatible va_list functions
+BUILTIN(__builtin_ms_va_start, "vc*&.", "nt")
+BUILTIN(__builtin_ms_va_end, "vc*&", "n")
+BUILTIN(__builtin_ms_va_copy, "vc*&c*&", "n")
 
 #undef BUILTIN
 #undef LIBBUILTIN

@@ -488,7 +488,8 @@ namespace clang {
     void MacroExpands(const Token &Id, const MacroDefinition &MD,
                       SourceRange Range, const MacroArgs *Args) override;
     void MacroDefined(const Token &Id, const MacroDirective *MD) override;
-    void MacroUndefined(const Token &Id, const MacroDefinition &MD) override;
+    void MacroUndefined(const Token &Id, const MacroDefinition &MD,
+                        const MacroDirective *Undef) override;
     void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                             StringRef FileName, bool IsAngled,
                             CharSourceRange FilenameRange,
@@ -503,7 +504,8 @@ namespace clang {
     void Defined(const Token &MacroNameTok, const MacroDefinition &MD,
                  SourceRange Range) override;
 
-    void SourceRangeSkipped(SourceRange Range) override;
+    void SourceRangeSkipped(SourceRange Range,
+                            SourceLocation EndifLoc) override;
 
     void addMacroExpansion(const Token &Id, const MacroInfo *MI,
                            SourceRange Range);

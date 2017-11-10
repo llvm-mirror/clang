@@ -61,6 +61,17 @@ void Sema::AddAlignmentAttributesForRecord(RecordDecl *RD) {
       RD->addAttr(MaxFieldAlignmentAttr::CreateImplicit(Context,
                                                         Alignment * 8));
   }
+  if (PackIncludeStack.empty())
+    return;
+  // The #pragma pack affected a record in an included file,  so Clang should
+  // warn when that pragma was written in a file that included the included
+  // file.
+  for (auto &PackedInclude : llvm::reverse(PackIncludeStack)) {
+    if (PackedInclude.CurrentPragmaLocation != PackStack.CurrentPragmaLocation)
+      break;
+    if (PackedInclude.HasNonDefaultValue)
+      PackedInclude.ShouldWarnOnInclude = true;
+  }
 }
 
 void Sema::AddMsStructLayoutForRecord(RecordDecl *RD) {
@@ -126,6 +137,36 @@ void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
   PackStack.Act(PragmaLoc, Action, StringRef(), Alignment);
 }
 
+void Sema::ActOnPragmaClangSection(SourceLocation PragmaLoc, PragmaClangSectionAction Action,
+                                   PragmaClangSectionKind SecKind, StringRef SecName) {
+  PragmaClangSection *CSec;
+  switch (SecKind) {
+    case PragmaClangSectionKind::PCSK_BSS:
+      CSec = &PragmaClangBSSSection;
+      break;
+    case PragmaClangSectionKind::PCSK_Data:
+      CSec = &PragmaClangDataSection;
+      break;
+    case PragmaClangSectionKind::PCSK_Rodata:
+      CSec = &PragmaClangRodataSection;
+      break;
+    case PragmaClangSectionKind::PCSK_Text:
+      CSec = &PragmaClangTextSection;
+      break;
+    default:
+      llvm_unreachable("invalid clang section kind");
+  }
+
+  if (Action == PragmaClangSectionAction::PCSA_Clear) {
+    CSec->Valid = false;
+    return;
+  }
+
+  CSec->Valid = true;
+  CSec->SectionName = SecName;
+  CSec->PragmaLocation = PragmaLoc;
+}
+
 void Sema::ActOnPragmaPack(SourceLocation PragmaLoc, PragmaMsStackAction Action,
                            StringRef SlotLabel, Expr *alignment) {
   Expr *Alignment = static_cast<Expr *>(alignment);
@@ -172,6 +213,61 @@ void Sema::ActOnPragmaPack(SourceLocation PragmaLoc, PragmaMsStackAction Action,
   PackStack.Act(PragmaLoc, Action, SlotLabel, AlignmentVal);
 }
 
+void Sema::DiagnoseNonDefaultPragmaPack(PragmaPackDiagnoseKind Kind,
+                                        SourceLocation IncludeLoc) {
+  if (Kind == PragmaPackDiagnoseKind::NonDefaultStateAtInclude) {
+    SourceLocation PrevLocation = PackStack.CurrentPragmaLocation;
+    // Warn about non-default alignment at #includes (without redundant
+    // warnings for the same directive in nested includes).
+    // The warning is delayed until the end of the file to avoid warnings
+    // for files that don't have any records that are affected by the modified
+    // alignment.
+    bool HasNonDefaultValue =
+        PackStack.hasValue() &&
+        (PackIncludeStack.empty() ||
+         PackIncludeStack.back().CurrentPragmaLocation != PrevLocation);
+    PackIncludeStack.push_back(
+        {PackStack.CurrentValue,
+         PackStack.hasValue() ? PrevLocation : SourceLocation(),
+         HasNonDefaultValue, /*ShouldWarnOnInclude*/ false});
+    return;
+  }
+
+  assert(Kind == PragmaPackDiagnoseKind::ChangedStateAtExit && "invalid kind");
+  PackIncludeState PrevPackState = PackIncludeStack.pop_back_val();
+  if (PrevPackState.ShouldWarnOnInclude) {
+    // Emit the delayed non-default alignment at #include warning.
+    Diag(IncludeLoc, diag::warn_pragma_pack_non_default_at_include);
+    Diag(PrevPackState.CurrentPragmaLocation, diag::note_pragma_pack_here);
+  }
+  // Warn about modified alignment after #includes.
+  if (PrevPackState.CurrentValue != PackStack.CurrentValue) {
+    Diag(IncludeLoc, diag::warn_pragma_pack_modified_after_include);
+    Diag(PackStack.CurrentPragmaLocation, diag::note_pragma_pack_here);
+  }
+}
+
+void Sema::DiagnoseUnterminatedPragmaPack() {
+  if (PackStack.Stack.empty())
+    return;
+  bool IsInnermost = true;
+  for (const auto &StackSlot : llvm::reverse(PackStack.Stack)) {
+    Diag(StackSlot.PragmaPushLocation, diag::warn_pragma_pack_no_pop_eof);
+    // The user might have already reset the alignment, so suggest replacing
+    // the reset with a pop.
+    if (IsInnermost && PackStack.CurrentValue == PackStack.DefaultValue) {
+      DiagnosticBuilder DB = Diag(PackStack.CurrentPragmaLocation,
+                                  diag::note_pragma_pack_pop_instead_reset);
+      SourceLocation FixItLoc = Lexer::findLocationAfterToken(
+          PackStack.CurrentPragmaLocation, tok::l_paren, SourceMgr, LangOpts,
+          /*SkipTrailing=*/false);
+      if (FixItLoc.isValid())
+        DB << FixItHint::CreateInsertion(FixItLoc, "pop");
+    }
+    IsInnermost = false;
+  }
+}
+
 void Sema::ActOnPragmaMSStruct(PragmaMSStructKind Kind) { 
   MSStructPragmaOn = (Kind == PMSST_ON);
 }
@@ -215,10 +311,12 @@ void Sema::PragmaStack<ValueType>::Act(SourceLocation PragmaLocation,
                                        ValueType Value) {
   if (Action == PSK_Reset) {
     CurrentValue = DefaultValue;
+    CurrentPragmaLocation = PragmaLocation;
     return;
   }
   if (Action & PSK_Push)
-    Stack.push_back(Slot(StackSlotLabel, CurrentValue, CurrentPragmaLocation));
+    Stack.emplace_back(StackSlotLabel, CurrentValue, CurrentPragmaLocation,
+                       PragmaLocation);
   else if (Action & PSK_Pop) {
     if (!StackSlotLabel.empty()) {
       // If we've got a label, try to find it and jump there.
@@ -367,6 +465,219 @@ void Sema::AddCFAuditedAttribute(Decl *D) {
   D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Loc));
 }
 
+namespace {
+
+Optional<attr::SubjectMatchRule>
+getParentAttrMatcherRule(attr::SubjectMatchRule Rule) {
+  using namespace attr;
+  switch (Rule) {
+  default:
+    return None;
+#define ATTR_MATCH_RULE(Value, Spelling, IsAbstract)
+#define ATTR_MATCH_SUB_RULE(Value, Spelling, IsAbstract, Parent, IsNegated)    \
+  case Value:                                                                  \
+    return Parent;
+#include "clang/Basic/AttrSubMatchRulesList.inc"
+  }
+}
+
+bool isNegatedAttrMatcherSubRule(attr::SubjectMatchRule Rule) {
+  using namespace attr;
+  switch (Rule) {
+  default:
+    return false;
+#define ATTR_MATCH_RULE(Value, Spelling, IsAbstract)
+#define ATTR_MATCH_SUB_RULE(Value, Spelling, IsAbstract, Parent, IsNegated)    \
+  case Value:                                                                  \
+    return IsNegated;
+#include "clang/Basic/AttrSubMatchRulesList.inc"
+  }
+}
+
+CharSourceRange replacementRangeForListElement(const Sema &S,
+                                               SourceRange Range) {
+  // Make sure that the ',' is removed as well.
+  SourceLocation AfterCommaLoc = Lexer::findLocationAfterToken(
+      Range.getEnd(), tok::comma, S.getSourceManager(), S.getLangOpts(),
+      /*SkipTrailingWhitespaceAndNewLine=*/false);
+  if (AfterCommaLoc.isValid())
+    return CharSourceRange::getCharRange(Range.getBegin(), AfterCommaLoc);
+  else
+    return CharSourceRange::getTokenRange(Range);
+}
+
+std::string
+attrMatcherRuleListToString(ArrayRef<attr::SubjectMatchRule> Rules) {
+  std::string Result;
+  llvm::raw_string_ostream OS(Result);
+  for (const auto &I : llvm::enumerate(Rules)) {
+    if (I.index())
+      OS << (I.index() == Rules.size() - 1 ? ", and " : ", ");
+    OS << "'" << attr::getSubjectMatchRuleSpelling(I.value()) << "'";
+  }
+  return OS.str();
+}
+
+} // end anonymous namespace
+
+void Sema::ActOnPragmaAttributePush(AttributeList &Attribute,
+                                    SourceLocation PragmaLoc,
+                                    attr::ParsedSubjectMatchRuleSet Rules) {
+  SmallVector<attr::SubjectMatchRule, 4> SubjectMatchRules;
+  // Gather the subject match rules that are supported by the attribute.
+  SmallVector<std::pair<attr::SubjectMatchRule, bool>, 4>
+      StrictSubjectMatchRuleSet;
+  Attribute.getMatchRules(LangOpts, StrictSubjectMatchRuleSet);
+
+  // Figure out which subject matching rules are valid.
+  if (StrictSubjectMatchRuleSet.empty()) {
+    // Check for contradicting match rules. Contradicting match rules are
+    // either:
+    //  - a top-level rule and one of its sub-rules. E.g. variable and
+    //    variable(is_parameter).
+    //  - a sub-rule and a sibling that's negated. E.g.
+    //    variable(is_thread_local) and variable(unless(is_parameter))
+    llvm::SmallDenseMap<int, std::pair<int, SourceRange>, 2>
+        RulesToFirstSpecifiedNegatedSubRule;
+    for (const auto &Rule : Rules) {
+      attr::SubjectMatchRule MatchRule = attr::SubjectMatchRule(Rule.first);
+      Optional<attr::SubjectMatchRule> ParentRule =
+          getParentAttrMatcherRule(MatchRule);
+      if (!ParentRule)
+        continue;
+      auto It = Rules.find(*ParentRule);
+      if (It != Rules.end()) {
+        // A sub-rule contradicts a parent rule.
+        Diag(Rule.second.getBegin(),
+             diag::err_pragma_attribute_matcher_subrule_contradicts_rule)
+            << attr::getSubjectMatchRuleSpelling(MatchRule)
+            << attr::getSubjectMatchRuleSpelling(*ParentRule) << It->second
+            << FixItHint::CreateRemoval(
+                   replacementRangeForListElement(*this, Rule.second));
+        // Keep going without removing this rule as it won't change the set of
+        // declarations that receive the attribute.
+        continue;
+      }
+      if (isNegatedAttrMatcherSubRule(MatchRule))
+        RulesToFirstSpecifiedNegatedSubRule.insert(
+            std::make_pair(*ParentRule, Rule));
+    }
+    bool IgnoreNegatedSubRules = false;
+    for (const auto &Rule : Rules) {
+      attr::SubjectMatchRule MatchRule = attr::SubjectMatchRule(Rule.first);
+      Optional<attr::SubjectMatchRule> ParentRule =
+          getParentAttrMatcherRule(MatchRule);
+      if (!ParentRule)
+        continue;
+      auto It = RulesToFirstSpecifiedNegatedSubRule.find(*ParentRule);
+      if (It != RulesToFirstSpecifiedNegatedSubRule.end() &&
+          It->second != Rule) {
+        // Negated sub-rule contradicts another sub-rule.
+        Diag(
+            It->second.second.getBegin(),
+            diag::
+                err_pragma_attribute_matcher_negated_subrule_contradicts_subrule)
+            << attr::getSubjectMatchRuleSpelling(
+                   attr::SubjectMatchRule(It->second.first))
+            << attr::getSubjectMatchRuleSpelling(MatchRule) << Rule.second
+            << FixItHint::CreateRemoval(
+                   replacementRangeForListElement(*this, It->second.second));
+        // Keep going but ignore all of the negated sub-rules.
+        IgnoreNegatedSubRules = true;
+        RulesToFirstSpecifiedNegatedSubRule.erase(It);
+      }
+    }
+
+    if (!IgnoreNegatedSubRules) {
+      for (const auto &Rule : Rules)
+        SubjectMatchRules.push_back(attr::SubjectMatchRule(Rule.first));
+    } else {
+      for (const auto &Rule : Rules) {
+        if (!isNegatedAttrMatcherSubRule(attr::SubjectMatchRule(Rule.first)))
+          SubjectMatchRules.push_back(attr::SubjectMatchRule(Rule.first));
+      }
+    }
+    Rules.clear();
+  } else {
+    for (const auto &Rule : StrictSubjectMatchRuleSet) {
+      if (Rules.erase(Rule.first)) {
+        // Add the rule to the set of attribute receivers only if it's supported
+        // in the current language mode.
+        if (Rule.second)
+          SubjectMatchRules.push_back(Rule.first);
+      }
+    }
+  }
+
+  if (!Rules.empty()) {
+    auto Diagnostic =
+        Diag(PragmaLoc, diag::err_pragma_attribute_invalid_matchers)
+        << Attribute.getName();
+    SmallVector<attr::SubjectMatchRule, 2> ExtraRules;
+    for (const auto &Rule : Rules) {
+      ExtraRules.push_back(attr::SubjectMatchRule(Rule.first));
+      Diagnostic << FixItHint::CreateRemoval(
+          replacementRangeForListElement(*this, Rule.second));
+    }
+    Diagnostic << attrMatcherRuleListToString(ExtraRules);
+  }
+
+  PragmaAttributeStack.push_back(
+      {PragmaLoc, &Attribute, std::move(SubjectMatchRules), /*IsUsed=*/false});
+}
+
+void Sema::ActOnPragmaAttributePop(SourceLocation PragmaLoc) {
+  if (PragmaAttributeStack.empty()) {
+    Diag(PragmaLoc, diag::err_pragma_attribute_stack_mismatch);
+    return;
+  }
+  const PragmaAttributeEntry &Entry = PragmaAttributeStack.back();
+  if (!Entry.IsUsed) {
+    assert(Entry.Attribute && "Expected an attribute");
+    Diag(Entry.Attribute->getLoc(), diag::warn_pragma_attribute_unused)
+        << Entry.Attribute->getName();
+    Diag(PragmaLoc, diag::note_pragma_attribute_region_ends_here);
+  }
+  PragmaAttributeStack.pop_back();
+}
+
+void Sema::AddPragmaAttributes(Scope *S, Decl *D) {
+  if (PragmaAttributeStack.empty())
+    return;
+  for (auto &Entry : PragmaAttributeStack) {
+    const AttributeList *Attribute = Entry.Attribute;
+    assert(Attribute && "Expected an attribute");
+
+    // Ensure that the attribute can be applied to the given declaration.
+    bool Applies = false;
+    for (const auto &Rule : Entry.MatchRules) {
+      if (Attribute->appliesToDecl(D, Rule)) {
+        Applies = true;
+        break;
+      }
+    }
+    if (!Applies)
+      continue;
+    Entry.IsUsed = true;
+    assert(!Attribute->getNext() && "Expected just one attribute");
+    PragmaAttributeCurrentTargetDecl = D;
+    ProcessDeclAttributeList(S, D, Attribute);
+    PragmaAttributeCurrentTargetDecl = nullptr;
+  }
+}
+
+void Sema::PrintPragmaAttributeInstantiationPoint() {
+  assert(PragmaAttributeCurrentTargetDecl && "Expected an active declaration");
+  Diags.Report(PragmaAttributeCurrentTargetDecl->getLocStart(),
+               diag::note_pragma_attribute_applied_decl_here);
+}
+
+void Sema::DiagnoseUnterminatedPragmaAttribute() {
+  if (PragmaAttributeStack.empty())
+    return;
+  Diag(PragmaAttributeStack.back().Loc, diag::err_pragma_attribute_no_pop_eof);
+}
+
 void Sema::ActOnPragmaOptimize(bool On, SourceLocation PragmaLoc) {
   if(On)
     OptimizeOffPragmaLocation = SourceLocation();
@@ -447,16 +758,16 @@ void Sema::ActOnPragmaVisibility(const IdentifierInfo* VisType,
   }
 }
 
-void Sema::ActOnPragmaFPContract(tok::OnOffSwitch OOS) {
-  switch (OOS) {
-  case tok::OOS_ON:
-    FPFeatures.fp_contract = 1;
+void Sema::ActOnPragmaFPContract(LangOptions::FPContractModeKind FPC) {
+  switch (FPC) {
+  case LangOptions::FPC_On:
+    FPFeatures.setAllowFPContractWithinStatement();
     break;
-  case tok::OOS_OFF:
-    FPFeatures.fp_contract = 0; 
+  case LangOptions::FPC_Fast:
+    FPFeatures.setAllowFPContractAcrossStatement();
     break;
-  case tok::OOS_DEFAULT:
-    FPFeatures.fp_contract = getLangOpts().DefaultFPContract;
+  case LangOptions::FPC_Off:
+    FPFeatures.setDisallowFPContract();
     break;
   }
 }

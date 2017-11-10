@@ -18,6 +18,8 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/Sema/Sema.h"
 
+#include "llvm/ADT/Optional.h"
+
 namespace clang {
 
 /// @brief Represents the results of name lookup.
@@ -137,6 +139,7 @@ public:
       LookupKind(LookupKind),
       IDNS(0),
       Redecl(Redecl != Sema::NotForRedeclaration),
+      ExternalRedecl(Redecl == Sema::ForExternalRedeclaration),
       HideTags(true),
       Diagnose(Redecl == Sema::NotForRedeclaration),
       AllowHidden(false),
@@ -146,7 +149,7 @@ public:
   }
 
   // TODO: consider whether this constructor should be restricted to take
-  // as input a const IndentifierInfo* (instead of Name),
+  // as input a const IdentifierInfo* (instead of Name),
   // forcing other cases towards the constructor taking a DNInfo.
   LookupResult(Sema &SemaRef, DeclarationName Name,
                SourceLocation NameLoc, Sema::LookupNameKind LookupKind,
@@ -159,6 +162,7 @@ public:
       LookupKind(LookupKind),
       IDNS(0),
       Redecl(Redecl != Sema::NotForRedeclaration),
+      ExternalRedecl(Redecl == Sema::ForExternalRedeclaration),
       HideTags(true),
       Diagnose(Redecl == Sema::NotForRedeclaration),
       AllowHidden(false),
@@ -179,6 +183,7 @@ public:
       LookupKind(Other.LookupKind),
       IDNS(Other.IDNS),
       Redecl(Other.Redecl),
+      ExternalRedecl(Other.ExternalRedecl),
       HideTags(Other.HideTags),
       Diagnose(false),
       AllowHidden(Other.AllowHidden),
@@ -199,7 +204,9 @@ public:
         SemaPtr(std::move(Other.SemaPtr)), NameInfo(std::move(Other.NameInfo)),
         NameContextRange(std::move(Other.NameContextRange)),
         LookupKind(std::move(Other.LookupKind)), IDNS(std::move(Other.IDNS)),
-        Redecl(std::move(Other.Redecl)), HideTags(std::move(Other.HideTags)),
+        Redecl(std::move(Other.Redecl)),
+        ExternalRedecl(std::move(Other.ExternalRedecl)),
+        HideTags(std::move(Other.HideTags)),
         Diagnose(std::move(Other.Diagnose)),
         AllowHidden(std::move(Other.AllowHidden)),
         Shadowed(std::move(Other.Shadowed)) {
@@ -219,6 +226,7 @@ public:
     LookupKind = std::move(Other.LookupKind);
     IDNS = std::move(Other.IDNS);
     Redecl = std::move(Other.Redecl);
+    ExternalRedecl = std::move(Other.ExternalRedecl);
     HideTags = std::move(Other.HideTags);
     Diagnose = std::move(Other.Diagnose);
     AllowHidden = std::move(Other.AllowHidden);
@@ -263,6 +271,17 @@ public:
     return Redecl;
   }
 
+  /// True if this lookup is just looking for an existing declaration to link
+  /// against a declaration with external linkage.
+  bool isForExternalRedeclaration() const {
+    return ExternalRedecl;
+  }
+
+  Sema::RedeclarationKind redeclarationKind() const {
+    return ExternalRedecl ? Sema::ForExternalRedeclaration :
+           Redecl ? Sema::ForVisibleRedeclaration : Sema::NotForRedeclaration;
+  }
+
   /// \brief Specify whether hidden declarations are visible, e.g.,
   /// for recovery reasons.
   void setAllowHidden(bool AH) {
@@ -273,7 +292,7 @@ public:
   /// declarations, such as those in modules that have not yet been imported.
   bool isHiddenDeclarationVisible(NamedDecl *ND) const {
     return AllowHidden ||
-           (isForRedeclaration() && ND->isExternallyVisible());
+           (isForExternalRedeclaration() && ND->isExternallyDeclarable());
   }
 
   /// Sets whether tag declarations should be hidden by non-tag
@@ -465,7 +484,7 @@ public:
         Paths = nullptr;
       }
     } else {
-      AmbiguityKind SavedAK;
+      llvm::Optional<AmbiguityKind> SavedAK;
       bool WasAmbiguous = false;
       if (ResultKind == Ambiguous) {
         SavedAK = Ambiguity;
@@ -479,7 +498,7 @@ public:
       if (ResultKind == Ambiguous) {
         (void)WasAmbiguous;
         assert(WasAmbiguous);
-        Ambiguity = SavedAK;
+        Ambiguity = SavedAK.getValue();
       } else if (Paths) {
         deletePaths(Paths);
         Paths = nullptr;
@@ -554,7 +573,8 @@ public:
 
   /// \brief Change this lookup's redeclaration kind.
   void setRedeclarationKind(Sema::RedeclarationKind RK) {
-    Redecl = RK;
+    Redecl = (RK != Sema::NotForRedeclaration);
+    ExternalRedecl = (RK == Sema::ForExternalRedeclaration);
     configure();
   }
 
@@ -717,6 +737,7 @@ private:
   unsigned IDNS; // set by configure()
 
   bool Redecl;
+  bool ExternalRedecl;
 
   /// \brief True if tag declarations should be hidden if non-tags
   ///   are present

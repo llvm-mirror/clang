@@ -100,6 +100,33 @@
 // RUN:   | FileCheck -check-prefix=CHECK-ARM-HARDFP %s
 // CHECK-ARM-HARDFP: as{{(.exe)?}}" "-mfloat-abi=hard"
 //
+// RUN: %clang -target aarch64-linux-gnu -mcpu=cortex-a53 -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-MCPU %s
+// CHECK-ARM64-MCPU: as{{(.exe)?}}" "-mcpu=cortex-a53"
+//
+// RUN: %clang -target aarch64-linux-gnu -march=armv8-a -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-MARCH %s
+// CHECK-ARM64-MARCH: as{{(.exe)?}}" "-march=armv8-a"
+//
+// RUN: %clang -target aarch64-linux-gnu -mcpu=cortex-a53 -march=armv8-a -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-ALL %s
+// CHECK-ARM64-ALL: as{{(.exe)?}}" "-march=armv8-a" "-mcpu=cortex-a53"
+//
+// RUN: %clang -target aarch64_be-linux-gnu -mcpu=cortex-a53 -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-MCPU %s
+//
+// RUN: %clang -target aarch64_be-linux-gnu -march=armv8-a -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-MARCH %s
+//
+// RUN: %clang -target aarch64_be-linux-gnu -mcpu=cortex-a53 -march=armv8-a -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-ARM64-ALL %s
+//
 // RUN: %clang -target ppc-linux -mcpu=invalid-cpu -### \
 // RUN:   -no-integrated-as -c %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=CHECK-PPC-NO-MCPU %s
@@ -147,3 +174,18 @@
 // RUN:   -no-integrated-as -c %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=CHECK-Z-ARCH-Z196 %s
 // CHECK-Z-ARCH-Z196: as{{.*}} "-march=z196"
+//
+// RUN: %clang -target powerpc64le-linux -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-PPC64LE %s
+// CHECK-PPC64LE: as{{.*}} "-mpower8"
+//
+// RUN: %clang -target powerpc64-linux -mcpu=pwr7 -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-PPC64 %s
+// CHECK-PPC64: as{{.*}} "-mpower7"
+//
+// RUN: %clang -target powerpc-linux -mcpu=pwr9 -### \
+// RUN:   -no-integrated-as -c %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHECK-PPC32 %s
+// CHECK-PPC32: as{{.*}} "-mpower9"

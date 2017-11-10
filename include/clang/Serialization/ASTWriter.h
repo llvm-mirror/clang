@@ -54,6 +54,7 @@ class MacroInfo;
 class OpaqueValueExpr;
 class OpenCLOptions;
 class ASTReader;
+class MemoryBufferCache;
 class Module;
 class ModuleFileExtension;
 class ModuleFileExtensionWriter;
@@ -108,6 +109,9 @@ private:
 
   /// The buffer associated with the bitstream.
   const SmallVectorImpl<char> &Buffer;
+
+  /// \brief The PCM manager which manages memory buffers for pcm files.
+  MemoryBufferCache &PCMCache;
 
   /// \brief The ASTContext we're writing.
   ASTContext *Context = nullptr;
@@ -481,6 +485,7 @@ private:
   void WriteOptimizePragmaOptions(Sema &SemaRef);
   void WriteMSStructPragmaOptions(Sema &SemaRef);
   void WriteMSPointersToMembersPragmaOptions(Sema &SemaRef);
+  void WritePackPragmaOptions(Sema &SemaRef);
   void WriteModuleFileExtension(Sema &SemaRef,
                                 ModuleFileExtensionWriter &Writer);
 
@@ -512,6 +517,7 @@ public:
   /// \brief Create a new precompiled header writer that outputs to
   /// the given bitstream.
   ASTWriter(llvm::BitstreamWriter &Stream, SmallVectorImpl<char> &Buffer,
+            MemoryBufferCache &PCMCache,
             ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
             bool IncludeTimestamps = true);
   ~ASTWriter() override;
@@ -621,10 +627,6 @@ public:
   /// \brief Add a version tuple to the given record
   void AddVersionTuple(const VersionTuple &Version, RecordDataImpl &Record);
 
-  /// \brief Infer the submodule ID that contains an entity at the given
-  /// source location.
-  serialization::SubmoduleID inferSubmoduleIDFromLocation(SourceLocation Loc);
-
   /// \brief Retrieve or create a submodule ID for this module, or return 0 if
   /// the submodule is neither local (a submodle of the currently-written module)
   /// nor from an imported module.
@@ -696,7 +698,8 @@ private:
   void ResolvedExceptionSpec(const FunctionDecl *FD) override;
   void DeducedReturnType(const FunctionDecl *FD, QualType ReturnType) override;
   void ResolvedOperatorDelete(const CXXDestructorDecl *DD,
-                              const FunctionDecl *Delete) override;
+                              const FunctionDecl *Delete,
+                              Expr *ThisArg) override;
   void CompletedImplicitDefinition(const FunctionDecl *D) override;
   void StaticDataMemberInstantiated(const VarDecl *D) override;
   void DefaultArgumentInstantiated(const ParmVarDecl *D) override;

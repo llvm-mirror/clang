@@ -74,8 +74,9 @@ void *Decl::operator new(std::size_t Size, const ASTContext &Ctx,
                          DeclContext *Parent, std::size_t Extra) {
   assert(!Parent || &Parent->getParentASTContext() == &Ctx);
   // With local visibility enabled, we track the owning module even for local
-  // declarations.
-  if (Ctx.getLangOpts().ModulesLocalVisibility) {
+  // declarations. We create the TU decl early and may not yet know what the
+  // LangOpts are, so conservatively allocate the storage.
+  if (Ctx.getLangOpts().trackLocalOwningModule() || !Parent) {
     // Ensure required alignment of the resulting object by adding extra
     // padding at the start if required.
     size_t ExtraAlign =
@@ -83,7 +84,9 @@ void *Decl::operator new(std::size_t Size, const ASTContext &Ctx,
     char *Buffer = reinterpret_cast<char *>(
         ::operator new(ExtraAlign + sizeof(Module *) + Size + Extra, Ctx));
     Buffer += ExtraAlign;
-    return new (Buffer) Module*(nullptr) + 1;
+    auto *ParentModule =
+        Parent ? cast<Decl>(Parent)->getOwningModule() : nullptr;
+    return new (Buffer) Module*(ParentModule) + 1;
   }
   return ::operator new(Size + Extra, Ctx);
 }
@@ -94,7 +97,7 @@ Module *Decl::getOwningModuleSlow() const {
 }
 
 bool Decl::hasLocalOwningModuleStorage() const {
-  return getASTContext().getLangOpts().ModulesLocalVisibility;
+  return getASTContext().getLangOpts().trackLocalOwningModule();
 }
 
 const char *Decl::getDeclKindName() const {
@@ -272,7 +275,19 @@ void Decl::setLexicalDeclContext(DeclContext *DC) {
   } else {
     getMultipleDC()->LexicalDC = DC;
   }
-  Hidden = cast<Decl>(DC)->Hidden;
+
+  // FIXME: We shouldn't be changing the lexical context of declarations
+  // imported from AST files.
+  if (!isFromASTFile()) {
+    setModuleOwnershipKind(getModuleOwnershipKindForChildOf(DC));
+    if (hasOwningModule())
+      setLocalOwningModule(cast<Decl>(DC)->getOwningModule());
+  }
+
+  assert(
+      (getModuleOwnershipKind() != ModuleOwnershipKind::VisibleWhenImported ||
+       getOwningModule()) &&
+      "hidden declaration has no owning module");
 }
 
 void Decl::setDeclContextsImpl(DeclContext *SemaDC, DeclContext *LexicalDC,
@@ -300,12 +315,11 @@ bool Decl::isLexicallyWithinFunctionOrMethod() const {
 }
 
 bool Decl::isInAnonymousNamespace() const {
-  const DeclContext *DC = getDeclContext();
-  do {
+  for (const DeclContext *DC = getDeclContext(); DC; DC = DC->getParent()) {
     if (const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC))
       if (ND->isAnonymousNamespace())
         return true;
-  } while ((DC = DC->getParent()));
+  }
 
   return false;
 }
@@ -403,6 +417,27 @@ bool Decl::isExported() const {
   return false;
 }
 
+ExternalSourceSymbolAttr *Decl::getExternalSourceSymbolAttr() const {
+  const Decl *Definition = nullptr;
+  if (auto ID = dyn_cast<ObjCInterfaceDecl>(this)) {
+    Definition = ID->getDefinition();
+  } else if (auto PD = dyn_cast<ObjCProtocolDecl>(this)) {
+    Definition = PD->getDefinition();
+  } else if (auto TD = dyn_cast<TagDecl>(this)) {
+    Definition = TD->getDefinition();
+  }
+  if (!Definition)
+    Definition = this;
+
+  if (auto *attr = Definition->getAttr<ExternalSourceSymbolAttr>())
+    return attr;
+  if (auto *dcd = dyn_cast<Decl>(getDeclContext())) {
+    return dcd->getAttr<ExternalSourceSymbolAttr>();
+  }
+
+  return nullptr;
+}
+
 bool Decl::hasDefiningAttr() const {
   return hasAttr<AliasAttr>() || hasAttr<IFuncAttr>();
 }
@@ -413,6 +448,19 @@ const Attr *Decl::getDefiningAttr() const {
   if (IFuncAttr *IFA = getAttr<IFuncAttr>())
     return IFA;
   return nullptr;
+}
+
+static StringRef getRealizedPlatform(const AvailabilityAttr *A,
+                                     const ASTContext &Context) {
+  // Check if this is an App Extension "platform", and if so chop off
+  // the suffix for matching with the actual platform.
+  StringRef RealizedPlatform = A->getPlatform()->getName();
+  if (!Context.getLangOpts().AppExt)
+    return RealizedPlatform;
+  size_t suffix = RealizedPlatform.rfind("_app_extension");
+  if (suffix != StringRef::npos)
+    return RealizedPlatform.slice(0, suffix);
+  return RealizedPlatform;
 }
 
 /// \brief Determine the availability of the given declaration based on
@@ -434,20 +482,11 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
   if (EnclosingVersion.empty())
     return AR_Available;
 
-  // Check if this is an App Extension "platform", and if so chop off
-  // the suffix for matching with the actual platform.
   StringRef ActualPlatform = A->getPlatform()->getName();
-  StringRef RealizedPlatform = ActualPlatform;
-  if (Context.getLangOpts().AppExt) {
-    size_t suffix = RealizedPlatform.rfind("_app_extension");
-    if (suffix != StringRef::npos)
-      RealizedPlatform = RealizedPlatform.slice(0, suffix);
-  }
-
   StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
 
   // Match the platform name.
-  if (RealizedPlatform != TargetPlatform)
+  if (getRealizedPlatform(A, Context) != TargetPlatform)
     return AR_Available;
 
   StringRef PrettyPlatformName
@@ -567,6 +606,20 @@ AvailabilityResult Decl::getAvailability(std::string *Message,
   return Result;
 }
 
+VersionTuple Decl::getVersionIntroduced() const {
+  const ASTContext &Context = getASTContext();
+  StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
+  for (const auto *A : attrs()) {
+    if (const auto *Availability = dyn_cast<AvailabilityAttr>(A)) {
+      if (getRealizedPlatform(Availability, Context) != TargetPlatform)
+        continue;
+      if (!Availability->getIntroduced().empty())
+        return Availability->getIntroduced();
+    }
+  }
+  return VersionTuple();
+}
+
 bool Decl::canBeWeakImported(bool &IsDefinition) const {
   IsDefinition = false;
 
@@ -627,7 +680,6 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case CXXConversion:
     case EnumConstant:
     case Var:
-    case Binding:
     case ImplicitParam:
     case ParmVar:
     case ObjCMethod:
@@ -639,10 +691,11 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case IndirectField:
       return IDNS_Ordinary | IDNS_Member;
 
+    case Binding:
     case NonTypeTemplateParm:
-      // Non-type template parameters are not found by lookups that ignore
-      // non-types, but they are found by redeclaration lookups for tag types,
-      // so we include them in the tag namespace.
+    case VarTemplate:
+      // These (C++-only) declarations are found by redeclaration lookup for
+      // tag types, so we include them in the tag namespace.
       return IDNS_Ordinary | IDNS_Tag;
 
     case ObjCCompatibleAlias:
@@ -651,7 +704,6 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
 
     case Typedef:
     case TypeAlias:
-    case TypeAliasTemplate:
     case TemplateTypeParm:
     case ObjCTypeParam:
       return IDNS_Ordinary | IDNS_Type;
@@ -687,11 +739,11 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
       return IDNS_Namespace;
 
     case FunctionTemplate:
-    case VarTemplate:
       return IDNS_Ordinary;
 
     case ClassTemplate:
     case TemplateTemplateParm:
+    case TypeAliasTemplate:
       return IDNS_Ordinary | IDNS_Tag | IDNS_Type;
 
     case OMPDeclareReduction:
@@ -1301,7 +1353,7 @@ void DeclContext::removeDecl(Decl *D) {
     // Remove only decls that have a name
     if (!ND->getDeclName()) return;
 
-    auto *DC = this;
+    auto *DC = D->getDeclContext();
     do {
       StoredDeclsMap *Map = DC->getPrimaryContext()->LookupPtr;
       if (Map) {

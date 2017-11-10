@@ -24,8 +24,8 @@
 // RUN: | FileCheck -check-prefix ARCH64 -check-prefix SM20 -check-prefix DBG %s
 
 // --no-cuda-noopt-device-debug overrides --cuda-noopt-device-debug.
-// RUN: %clang -### -target x86_64-linux-gnu --cuda-noopt-debug \
-// RUN:   --no-cuda-noopt-debug -O2 -c %s 2>&1 \
+// RUN: %clang -### -target x86_64-linux-gnu --cuda-noopt-device-debug \
+// RUN:   --no-cuda-noopt-device-debug -O2 -c %s 2>&1 \
 // RUN: | FileCheck -check-prefix ARCH64 -check-prefix SM20 -check-prefix OPT2 %s
 
 // Regular compile without -O.  This should result in us passing -O0 to ptxas.
@@ -64,6 +64,10 @@
 // RUN: | FileCheck -check-prefix ARCH64 -check-prefix SM35 %s
 // RUN: %clang -### -target x86_32-apple-macosx -c %s 2>&1 \
 // RUN: | FileCheck -check-prefix ARCH32 -check-prefix SM20 %s
+
+// Check that CLANG forwards the -v flag to PTXAS.
+// RUN:   %clang -### -save-temps -no-canonical-prefixes -v %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHK-PTXAS-VERBOSE %s
 
 // Match clang job that produces PTX assembly.
 // CHECK: "-cc1" "-triple" "nvptx64-nvidia-cuda"
@@ -110,3 +114,5 @@
 // Match the clang job for host compilation.
 // CHECK: "-cc1" "-triple" "x86_64--linux-gnu"
 // CHECK-SAME: "-fcuda-include-gpubinary" "[[FATBINARY]]"
+
+// CHK-PTXAS-VERBOSE: ptxas{{.*}}" "-v"

@@ -97,13 +97,25 @@ __m128i test_mm_andnot_si128(__m128i A, __m128i B) {
 
 __m128i test_mm_avg_epu8(__m128i A, __m128i B) {
   // CHECK-LABEL: test_mm_avg_epu8
-  // CHECK: call <16 x i8> @llvm.x86.sse2.pavg.b(<16 x i8> %{{.*}}, <16 x i8> %{{.*}})
+  // CHECK-NOT: call <16 x i8> @llvm.x86.sse2.pavg.b(<16 x i8> %{{.*}}, <16 x i8> %{{.*}})
+  // CHECK: zext <16 x i8> %{{.*}} to <16 x i16>
+  // CHECK: zext <16 x i8> %{{.*}} to <16 x i16>
+  // CHECK: add <16 x i16> %{{.*}}, %{{.*}}
+  // CHECK: add <16 x i16> %{{.*}}, <i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1>
+  // CHECK: lshr <16 x i16> %{{.*}}, <i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1, i16 1>
+  // CHECK:trunc <16 x i16> %{{.*}} to <16 x i8>
   return _mm_avg_epu8(A, B);
 }
 
 __m128i test_mm_avg_epu16(__m128i A, __m128i B) {
   // CHECK-LABEL: test_mm_avg_epu16
-  // CHECK: call <8 x i16> @llvm.x86.sse2.pavg.w(<8 x i16> %{{.*}}, <8 x i16> %{{.*}})
+  // CHECK-NOT: call <8 x i16> @llvm.x86.sse2.pavg.w(<8 x i16> %{{.*}}, <8 x i16> %{{.*}})
+  // CHECK: zext <8 x i16> %{{.*}} to <8 x i32>
+  // CHECK: zext <8 x i16> %{{.*}} to <8 x i32>
+  // CHECK: add <8 x i32> %{{.*}}, %{{.*}}
+  // CHECK: add <8 x i32> %{{.*}}, <i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1>
+  // CHECK: lshr <8 x i32> %{{.*}}, <i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1>
+  // CHECK: trunc <8 x i32> %{{.*}} to <8 x i16>
   return _mm_avg_epu16(A, B);
 }
 
@@ -949,6 +961,13 @@ __m128d test_mm_set_pd(double A, double B) {
   // CHECK: insertelement <2 x double> undef, double %{{.*}}, i32 0
   // CHECK: insertelement <2 x double> %{{.*}}, double %{{.*}}, i32 1
   return _mm_set_pd(A, B);
+}
+
+__m128d test_mm_set_pd1(double A) {
+  // CHECK-LABEL: test_mm_set_pd1
+  // CHECK: insertelement <2 x double> undef, double %{{.*}}, i32 0
+  // CHECK: insertelement <2 x double> %{{.*}}, double %{{.*}}, i32 1
+  return _mm_set_pd1(A);
 }
 
 __m128d test_mm_set_sd(double A) {

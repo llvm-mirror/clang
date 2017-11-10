@@ -119,6 +119,14 @@ namespace {
       return Builder->GetAddrOfGlobal(global, ForDefinition_t(isForDefinition));
     }
 
+    llvm::Module *StartModule(llvm::StringRef ModuleName,
+                              llvm::LLVMContext &C) {
+      assert(!M && "Replacing existing Module?");
+      M.reset(new llvm::Module(ModuleName, C));
+      Initialize(*Ctx);
+      return M.get();
+    }
+
     void Initialize(ASTContext &Context) override {
       Ctx = &Context;
 
@@ -197,7 +205,7 @@ namespace {
       // Provide some coverage mapping even for methods that aren't emitted.
       // Don't do this for templated classes though, as they may not be
       // instantiable.
-      if (!MD->getParent()->getDescribedClassTemplate())
+      if (!MD->getParent()->isDependentContext())
         Builder->AddDeferredUnusedCoverageMapping(MD);
     }
 
@@ -315,6 +323,11 @@ llvm::Constant *CodeGenerator::GetAddrOfGlobal(GlobalDecl global,
                                                bool isForDefinition) {
   return static_cast<CodeGeneratorImpl*>(this)
            ->GetAddrOfGlobal(global, isForDefinition);
+}
+
+llvm::Module *CodeGenerator::StartModule(llvm::StringRef ModuleName,
+                                         llvm::LLVMContext &C) {
+  return static_cast<CodeGeneratorImpl*>(this)->StartModule(ModuleName, C);
 }
 
 CodeGenerator *clang::CreateLLVMCodeGen(

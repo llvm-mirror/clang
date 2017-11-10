@@ -172,6 +172,22 @@ bool AnalyzerOptions::includeTemporaryDtorsInCFG() {
                           /* Default = */ false);
 }
 
+bool AnalyzerOptions::includeImplicitDtorsInCFG() {
+  return getBooleanOption(IncludeImplicitDtorsInCFG,
+                          "cfg-implicit-dtors",
+                          /* Default = */ true);
+}
+
+bool AnalyzerOptions::includeLifetimeInCFG() {
+  return getBooleanOption(IncludeLifetimeInCFG, "cfg-lifetime",
+                          /* Default = */ false);
+}
+
+bool AnalyzerOptions::includeLoopExitInCFG() {
+  return getBooleanOption(IncludeLoopExitInCFG, "cfg-loopexit",
+          /* Default = */ false);
+}
+
 bool AnalyzerOptions::mayInlineCXXStandardLibrary() {
   return getBooleanOption(InlineCXXStandardLibrary,
                           "c++-stdlib-inlining",
@@ -293,7 +309,7 @@ unsigned AnalyzerOptions::getMaxInlinableSize() {
         DefaultValue = 4;
         break;
       case UMK_Deep:
-        DefaultValue = 50;
+        DefaultValue = 100;
         break;
     }
 
@@ -332,7 +348,7 @@ unsigned AnalyzerOptions::getMaxNodesPerTopLevelFunction() {
         DefaultValue = 75000;
         break;
       case UMK_Deep:
-        DefaultValue = 150000;
+        DefaultValue = 225000;
         break;
     }
     MaxNodesPerTopLevelFunction = getOptionAsInteger("max-nodes", DefaultValue);
@@ -362,6 +378,12 @@ bool AnalyzerOptions::shouldWidenLoops() {
   if (!WidenLoops.hasValue())
     WidenLoops = getBooleanOption("widen-loops", /*Default=*/false);
   return WidenLoops.getValue();
+}
+
+bool AnalyzerOptions::shouldUnrollLoops() {
+  if (!UnrollLoops.hasValue())
+    UnrollLoops = getBooleanOption("unroll-loops", /*Default=*/false);
+  return UnrollLoops.getValue();
 }
 
 bool AnalyzerOptions::shouldDisplayNotesAsEvents() {
