@@ -125,13 +125,6 @@ public:
   }
 };
 
-// This anchor is used to force the linker to link in the generated object file
-// and thus register the plugin.
-extern volatile int ToolExecutorPluginAnchorSource;
-
-static int LLVM_ATTRIBUTE_UNUSED TestToolExecutorPluginAnchorDest =
-    ToolExecutorPluginAnchorSource;
-
 static ToolExecutorPluginRegistry::Add<TestToolExecutorPlugin>
     X("test-executor", "Plugin for TestToolExecutor.");
 
@@ -140,8 +133,8 @@ llvm::cl::OptionCategory TestCategory("execution-test options");
 TEST(CreateToolExecutorTest, FailedCreateExecutorUndefinedFlag) {
   std::vector<const char *> argv = {"prog", "--fake_flag_no_no_no", "f"};
   int argc = argv.size();
-  auto Executor =
-      createExecutorFromCommandLineArgs(argc, &argv[0], TestCategory);
+  auto Executor = internal::createExecutorFromCommandLineArgsImpl(
+      argc, &argv[0], TestCategory);
   ASSERT_FALSE((bool)Executor);
   llvm::consumeError(Executor.takeError());
 }
@@ -155,8 +148,8 @@ TEST(CreateToolExecutorTest, RegisterFlagsBeforeReset) {
 
   std::vector<const char *> argv = {"prog", "--before_reset=set", "f"};
   int argc = argv.size();
-  auto Executor =
-      createExecutorFromCommandLineArgs(argc, &argv[0], TestCategory);
+  auto Executor = internal::createExecutorFromCommandLineArgsImpl(
+      argc, &argv[0], TestCategory);
   ASSERT_TRUE((bool)Executor);
   EXPECT_EQ(BeforeReset, "set");
   BeforeReset.removeArgument();
@@ -165,8 +158,8 @@ TEST(CreateToolExecutorTest, RegisterFlagsBeforeReset) {
 TEST(CreateToolExecutorTest, CreateStandaloneToolExecutor) {
   std::vector<const char *> argv = {"prog", "standalone.cpp"};
   int argc = argv.size();
-  auto Executor =
-      createExecutorFromCommandLineArgs(argc, &argv[0], TestCategory);
+  auto Executor = internal::createExecutorFromCommandLineArgsImpl(
+      argc, &argv[0], TestCategory);
   ASSERT_TRUE((bool)Executor);
   EXPECT_EQ(Executor->get()->getExecutorName(),
             StandaloneToolExecutor::ExecutorName);
@@ -176,8 +169,8 @@ TEST(CreateToolExecutorTest, CreateTestToolExecutor) {
   std::vector<const char *> argv = {"prog", "test.cpp",
                                     "--executor=test-executor"};
   int argc = argv.size();
-  auto Executor =
-      createExecutorFromCommandLineArgs(argc, &argv[0], TestCategory);
+  auto Executor = internal::createExecutorFromCommandLineArgsImpl(
+      argc, &argv[0], TestCategory);
   ASSERT_TRUE((bool)Executor);
   EXPECT_EQ(Executor->get()->getExecutorName(), TestToolExecutor::ExecutorName);
 }
