@@ -653,6 +653,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       Args.hasArg(OPT_mincremental_linker_compatible);
   Opts.PIECopyRelocations =
       Args.hasArg(OPT_mpie_copy_relocations);
+  Opts.NoPLT = Args.hasArg(OPT_fno_plt);
   Opts.OmitLeafFramePointer = Args.hasArg(OPT_momit_leaf_frame_pointer);
   Opts.SaveTempLabels = Args.hasArg(OPT_msave_temp_labels);
   Opts.NoDwarfDirectoryAsm = Args.hasArg(OPT_fno_dwarf_directory_asm);
@@ -2310,12 +2311,12 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   // Check for MS default calling conventions being specified.
   if (Arg *A = Args.getLastArg(OPT_fdefault_calling_conv_EQ)) {
     LangOptions::DefaultCallingConvention DefaultCC =
-        llvm::StringSwitch<LangOptions::DefaultCallingConvention>(
-            A->getValue())
+        llvm::StringSwitch<LangOptions::DefaultCallingConvention>(A->getValue())
             .Case("cdecl", LangOptions::DCC_CDecl)
             .Case("fastcall", LangOptions::DCC_FastCall)
             .Case("stdcall", LangOptions::DCC_StdCall)
             .Case("vectorcall", LangOptions::DCC_VectorCall)
+            .Case("regcall", LangOptions::DCC_RegCall)
             .Default(LangOptions::DCC_None);
     if (DefaultCC == LangOptions::DCC_None)
       Diags.Report(diag::err_drv_invalid_value)
@@ -2326,7 +2327,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
     bool emitError = (DefaultCC == LangOptions::DCC_FastCall ||
                       DefaultCC == LangOptions::DCC_StdCall) &&
                      Arch != llvm::Triple::x86;
-    emitError |= DefaultCC == LangOptions::DCC_VectorCall &&
+    emitError |= (DefaultCC == LangOptions::DCC_VectorCall ||
+                  DefaultCC == LangOptions::DCC_RegCall) &&
                  !(Arch == llvm::Triple::x86 || Arch == llvm::Triple::x86_64);
     if (emitError)
       Diags.Report(diag::err_drv_argument_not_allowed_with)
