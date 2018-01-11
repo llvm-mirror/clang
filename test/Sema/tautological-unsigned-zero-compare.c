@@ -1,7 +1,13 @@
-// RUN: %clang_cc1 -fsyntax-only -DTEST -verify %s
-// RUN: %clang_cc1 -fsyntax-only -Wno-tautological-unsigned-zero-compare -verify %s
-// RUN: %clang_cc1 -fsyntax-only -DTEST -verify -x c++ %s
-// RUN: %clang_cc1 -fsyntax-only -Wno-tautological-unsigned-zero-compare -verify -x c++ %s
+// RUN: %clang_cc1 -fsyntax-only \
+// RUN:            -Wtautological-unsigned-zero-compare \
+// RUN:            -verify %s
+// RUN: %clang_cc1 -fsyntax-only \
+// RUN:            -verify=silence %s
+// RUN: %clang_cc1 -fsyntax-only \
+// RUN:            -Wtautological-unsigned-zero-compare \
+// RUN:            -verify -x c++ %s
+// RUN: %clang_cc1 -fsyntax-only \
+// RUN:            -verify=silence -x c++ %s
 
 unsigned uvalue(void);
 signed int svalue(void);
@@ -13,13 +19,8 @@ template<typename T>
 void TFunc() {
   // Make sure that we do warn for normal variables in template functions !
   unsigned char c = svalue();
-#ifdef TEST
   if (c < 0) // expected-warning {{comparison of unsigned expression < 0 is always false}}
       return;
-#else
-  if (c < 0)
-      return;
-#endif
 
   if (c < macro(0))
       return;
@@ -37,9 +38,39 @@ int main()
   TFunc<unsigned short>();
 #endif
 
+  short s = svalue();
+
   unsigned un = uvalue();
 
-#ifdef TEST
+  // silence-no-diagnostics
+
+  // Note: both sides are promoted to unsigned long prior to the comparison.
+  if (s == 0UL)
+      return 0;
+  if (s != 0UL)
+      return 0;
+  if (s < 0UL) // expected-warning {{comparison of unsigned expression < 0 is always false}}
+      return 0;
+  if (s <= 0UL)
+      return 0;
+  if (s > 0UL)
+      return 0;
+  if (s >= 0UL) // expected-warning {{comparison of unsigned expression >= 0 is always true}}
+      return 0;
+
+  if (0UL == s)
+      return 0;
+  if (0UL != s)
+      return 0;
+  if (0UL < s)
+      return 0;
+  if (0UL <= s) // expected-warning {{comparison of 0 <= unsigned expression is always true}}
+      return 0;
+  if (0UL > s) // expected-warning {{comparison of 0 > unsigned expression is always false}}
+      return 0;
+  if (0UL >= s)
+      return 0;
+
   if (un == 0)
       return 0;
   if (un != 0)
@@ -91,65 +122,10 @@ int main()
       return 0;
   if (0UL >= un)
       return 0;
-#else
-// expected-no-diagnostics
-  if (un == 0)
-      return 0;
-  if (un != 0)
-      return 0;
-  if (un < 0)
-      return 0;
-  if (un <= 0)
-      return 0;
-  if (un > 0)
-      return 0;
-  if (un >= 0)
-      return 0;
-
-  if (0 == un)
-      return 0;
-  if (0 != un)
-      return 0;
-  if (0 < un)
-      return 0;
-  if (0 <= un)
-      return 0;
-  if (0 > un)
-      return 0;
-  if (0 >= un)
-      return 0;
-
-  if (un == 0UL)
-      return 0;
-  if (un != 0UL)
-      return 0;
-  if (un < 0UL)
-      return 0;
-  if (un <= 0UL)
-      return 0;
-  if (un > 0UL)
-      return 0;
-  if (un >= 0UL)
-      return 0;
-
-  if (0UL == un)
-      return 0;
-  if (0UL != un)
-      return 0;
-  if (0UL < un)
-      return 0;
-  if (0UL <= un)
-      return 0;
-  if (0UL > un)
-      return 0;
-  if (0UL >= un)
-      return 0;
-#endif
 
 
   signed int a = svalue();
 
-#ifdef TEST
   if (a == 0)
       return 0;
   if (a != 0)
@@ -201,60 +177,6 @@ int main()
       return 0;
   if (0UL >= a)
       return 0;
-#else
-// expected-no-diagnostics
-  if (a == 0)
-      return 0;
-  if (a != 0)
-      return 0;
-  if (a < 0)
-      return 0;
-  if (a <= 0)
-      return 0;
-  if (a > 0)
-      return 0;
-  if (a >= 0)
-      return 0;
-
-  if (0 == a)
-      return 0;
-  if (0 != a)
-      return 0;
-  if (0 < a)
-      return 0;
-  if (0 <= a)
-      return 0;
-  if (0 > a)
-      return 0;
-  if (0 >= a)
-      return 0;
-
-  if (a == 0UL)
-      return 0;
-  if (a != 0UL)
-      return 0;
-  if (a < 0UL)
-      return 0;
-  if (a <= 0UL)
-      return 0;
-  if (a > 0UL)
-      return 0;
-  if (a >= 0UL)
-      return 0;
-
-  if (0UL == a)
-      return 0;
-  if (0UL != a)
-      return 0;
-  if (0UL < a)
-      return 0;
-  if (0UL <= a)
-      return 0;
-  if (0UL > a)
-      return 0;
-  if (0UL >= a)
-      return 0;
-#endif
 
 
   float fl = 0;

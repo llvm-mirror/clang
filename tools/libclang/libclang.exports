@@ -2,6 +2,7 @@ clang_CXCursorSet_contains
 clang_CXCursorSet_insert
 clang_CXIndex_getGlobalOptions
 clang_CXIndex_setGlobalOptions
+clang_CXIndex_setInvocationEmissionPathOption
 clang_CXXConstructor_isConvertingConstructor
 clang_CXXConstructor_isCopyConstructor
 clang_CXXConstructor_isDefaultConstructor
@@ -12,6 +13,7 @@ clang_CXXMethod_isConst
 clang_CXXMethod_isPureVirtual
 clang_CXXMethod_isStatic
 clang_CXXMethod_isVirtual
+clang_CXXRecord_isAbstract
 clang_EnumDecl_isScoped
 clang_Cursor_getArgument
 clang_Cursor_getNumTemplateArguments
@@ -218,6 +220,7 @@ clang_getExceptionSpecificationType
 clang_getFieldDeclBitWidth
 clang_getExpansionLocation
 clang_getFile
+clang_getFileContents
 clang_getFileLocation
 clang_getFileName
 clang_getFileTime
@@ -288,6 +291,7 @@ clang_isAttribute
 clang_isConstQualifiedType
 clang_isCursorDefinition
 clang_isDeclaration
+clang_isInvalidDeclaration
 clang_isExpression
 clang_isFileMultipleIncludeGuarded
 clang_isFunctionTypeVariadic

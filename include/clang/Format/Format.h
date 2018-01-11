@@ -985,6 +985,40 @@ struct FormatStyle {
   /// For example: BOOST_FOREACH.
   std::vector<std::string> ForEachMacros;
 
+  /// \brief Styles for sorting multiple ``#include`` blocks.
+  enum IncludeBlocksStyle {
+    /// \brief Sort each ``#include`` block separately.
+    /// \code
+    ///    #include "b.h"               into      #include "b.h"
+    ///
+    ///    #include <lib/main.h>                  #include "a.h"
+    ///    #include "a.h"                         #include <lib/main.h>
+    /// \endcode
+    IBS_Preserve,
+    /// \brief Merge multiple ``#include`` blocks together and sort as one.
+    /// \code
+    ///    #include "b.h"               into      #include "a.h"
+    ///                                           #include "b.h"
+    ///    #include <lib/main.h>                  #include <lib/main.h>
+    ///    #include "a.h"
+    /// \endcode
+    IBS_Merge,
+    /// \brief Merge multiple ``#include`` blocks together and sort as one.
+    /// Then split into groups based on category priority. See
+    /// ``IncludeCategories``.
+    /// \code
+    ///    #include "b.h"               into      #include "a.h"
+    ///                                           #include "b.h"
+    ///    #include <lib/main.h>
+    ///    #include "a.h"                         #include <lib/main.h>
+    /// \endcode
+    IBS_Regroup,
+  };
+
+  /// \brief Dependent on the value, multiple ``#include`` blocks can be sorted
+  /// as one and divided based on category.
+  IncludeBlocksStyle IncludeBlocks;
+
   /// \brief See documentation of ``IncludeCategories``.
   struct IncludeCategory {
     /// \brief The regular expression that this category matches.
@@ -1385,6 +1419,14 @@ struct FormatStyle {
   bool SortIncludes;
 
   /// \brief If ``true``, clang-format will sort using declarations.
+  ///
+  /// The order of using declarations is defined as follows:
+  /// Split the strings by "::" and discard any initial empty strings. The last
+  /// element of each list is a non-namespace name; all others are namespace
+  /// names. Sort the lists of names lexicographically, where the sort order of
+  /// individual names is that all non-namespace names come before all namespace
+  /// names, and within those groups, names are in case-insensitive
+  /// lexicographic order.
   /// \code
   ///    false:                                 true:
   ///    using std::cout;               vs.     using std::cin;
@@ -1601,6 +1643,7 @@ struct FormatStyle {
                R.ExperimentalAutoDetectBinPacking &&
            FixNamespaceComments == R.FixNamespaceComments &&
            ForEachMacros == R.ForEachMacros &&
+           IncludeBlocks == R.IncludeBlocks &&
            IncludeCategories == R.IncludeCategories &&
            IndentCaseLabels == R.IndentCaseLabels &&
            IndentPPDirectives == R.IndentPPDirectives &&

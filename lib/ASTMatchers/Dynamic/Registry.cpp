@@ -234,6 +234,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(hasAnyUsingShadowDecl);
   REGISTER_MATCHER(hasArgument);
   REGISTER_MATCHER(hasArgumentOfType);
+  REGISTER_MATCHER(hasArraySize);
   REGISTER_MATCHER(hasAttr);
   REGISTER_MATCHER(hasAutomaticStorageDuration);
   REGISTER_MATCHER(hasBase);
@@ -248,6 +249,8 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(hasDeclaration);
   REGISTER_MATCHER(hasDeclContext);
   REGISTER_MATCHER(hasDeducedType);
+  REGISTER_MATCHER(hasDefaultArgument);
+  REGISTER_MATCHER(hasDefinition);
   REGISTER_MATCHER(hasDescendant);
   REGISTER_MATCHER(hasDestinationType);
   REGISTER_MATCHER(hasDynamicExceptionSpec);
@@ -316,6 +319,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(isAnonymous);
   REGISTER_MATCHER(isAnyCharacter);
   REGISTER_MATCHER(isAnyPointer);
+  REGISTER_MATCHER(isArray);
   REGISTER_MATCHER(isArrow);
   REGISTER_MATCHER(isBaseInitializer);
   REGISTER_MATCHER(isBitField);
@@ -388,8 +392,10 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(nullStmt);
   REGISTER_MATCHER(numSelectorArgs);
   REGISTER_MATCHER(ofClass);
+  REGISTER_MATCHER(objcCatchStmt);
   REGISTER_MATCHER(objcCategoryDecl);
   REGISTER_MATCHER(objcCategoryImplDecl);
+  REGISTER_MATCHER(objcFinallyStmt);
   REGISTER_MATCHER(objcImplementationDecl);
   REGISTER_MATCHER(objcInterfaceDecl);
   REGISTER_MATCHER(objcIvarDecl);
@@ -398,6 +404,8 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(objcObjectPointerType);
   REGISTER_MATCHER(objcPropertyDecl);
   REGISTER_MATCHER(objcProtocolDecl);
+  REGISTER_MATCHER(objcThrowStmt);
+  REGISTER_MATCHER(objcTryStmt);
   REGISTER_MATCHER(on);
   REGISTER_MATCHER(onImplicitObjectArgument);
   REGISTER_MATCHER(opaqueValueExpr);

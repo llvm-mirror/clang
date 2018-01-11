@@ -266,13 +266,9 @@ the configuration (without a prefix: ``Auto``).
 
   .. code-block:: c++
 
-    true:
-    int a;     // My comment a
-    int b = 2; // comment  b
-
-    false:
-    int a; // My comment a
-    int b = 2; // comment about b
+    true:                                   false:
+    int a;     // My comment a      vs.     int a; // My comment a
+    int b = 2; // comment  b                int b = 2; // comment about b
 
 **AllowAllParametersOfDeclarationOnNextLine** (``bool``)
   If the function declaration doesn't fit on a line,
@@ -998,9 +994,9 @@ the configuration (without a prefix: ``Auto``).
 
     .. code-block:: c++
 
-    Constructor()
-        : initializer1(),
-          initializer2()
+      Constructor()
+          : initializer1(),
+            initializer2()
 
   * ``BCIS_BeforeComma`` (in configuration: ``BeforeComma``)
     Break constructor initializers before the colon and commas, and align
@@ -1008,18 +1004,18 @@ the configuration (without a prefix: ``Auto``).
 
     .. code-block:: c++
 
-    Constructor()
-        : initializer1()
-        , initializer2()
+      Constructor()
+          : initializer1()
+          , initializer2()
 
   * ``BCIS_AfterColon`` (in configuration: ``AfterColon``)
     Break constructor initializers after the colon and commas.
 
     .. code-block:: c++
 
-    Constructor() :
-        initializer1(),
-        initializer2()
+      Constructor() :
+          initializer1(),
+          initializer2()
 
 
 
@@ -1176,6 +1172,45 @@ the configuration (without a prefix: ``Auto``).
     ForEachMacros: ['RANGES_FOR', 'FOREACH']
 
   For example: BOOST_FOREACH.
+
+**IncludeBlocks** (``IncludeBlocksStyle``)
+  Dependent on the value, multiple ``#include`` blocks can be sorted
+  as one and divided based on category.
+
+  Possible values:
+
+  * ``IBS_Preserve`` (in configuration: ``Preserve``)
+    Sort each ``#include`` block separately.
+
+    .. code-block:: c++
+
+       #include "b.h"               into      #include "b.h"
+
+       #include <lib/main.h>                  #include "a.h"
+       #include "a.h"                         #include <lib/main.h>
+
+  * ``IBS_Merge`` (in configuration: ``Merge``)
+    Merge multiple ``#include`` blocks together and sort as one.
+
+    .. code-block:: c++
+
+       #include "b.h"               into      #include "a.h"
+                                              #include "b.h"
+       #include <lib/main.h>                  #include <lib/main.h>
+       #include "a.h"
+
+  * ``IBS_Regroup`` (in configuration: ``Regroup``)
+    Merge multiple ``#include`` blocks together and sort as one.
+    Then split into groups based on category priority. See ``IncludeCategories``.
+
+    .. code-block:: c++
+
+       #include "b.h"               into      #include "a.h"
+                                              #include "b.h"
+       #include <lib/main.h>
+       #include "a.h"                         #include <lib/main.h>
+
+
 
 **IncludeCategories** (``std::vector<IncludeCategory>``)
   Regular expressions denoting the different ``#include`` categories
@@ -1541,6 +1576,26 @@ the configuration (without a prefix: ``Auto``).
 
 
 
+**RawStringFormats** (``std::vector<RawStringFormat>``)
+  Raw string delimiters denoting that the raw string contents are
+  code in a particular language and can be reformatted.
+
+  A raw string with a matching delimiter will be reformatted assuming the
+  specified language based on a predefined style given by 'BasedOnStyle'.
+  If 'BasedOnStyle' is not found, the formatting is based on llvm style.
+
+  To configure this in the .clang-format file, use:
+
+  .. code-block:: yaml
+
+    RawStringFormats:
+      - Delimiter: 'pb'
+        Language:  TextProto
+        BasedOnStyle: llvm
+      - Delimiter: 'proto'
+        Language:  TextProto
+        BasedOnStyle: google
+
 **ReflowComments** (``bool``)
   If ``true``, clang-format will attempt to re-flow comments.
 
@@ -1567,6 +1622,14 @@ the configuration (without a prefix: ``Auto``).
 
 **SortUsingDeclarations** (``bool``)
   If ``true``, clang-format will sort using declarations.
+
+  The order of using declarations is defined as follows:
+  Split the strings by "::" and discard any initial empty strings. The last
+  element of each list is a non-namespace name; all others are namespace
+  names. Sort the lists of names lexicographically, where the sort order of
+  individual names is that all non-namespace names come before all namespace
+  names, and within those groups, names are in case-insensitive
+  lexicographic order.
 
   .. code-block:: c++
 

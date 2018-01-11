@@ -193,7 +193,7 @@ static void DefineTypeSize(const Twine &MacroName, unsigned TypeWidth,
 /// the width, suffix, and signedness of the given type
 static void DefineTypeSize(const Twine &MacroName, TargetInfo::IntType Ty,
                            const TargetInfo &TI, MacroBuilder &Builder) {
-  DefineTypeSize(MacroName, TI.getTypeWidth(Ty), TI.getTypeConstantSuffix(Ty), 
+  DefineTypeSize(MacroName, TI.getTypeWidth(Ty), TI.getTypeConstantSuffix(Ty),
                  TI.isTypeSigned(Ty), Builder);
 }
 
@@ -303,25 +303,25 @@ static const char *getLockFreeValue(unsigned TypeWidth, unsigned TypeAlign,
 
 /// \brief Add definitions required for a smooth interaction between
 /// Objective-C++ automated reference counting and libstdc++ (4.2).
-static void AddObjCXXARCLibstdcxxDefines(const LangOptions &LangOpts, 
+static void AddObjCXXARCLibstdcxxDefines(const LangOptions &LangOpts,
                                          MacroBuilder &Builder) {
   Builder.defineMacro("_GLIBCXX_PREDEFINED_OBJC_ARC_IS_SCALAR");
-  
+
   std::string Result;
   {
-    // Provide specializations for the __is_scalar type trait so that 
+    // Provide specializations for the __is_scalar type trait so that
     // lifetime-qualified objects are not considered "scalar" types, which
     // libstdc++ uses as an indicator of the presence of trivial copy, assign,
     // default-construct, and destruct semantics (none of which hold for
     // lifetime-qualified objects in ARC).
     llvm::raw_string_ostream Out(Result);
-    
+
     Out << "namespace std {\n"
         << "\n"
         << "struct __true_type;\n"
         << "struct __false_type;\n"
         << "\n";
-    
+
     Out << "template<typename _Tp> struct __is_scalar;\n"
         << "\n";
 
@@ -333,7 +333,7 @@ static void AddObjCXXARCLibstdcxxDefines(const LangOptions &LangOpts,
           << "};\n"
           << "\n";
     }
-      
+
     if (LangOpts.ObjCWeak) {
       Out << "template<typename _Tp>\n"
           << "struct __is_scalar<__attribute__((objc_ownership(weak))) _Tp> {\n"
@@ -342,7 +342,7 @@ static void AddObjCXXARCLibstdcxxDefines(const LangOptions &LangOpts,
           << "};\n"
           << "\n";
     }
-    
+
     if (LangOpts.ObjCAutoRefCount) {
       Out << "template<typename _Tp>\n"
           << "struct __is_scalar<__attribute__((objc_ownership(autoreleasing)))"
@@ -352,7 +352,7 @@ static void AddObjCXXARCLibstdcxxDefines(const LangOptions &LangOpts,
           << "};\n"
           << "\n";
     }
-      
+
     Out << "}\n";
   }
   Builder.append(Result);
@@ -370,7 +370,9 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__STDC_HOSTED__");
 
   if (!LangOpts.CPlusPlus) {
-    if (LangOpts.C11)
+    if (LangOpts.C17)
+      Builder.defineMacro("__STDC_VERSION__", "201710L");
+    else if (LangOpts.C11)
       Builder.defineMacro("__STDC_VERSION__", "201112L");
     else if (LangOpts.C99)
       Builder.defineMacro("__STDC_VERSION__", "199901L");
@@ -383,7 +385,7 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     // C++17 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201703L when compiling a
     //   C++ translation unit.
-    else if (LangOpts.CPlusPlus1z)
+    else if (LangOpts.CPlusPlus17)
       Builder.defineMacro("__cplusplus", "201703L");
     // C++1y [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201402L when compiling a
@@ -483,12 +485,12 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_user_defined_literals", "200809");
     Builder.defineMacro("__cpp_lambdas", "200907");
     Builder.defineMacro("__cpp_constexpr",
-                        LangOpts.CPlusPlus1z ? "201603" : 
+                        LangOpts.CPlusPlus17 ? "201603" :
                         LangOpts.CPlusPlus14 ? "201304" : "200704");
     Builder.defineMacro("__cpp_range_based_for",
-                        LangOpts.CPlusPlus1z ? "201603" : "200907");
+                        LangOpts.CPlusPlus17 ? "201603" : "200907");
     Builder.defineMacro("__cpp_static_assert",
-                        LangOpts.CPlusPlus1z ? "201411" : "200410");
+                        LangOpts.CPlusPlus17 ? "201411" : "200410");
     Builder.defineMacro("__cpp_decltype", "200707");
     Builder.defineMacro("__cpp_attributes", "200809");
     Builder.defineMacro("__cpp_rvalue_references", "200610");
@@ -518,7 +520,7 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_sized_deallocation", "201309");
 
   // C++17 features.
-  if (LangOpts.CPlusPlus1z) {
+  if (LangOpts.CPlusPlus17) {
     Builder.defineMacro("__cpp_hex_float", "201603");
     Builder.defineMacro("__cpp_inline_variables", "201606");
     Builder.defineMacro("__cpp_noexcept_function_type", "201510");
@@ -559,7 +561,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   Builder.defineMacro("__clang_patchlevel__", TOSTR(CLANG_VERSION_PATCHLEVEL));
 #undef TOSTR
 #undef TOSTR2
-  Builder.defineMacro("__clang_version__", 
+  Builder.defineMacro("__clang_version__",
                       "\"" CLANG_VERSION_STRING " "
                       + getClangFullRepositoryVersion() + "\"");
   if (!LangOpts.MSVCCompat) {
@@ -599,7 +601,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   // As sad as it is, enough software depends on the __VERSION__ for version
   // checks that it is necessary to report 4.2.1 (the base GCC version we claim
   // compatibility with) first.
-  Builder.defineMacro("__VERSION__", "\"4.2.1 Compatible " + 
+  Builder.defineMacro("__VERSION__", "\"4.2.1 Compatible " +
                       Twine(getClangFullCPPVersion()) + "\"");
 
   // Initialize language-specific preprocessor defines.
@@ -614,7 +616,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   if (LangOpts.ObjC1) {
     if (LangOpts.ObjCRuntime.isNonFragile()) {
       Builder.defineMacro("__OBJC2__");
-      
+
       if (LangOpts.ObjCExceptions)
         Builder.defineMacro("OBJC_ZEROCOST_EXCEPTIONS");
     }
@@ -677,8 +679,14 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__EXCEPTIONS");
   if (!LangOpts.MSVCCompat && LangOpts.RTTI)
     Builder.defineMacro("__GXX_RTTI");
+
   if (LangOpts.SjLjExceptions)
     Builder.defineMacro("__USING_SJLJ_EXCEPTIONS__");
+  else if (LangOpts.SEHExceptions)
+    Builder.defineMacro("__SEH__");
+  else if (LangOpts.DWARFExceptions &&
+          (TI.getTriple().isThumb() || TI.getTriple().isARM()))
+    Builder.defineMacro("__ARM_DWARF_EH__");
 
   if (LangOpts.Deprecated)
     Builder.defineMacro("__DEPRECATED");
@@ -745,6 +753,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   DefineTypeSize("__LONG_MAX__", TargetInfo::SignedLong, TI, Builder);
   DefineTypeSize("__LONG_LONG_MAX__", TargetInfo::SignedLongLong, TI, Builder);
   DefineTypeSize("__WCHAR_MAX__", TI.getWCharType(), TI, Builder);
+  DefineTypeSize("__WINT_MAX__", TI.getWIntType(), TI, Builder);
   DefineTypeSize("__INTMAX_MAX__", TI.getIntMaxType(), TI, Builder);
   DefineTypeSize("__SIZE_MAX__", TI.getSizeType(), TI, Builder);
 
@@ -808,6 +817,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   DefineFloatMacros(Builder, "FLT", &TI.getFloatFormat(), "F");
   DefineFloatMacros(Builder, "DBL", &TI.getDoubleFormat(), "");
   DefineFloatMacros(Builder, "LDBL", &TI.getLongDoubleFormat(), "L");
+  if (TI.hasFloat128Type())
+    // FIXME: Switch away from the non-standard "Q" when we can
+    DefineFloatMacros(Builder, "FLT128", &TI.getFloat128Format(), "Q");
+
 
   // Define a __POINTER_WIDTH__ macro for stdint.h.
   Builder.defineMacro("__POINTER_WIDTH__",
@@ -987,6 +1000,11 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__nullable", "_Nullable");
   }
 
+  // Add a macro to differentiate between regular iOS/tvOS/watchOS targets and
+  // the corresponding simulator targets.
+  if (TI.getTriple().isOSDarwin() && TI.getTriple().isSimulatorEnvironment())
+    Builder.defineMacro("__APPLE_EMBEDDED_SIMULATOR__", "1");
+
   // OpenMP definition
   // OpenMP 2.2:
   //   In implementations that support a preprocessor, the _OPENMP
@@ -1003,8 +1021,8 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("_OPENMP", "201511");
     break;
   default:
-    // Default version is OpenMP 3.1
-    Builder.defineMacro("_OPENMP", "201107");
+    // Default version is OpenMP 3.1, in Simd only mode - 4.5
+    Builder.defineMacro("_OPENMP", LangOpts.OpenMPSimd ? "201511" : "201107");
     break;
   }
 
@@ -1028,6 +1046,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
         LangOpts.OpenCLVersion)) \
       Builder.defineMacro(#Ext);
 #include "clang/Basic/OpenCLExtensions.def"
+
+    auto Arch = TI.getTriple().getArch();
+    if (Arch == llvm::Triple::spir || Arch == llvm::Triple::spir64)
+      Builder.defineMacro("__IMAGE_SUPPORT__");
   }
 
   if (TI.hasInt128Type() && LangOpts.CPlusPlus && LangOpts.GNUMode) {
@@ -1086,7 +1108,7 @@ void clang::InitializePreprocessor(
       }
     }
   }
-  
+
   // Even with predefines off, some macros are still predefined.
   // These should all be defined in the preprocessor according to the
   // current language configuration.
@@ -1132,7 +1154,7 @@ void clang::InitializePreprocessor(
   // Instruct the preprocessor to skip the preamble.
   PP.setSkipMainFilePreamble(InitOpts.PrecompiledPreambleBytes.first,
                              InitOpts.PrecompiledPreambleBytes.second);
-                          
+
   // Copy PredefinedBuffer into the Preprocessor.
   PP.setPredefines(Predefines.str());
 }

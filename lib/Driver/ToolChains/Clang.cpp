@@ -15,6 +15,7 @@
 #include "Arch/Sparc.h"
 #include "Arch/SystemZ.h"
 #include "Arch/X86.h"
+#include "AMDGPU.h"
 #include "CommonArgs.h"
 #include "Hexagon.h"
 #include "InputInfo.h"
@@ -273,26 +274,30 @@ static void ParseMRecip(const Driver &D, const ArgList &Args,
   OutStrings.push_back(Args.MakeArgString(Out));
 }
 
+/// The -mprefer-vector-width option accepts either a positive integer
+/// or the string "none".
+static void ParseMPreferVectorWidth(const Driver &D, const ArgList &Args,
+                                    ArgStringList &CmdArgs) {
+  Arg *A = Args.getLastArg(options::OPT_mprefer_vector_width_EQ);
+  if (!A)
+    return;
+
+  StringRef Value = A->getValue();
+  if (Value == "none") {
+    CmdArgs.push_back("-mprefer-vector-width=none");
+  } else {
+    unsigned Width;
+    if (Value.getAsInteger(10, Width)) {
+      D.Diag(diag::err_drv_invalid_value) << A->getOption().getName() << Value;
+      return;
+    }
+    CmdArgs.push_back(Args.MakeArgString("-mprefer-vector-width=" + Value));
+  }
+}
+
 static void getWebAssemblyTargetFeatures(const ArgList &Args,
                                          std::vector<StringRef> &Features) {
   handleTargetFeaturesGroup(Args, Features, options::OPT_m_wasm_Features_Group);
-}
-
-static void getAMDGPUTargetFeatures(const Driver &D, const ArgList &Args,
-                                    std::vector<StringRef> &Features) {
-  if (const Arg *dAbi = Args.getLastArg(options::OPT_mamdgpu_debugger_abi)) {
-    StringRef value = dAbi->getValue();
-    if (value == "1.0") {
-      Features.push_back("+amdgpu-debugger-insert-nops");
-      Features.push_back("+amdgpu-debugger-reserve-regs");
-      Features.push_back("+amdgpu-debugger-emit-prologue");
-    } else {
-      D.Diag(diag::err_drv_clang_unsupported) << dAbi->getAsString(Args);
-    }
-  }
-
-  handleTargetFeaturesGroup(
-    Args, Features, options::OPT_m_amdgpu_Features_Group);
 }
 
 static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
@@ -347,7 +352,7 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
     break;
   case llvm::Triple::r600:
   case llvm::Triple::amdgcn:
-    getAMDGPUTargetFeatures(D, Args, Features);
+    amdgpu::getAMDGPUTargetFeatures(D, Args, Features);
     break;
   }
 
@@ -1733,10 +1738,9 @@ void Clang::AddHexagonTargetArgs(const ArgList &Args,
   CmdArgs.push_back("-Wreturn-type");
 
   if (auto G = toolchains::HexagonToolChain::getSmallDataThreshold(Args)) {
-    std::string N = llvm::utostr(G.getValue());
-    std::string Opt = std::string("-hexagon-small-data-threshold=") + N;
     CmdArgs.push_back("-mllvm");
-    CmdArgs.push_back(Args.MakeArgString(Opt));
+    CmdArgs.push_back(Args.MakeArgString("-hexagon-small-data-threshold=" +
+                                         Twine(G.getValue())));
   }
 
   if (!Args.hasArg(options::OPT_fno_short_enums))
@@ -1885,7 +1889,7 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
   // arg after parsing the '-I' arg.
   bool TakeNextArg = false;
 
-  bool UseRelaxRelocations = ENABLE_X86_RELAX_RELOCATIONS;
+  bool UseRelaxRelocations = C.getDefaultToolChain().useRelaxRelocations();
   const char *MipsTargetFeature = nullptr;
   for (const Arg *A :
        Args.filtered(options::OPT_Wa_COMMA, options::OPT_Xassembler)) {
@@ -1904,6 +1908,15 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
 
       switch (C.getDefaultToolChain().getArch()) {
       default:
+        break;
+      case llvm::Triple::thumb:
+      case llvm::Triple::thumbeb:
+      case llvm::Triple::arm:
+      case llvm::Triple::armeb:
+        if (Value == "-mthumb")
+          // -mthumb has already been processed in ComputeLLVMTriple()
+          // recognize but skip over here.
+          continue;
         break;
       case llvm::Triple::mips:
       case llvm::Triple::mipsel:
@@ -2155,6 +2168,9 @@ static void RenderFloatingPointOptions(const ToolChain &TC, const Driver &D,
 
   if (!SignedZeros)
     CmdArgs.push_back("-fno-signed-zeros");
+
+  if (AssociativeMath && !SignedZeros && !TrappingMath)
+    CmdArgs.push_back("-mreassociate");
 
   if (ReciprocalMath)
     CmdArgs.push_back("-freciprocal-math");
@@ -3561,7 +3577,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                     options::OPT_fno_unique_section_names, true))
     CmdArgs.push_back("-fno-unique-section-names");
 
-  Args.AddAllArgs(CmdArgs, options::OPT_finstrument_functions);
+  if (auto *A = Args.getLastArg(
+      options::OPT_finstrument_functions,
+      options::OPT_finstrument_functions_after_inlining,
+      options::OPT_finstrument_function_entry_bare))
+    A->render(Args, CmdArgs);
 
   addPGOAndCoverageFlags(C, D, Output, Args, CmdArgs);
 
@@ -3881,6 +3901,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       // semantic analysis, etc.
       break;
     }
+  } else {
+    Args.AddLastArg(CmdArgs, options::OPT_fopenmp_simd,
+                    options::OPT_fno_openmp_simd);
+    Args.AddAllArgs(CmdArgs, options::OPT_fopenmp_version_EQ);
   }
 
   const SanitizerArgs &Sanitize = getToolChain().getSanitizerArgs();
@@ -4169,9 +4193,33 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     addExceptionArgs(Args, InputType, getToolChain(), KernelOrKext, Runtime,
                      CmdArgs);
 
-  if (Args.hasArg(options::OPT_fsjlj_exceptions) ||
-      getToolChain().UseSjLjExceptions(Args))
-    CmdArgs.push_back("-fsjlj-exceptions");
+  // Handle exception personalities
+  Arg *A = Args.getLastArg(options::OPT_fsjlj_exceptions,
+                           options::OPT_fseh_exceptions,
+                           options::OPT_fdwarf_exceptions);
+  if (A) {
+    const Option &Opt = A->getOption();
+    if (Opt.matches(options::OPT_fsjlj_exceptions))
+      CmdArgs.push_back("-fsjlj-exceptions");
+    if (Opt.matches(options::OPT_fseh_exceptions))
+      CmdArgs.push_back("-fseh-exceptions");
+    if (Opt.matches(options::OPT_fdwarf_exceptions))
+      CmdArgs.push_back("-fdwarf-exceptions");
+  } else {
+    switch (getToolChain().GetExceptionModel(Args)) {
+    default:
+      break;
+    case llvm::ExceptionHandling::DwarfCFI:
+      CmdArgs.push_back("-fdwarf-exceptions");
+      break;
+    case llvm::ExceptionHandling::SjLj:
+      CmdArgs.push_back("-fsjlj-exceptions");
+      break;
+    case llvm::ExceptionHandling::WinEH:
+      CmdArgs.push_back("-fseh-exceptions");
+      break;
+    }
+  }
 
   // C++ "sane" operator new.
   if (!Args.hasFlag(options::OPT_fassume_sane_operator_new,
@@ -4312,6 +4360,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_fno_slp_vectorize, EnableSLPVec))
     CmdArgs.push_back("-vectorize-slp");
 
+  ParseMPreferVectorWidth(D, Args, CmdArgs);
+
   if (Arg *A = Args.getLastArg(options::OPT_fshow_overloads_EQ))
     A->render(Args, CmdArgs);
 
@@ -4342,6 +4392,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fapple-pragma-pack");
 
   if (Args.hasFlag(options::OPT_fsave_optimization_record,
+                   options::OPT_foptimization_record_file_EQ,
                    options::OPT_fno_save_optimization_record, false)) {
     CmdArgs.push_back("-opt-record-file");
 
@@ -5316,12 +5367,15 @@ void OffloadBundler::ConstructJob(Compilation &C, const JobAction &JA,
     if (I)
       Triples += ',';
 
+    // Find ToolChain for this input.
     Action::OffloadKind CurKind = Action::OFK_Host;
     const ToolChain *CurTC = &getToolChain();
     const Action *CurDep = JA.getInputs()[I];
 
     if (const auto *OA = dyn_cast<OffloadAction>(CurDep)) {
+      CurTC = nullptr;
       OA->doOnEachDependence([&](Action *A, const ToolChain *TC, const char *) {
+        assert(CurTC == nullptr && "Expected one dependence!");
         CurKind = A->getOffloadingDeviceKind();
         CurTC = TC;
       });
@@ -5342,7 +5396,17 @@ void OffloadBundler::ConstructJob(Compilation &C, const JobAction &JA,
   for (unsigned I = 0; I < Inputs.size(); ++I) {
     if (I)
       UB += ',';
-    UB += Inputs[I].getFilename();
+
+    // Find ToolChain for this input.
+    const ToolChain *CurTC = &getToolChain();
+    if (const auto *OA = dyn_cast<OffloadAction>(JA.getInputs()[I])) {
+      CurTC = nullptr;
+      OA->doOnEachDependence([&](Action *, const ToolChain *TC, const char *) {
+        assert(CurTC == nullptr && "Expected one dependence!");
+        CurTC = TC;
+      });
+    }
+    UB += CurTC->getInputFilename(Inputs[I]);
   }
   CmdArgs.push_back(TCArgs.MakeArgString(UB));
 
@@ -5402,13 +5466,7 @@ void OffloadBundler::ConstructJobMultipleOutputs(
   for (unsigned I = 0; I < Outputs.size(); ++I) {
     if (I)
       UB += ',';
-    SmallString<256> OutputFileName(Outputs[I].getFilename());
-    // Change extension of target files for OpenMP offloading
-    // to NVIDIA GPUs.
-    if (DepInfo[I].DependentToolChain->getTriple().isNVPTX() &&
-        JA.isOffloading(Action::OFK_OpenMP))
-      llvm::sys::path::replace_extension(OutputFileName, "cubin");
-    UB += OutputFileName;
+    UB += DepInfo[I].DependentToolChain->getInputFilename(Outputs[I]);
   }
   CmdArgs.push_back(TCArgs.MakeArgString(UB));
   CmdArgs.push_back("-unbundle");

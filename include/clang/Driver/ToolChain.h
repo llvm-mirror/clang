@@ -40,6 +40,7 @@ namespace driver {
   class Compilation;
   class CudaInstallationDetector;
   class Driver;
+  class InputInfo;
   class JobAction;
   class RegisterEffectiveTriple;
   class SanitizerArgs;
@@ -92,7 +93,7 @@ public:
 
 private:
   const Driver &D;
-  const llvm::Triple Triple;
+  llvm::Triple Triple;
   const llvm::opt::ArgList &Args;
   // We need to initialize CachedRTTIArg before CachedRTTIMode
   const llvm::opt::Arg *const CachedRTTIArg;
@@ -135,6 +136,8 @@ protected:
   ToolChain(const Driver &D, const llvm::Triple &T,
             const llvm::opt::ArgList &Args);
 
+  void setTripleEnvironment(llvm::Triple::EnvironmentType Env);
+
   virtual Tool *buildAssembler() const;
   virtual Tool *buildLinker() const;
   virtual Tool *getTool(Action::ActionClass AC) const;
@@ -171,6 +174,11 @@ public:
   /// example when compiling CUDA code for the GPU, the triple might be NVPTX,
   /// while the aux triple is the host (CPU) toolchain, e.g. x86-linux-gnu.
   virtual const llvm::Triple *getAuxTriple() const { return nullptr; }
+
+  /// Some toolchains need to modify the file name, for example to replace the
+  /// extension for object files with .cubin for OpenMP offloading to Nvidia
+  /// GPUs.
+  virtual std::string getInputFilename(const InputInfo &Input) const;
 
   llvm::Triple::ArchType getArch() const { return Triple.getArch(); }
   StringRef getArchName() const { return Triple.getArchName(); }
@@ -310,6 +318,9 @@ public:
   /// mixed dispatch method be used?
   virtual bool UseObjCMixedDispatch() const { return false; }
 
+  /// \brief Check whether to enable x86 relax relocations by default.
+  virtual bool useRelaxRelocations() const;
+
   /// GetDefaultStackProtectorLevel - Get the default stack protector level for
   /// this tool chain (0=off, 1=on, 2=strong, 3=all).
   virtual unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const {
@@ -366,9 +377,6 @@ public:
   /// SupportsProfiling - Does this tool chain support -pg.
   virtual bool SupportsProfiling() const { return true; }
 
-  /// Does this tool chain support Objective-C garbage collection.
-  virtual bool SupportsObjCGC() const { return true; }
-
   /// Complain if this tool chain doesn't support Objective-C ARC.
   virtual void CheckObjCARC() const {}
 
@@ -391,10 +399,9 @@ public:
     return llvm::DebuggerKind::GDB;
   }
 
-  /// UseSjLjExceptions - Does this tool chain use SjLj exceptions.
-  virtual bool UseSjLjExceptions(const llvm::opt::ArgList &Args) const {
-    return false;
-  }
+  /// GetExceptionModel - Return the tool chain exception model.
+  virtual llvm::ExceptionHandling
+  GetExceptionModel(const llvm::opt::ArgList &Args) const;
 
   /// SupportsEmbeddedBitcode - Does this tool chain support embedded bitcode.
   virtual bool SupportsEmbeddedBitcode() const {

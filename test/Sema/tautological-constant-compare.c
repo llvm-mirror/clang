@@ -1,7 +1,13 @@
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -DTEST -verify %s
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wno-tautological-constant-compare -verify %s
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -DTEST -verify -x c++ %s
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wno-tautological-constant-compare -verify -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wtautological-constant-in-range-compare -DTEST -verify %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wtautological-constant-in-range-compare -DTEST -verify -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wtautological-type-limit-compare -DTEST -verify %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wtautological-type-limit-compare -DTEST -verify -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wextra -Wno-sign-compare -DTEST -verify %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wextra -Wno-sign-compare -DTEST -verify -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wall -verify %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -Wall -verify -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -verify %s
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fsyntax-only -verify -x c++ %s
 
 int value(void);
 
@@ -94,15 +100,17 @@ int main()
   if (-32768 >= s)
       return 0;
 
+  // Note: both sides are promoted to unsigned long prior to the comparison, so
+  // it is perfectly possible for a short to compare greater than 32767UL.
   if (s == 32767UL)
       return 0;
   if (s != 32767UL)
       return 0;
   if (s < 32767UL)
       return 0;
-  if (s <= 32767UL) // expected-warning {{comparison 'short' <= 32767 is always true}}
+  if (s <= 32767UL)
       return 0;
-  if (s > 32767UL) // expected-warning {{comparison 'short' > 32767 is always false}}
+  if (s > 32767UL)
       return 0;
   if (s >= 32767UL)
       return 0;
@@ -111,13 +119,40 @@ int main()
       return 0;
   if (32767UL != s)
       return 0;
-  if (32767UL < s) // expected-warning {{comparison 32767 < 'short' is always false}}
+  if (32767UL < s)
       return 0;
   if (32767UL <= s)
       return 0;
   if (32767UL > s)
       return 0;
-  if (32767UL >= s) // expected-warning {{comparison 32767 >= 'short' is always true}}
+  if (32767UL >= s)
+      return 0;
+
+  enum { ULONG_MAX = (2UL * (unsigned long)__LONG_MAX__ + 1UL) };
+  if (s == 2UL * (unsigned long)__LONG_MAX__ + 1UL)
+      return 0;
+  if (s != 2UL * (unsigned long)__LONG_MAX__ + 1UL)
+      return 0;
+  if (s < 2UL * (unsigned long)__LONG_MAX__ + 1UL)
+      return 0;
+  if (s <= 2UL * (unsigned long)__LONG_MAX__ + 1UL) // expected-warning-re {{comparison 'short' <= {{.*}} is always true}}
+      return 0;
+  if (s > 2UL * (unsigned long)__LONG_MAX__ + 1UL) // expected-warning-re {{comparison 'short' > {{.*}} is always false}}
+      return 0;
+  if (s >= 2UL * (unsigned long)__LONG_MAX__ + 1UL)
+      return 0;
+
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL == s)
+      return 0;
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL != s)
+      return 0;
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL < s) // expected-warning-re {{comparison {{.*}} < 'short' is always false}}
+      return 0;
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL <= s)
+      return 0;
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL > s)
+      return 0;
+  if (2UL * (unsigned long)__LONG_MAX__ + 1UL >= s) // expected-warning-re {{comparison {{.*}} >= 'short' is always true}}
       return 0;
 
   // FIXME: assumes two's complement
@@ -281,8 +316,6 @@ int main()
   if (0 >= s)
     return 0;
 
-  // However the comparison with 0U would warn
-
   unsigned short us = value();
 
 #ifdef TEST
@@ -445,7 +478,7 @@ int main()
     return 0;
 
 #if __SIZEOF_INT128__
-  __int128 i128;
+  __int128 i128 = value();
   if (i128 == -1) // used to crash
       return 0;
 #endif
@@ -456,7 +489,7 @@ int main()
   no,
   maybe
   };
-  enum E e;
+  enum E e = (enum E)value();
 
   if (e == yes)
       return 0;
@@ -509,6 +542,24 @@ int main()
       return 0;
   if (maybe >= e)
       return 0;
+
+  // For the time being, use the declared type of bit-fields rather than their
+  // length when determining whether a value is in-range.
+  // FIXME: Reconsider this.
+  struct A {
+    int a : 3;
+    unsigned b : 3;
+    long c : 3;
+    unsigned long d : 3;
+  } a;
+  if (a.a < 3) {}
+  if (a.a < 4) {}
+  if (a.b < 7) {}
+  if (a.b < 8) {}
+  if (a.c < 3) {}
+  if (a.c < 4) {}
+  if (a.d < 7) {}
+  if (a.d < 8) {}
 
   return 1;
 }

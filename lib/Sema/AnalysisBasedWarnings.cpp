@@ -1275,7 +1275,7 @@ static StringRef getFallthroughAttrSpelling(Preprocessor &PP,
     tok::r_square, tok::r_square
   };
 
-  bool PreferClangAttr = !PP.getLangOpts().CPlusPlus1z;
+  bool PreferClangAttr = !PP.getLangOpts().CPlusPlus17;
 
   StringRef MacroName;
   if (PreferClangAttr)
@@ -2080,10 +2080,10 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
   //     time.
   DiagnosticsEngine &Diags = S.getDiagnostics();
 
-  // Do not do any analysis for declarations in system headers if we are
-  // going to just ignore them.
-  if (Diags.getSuppressSystemWarnings() &&
-      S.SourceMgr.isInSystemHeader(D->getLocation()))
+  // Do not do any analysis if we are going to just ignore them.
+  if (Diags.getIgnoreAllWarnings() ||
+      (Diags.getSuppressSystemWarnings() &&
+       S.SourceMgr.isInSystemHeader(D->getLocation())))
     return;
 
   // For code in dependent contexts, we'll do this at instantiation time.

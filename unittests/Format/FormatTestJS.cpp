@@ -323,6 +323,11 @@ TEST_F(FormatTestJS, ReservedWords) {
                "  case: string;\n"
                "  default: string;\n"
                "}\n");
+  verifyFormat("const Axis = {\n"
+               "  for: 'for',\n"
+               "  x: 'x'\n"
+               "};",
+               "const Axis = {for: 'for', x:   'x'};");
 }
 
 TEST_F(FormatTestJS, ReservedWordsMethods) {
@@ -1110,6 +1115,10 @@ TEST_F(FormatTestJS, ForLoops) {
                "}");
   verifyFormat("for (let {a, b} of x) {\n"
                "}");
+  verifyFormat("for (let {a, b} of [x]) {\n"
+               "}");
+  verifyFormat("for (let [a, b] of [x]) {\n"
+               "}");
   verifyFormat("for (let {a, b} in x) {\n"
                "}");
 }
@@ -1119,6 +1128,7 @@ TEST_F(FormatTestJS, WrapRespectsAutomaticSemicolonInsertion) {
   // would change due to automatic semicolon insertion.
   // See http://www.ecma-international.org/ecma-262/5.1/#sec-7.9.1.
   verifyFormat("return aaaaa;", getGoogleJSStyleWithColumns(10));
+  verifyFormat("yield aaaaa;", getGoogleJSStyleWithColumns(10));
   verifyFormat("return /* hello! */ aaaaa;", getGoogleJSStyleWithColumns(10));
   verifyFormat("continue aaaaa;", getGoogleJSStyleWithColumns(10));
   verifyFormat("continue /* hello! */ aaaaa;", getGoogleJSStyleWithColumns(10));
@@ -1142,6 +1152,11 @@ TEST_F(FormatTestJS, WrapRespectsAutomaticSemicolonInsertion) {
                "const y = 3\n",
                "const x = (   5 +    9)\n"
                "const y = 3\n");
+  // Ideally the foo() bit should be indented relative to the async function().
+  verifyFormat("async function\n"
+               "foo() {}",
+               getGoogleJSStyleWithColumns(10));
+  verifyFormat("await theReckoning;", getGoogleJSStyleWithColumns(10));
 }
 
 TEST_F(FormatTestJS, AutomaticSemicolonInsertionHeuristic) {
@@ -1192,6 +1207,8 @@ TEST_F(FormatTestJS, AutomaticSemicolonInsertionHeuristic) {
                                       "String");
   verifyFormat("function f(@Foo bar) {}", "function f(@Foo\n"
                                           "  bar) {}");
+  verifyFormat("function f(@Foo(Param) bar) {}", "function f(@Foo(Param)\n"
+                                                 "  bar) {}");
   verifyFormat("a = true\n"
                "return 1",
                "a = true\n"
@@ -1402,6 +1419,7 @@ TEST_F(FormatTestJS, TypeAnnotations) {
   verifyFormat("function x(y: {a?: number;} = {}): number {\n"
                "  return 12;\n"
                "}");
+  verifyFormat("const x: Array<{a: number; b: string;}> = [];");
   verifyFormat("((a: string, b: number): string => a + b);");
   verifyFormat("var x: (y: number) => string;");
   verifyFormat("var x: P<string, (a: number) => string>;");
@@ -1421,6 +1439,8 @@ TEST_F(FormatTestJS, TypeAnnotations) {
   verifyFormat(
       "var someValue = (v as aaaaaaaaaaaaaaaaaaaa<T>[])\n"
       "                    .someFunction(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
+  verifyFormat("const xIsALongIdent:\n""    YJustBarelyFitsLinex[];",
+      getGoogleJSStyleWithColumns(20));
 }
 
 TEST_F(FormatTestJS, UnionIntersectionTypes) {
@@ -1557,7 +1577,7 @@ TEST_F(FormatTestJS, EnumDeclarations) {
                "}");
 }
 
-TEST_F(FormatTestJS, MetadataAnnotations) {
+TEST_F(FormatTestJS, Decorators) {
   verifyFormat("@A\nclass C {\n}");
   verifyFormat("@A({arg: 'value'})\nclass C {\n}");
   verifyFormat("@A\n@B\nclass C {\n}");
@@ -1606,6 +1626,17 @@ TEST_F(FormatTestJS, TypeInterfaceLineWrapping) {
       Style);
 }
 
+TEST_F(FormatTestJS, RemoveEmptyLinesInArrowFunctions) {
+  verifyFormat("x = () => {\n"
+               "  foo();\n"
+               "};\n",
+               "x = () => {\n"
+               "\n"
+               "  foo();\n"
+               "\n"
+               "};\n");
+}
+
 TEST_F(FormatTestJS, Modules) {
   verifyFormat("import SomeThing from 'some/module.js';");
   verifyFormat("import {X, Y} from 'some/module.js';");
@@ -1648,9 +1679,15 @@ TEST_F(FormatTestJS, Modules) {
                "  x: number;\n"
                "  y: string;\n"
                "}");
-  verifyFormat("export class X { y: number; }");
-  verifyFormat("export abstract class X { y: number; }");
-  verifyFormat("export default class X { y: number }");
+  verifyFormat("export class X {\n"
+               "  y: number;\n"
+               "}");
+  verifyFormat("export abstract class X {\n"
+               "  y: number;\n"
+               "}");
+  verifyFormat("export default class X {\n"
+               "  y: number\n"
+               "}");
   verifyFormat("export default function() {\n  return 1;\n}");
   verifyFormat("export var x = 12;");
   verifyFormat("class C {}\n"
@@ -1672,7 +1709,9 @@ TEST_F(FormatTestJS, Modules) {
                "];");
   verifyFormat("export default [];");
   verifyFormat("export default () => {};");
-  verifyFormat("export interface Foo { foo: number; }\n"
+  verifyFormat("export interface Foo {\n"
+               "  foo: number;\n"
+               "}\n"
                "export class Bar {\n"
                "  blah(): string {\n"
                "    return this.blah;\n"
@@ -1893,6 +1932,7 @@ TEST_F(FormatTestJS, CastSyntax) {
   verifyFormat("x = x as {a: string};");
   verifyFormat("x = x as (string);");
   verifyFormat("x = x! as (string);");
+  verifyFormat("x = y! in z;");
   verifyFormat("var x = something.someFunction() as\n"
                "    something;",
                getGoogleJSStyleWithColumns(40));

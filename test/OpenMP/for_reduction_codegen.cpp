@@ -3,6 +3,13 @@
 // RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple x86_64-apple-darwin10 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
@@ -944,8 +951,8 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint i32* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (i32* getelementptr (i32, i32* null, i32 1) to i64)
-// CHECK: [[PSEUDO_ARR_PRIV:%.+]] = getelementptr [1 x [2 x i32]], [1 x [2 x i32]]* [[ARR_PRIV]], i64 [[OFFSET]]
-// CHECK: [[ARR_PRIV:%.+]] = bitcast [1 x [2 x i32]]* [[PSEUDO_ARR_PRIV]] to i32*
+// CHECK: [[ARR_PRIV_PTR:%.+]] = bitcast [1 x [2 x i32]]* [[ARR_PRIV]] to i32*
+// CHECK: [[ARR_PRIV:%.+]] = getelementptr i32, i32* [[ARR_PRIV_PTR]], i64 [[OFFSET]]
 
 // CHECK: ret void
 
@@ -1000,9 +1007,9 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_FLOAT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (float* getelementptr (float, float* null, i32 1) to i64)
-// CHECK: [[PSEUDO_VAR2_PRIV:%.+]] = getelementptr [1 x [6 x [[S_FLOAT_TY]]]], [1 x [6 x [[S_FLOAT_TY]]]]* [[VAR2_PRIV]], i64 [[OFFSET]]
+// CHECK: [[VAR2_PRIV_PTR:%.+]] = bitcast [1 x [6 x [[S_FLOAT_TY]]]]* [[VAR2_PRIV]] to [[S_FLOAT_TY]]*
+// CHECK: [[VAR2_PRIV:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[VAR2_PRIV_PTR]], i64 [[OFFSET]]
 // CHECK: store [[S_FLOAT_TY]]** [[REF:.+]], [[S_FLOAT_TY]]*** %
-// CHECK: [[VAR2_PRIV:%.+]] = bitcast [1 x [6 x [[S_FLOAT_TY]]]]* [[PSEUDO_VAR2_PRIV]] to [[S_FLOAT_TY]]*
 // CHECK: store [[S_FLOAT_TY]]* [[VAR2_PRIV]], [[S_FLOAT_TY]]** [[REF]]
 // CHECK: ret void
 
@@ -1029,9 +1036,9 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_FLOAT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (float* getelementptr (float, float* null, i32 1) to i64)
-// CHECK: [[PSEUDO_VAR2_PRIV:%.+]] = getelementptr [1 x [6 x [[S_FLOAT_TY]]]], [1 x [6 x [[S_FLOAT_TY]]]]* [[VAR2_PRIV]], i64 [[OFFSET]]
+// CHECK: [[VAR2_PRIV_PTR:%.+]] = bitcast [1 x [6 x [[S_FLOAT_TY]]]]* [[VAR2_PRIV]] to [[S_FLOAT_TY]]*
+// CHECK: [[VAR2_PRIV:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[VAR2_PRIV_PTR]], i64 [[OFFSET]]
 // CHECK: store [[S_FLOAT_TY]]** [[REF:.+]], [[S_FLOAT_TY]]*** %
-// CHECK: [[VAR2_PRIV:%.+]] = bitcast [1 x [6 x [[S_FLOAT_TY]]]]* [[PSEUDO_VAR2_PRIV]] to [[S_FLOAT_TY]]*
 // CHECK: store [[S_FLOAT_TY]]* [[VAR2_PRIV]], [[S_FLOAT_TY]]** [[REF]]
 // CHECK: ret void
 
@@ -1080,7 +1087,8 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_FLOAT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (float* getelementptr (float, float* null, i32 1) to i64)
-// CHECK: [[PSEUDO_VVAR2_PRIV:%.+]] = getelementptr [5 x [[S_FLOAT_TY]]], [5 x [[S_FLOAT_TY]]]* [[VVAR2_PRIV]], i64 [[OFFSET]]
+// CHECK: [[VVAR2_PRIV_PTR:%.+]] = bitcast [5 x [[S_FLOAT_TY]]]* [[VVAR2_PRIV]] to [[S_FLOAT_TY]]*
+// CHECK: [[VVAR2_PRIV:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[VVAR2_PRIV_PTR]], i64 [[OFFSET]]
 // CHECK: ret void
 
 // CHECK: define internal void [[MAIN_MICROTASK9]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}}, [4 x [[S_FLOAT_TY]]]* dereferenceable(16) %{{.+}})
@@ -1106,8 +1114,9 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_FLOAT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (float* getelementptr (float, float* null, i32 1) to i64)
-// CHECK: [[PSEUDO_VAR3_PRIV:%.+]] = getelementptr [2 x [[S_FLOAT_TY]]], [2 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]], i64 [[OFFSET]]
-// CHECK: [[VAR3_PRIV:%.+]] = bitcast [2 x [[S_FLOAT_TY]]]* [[PSEUDO_VAR3_PRIV]] to [4 x [[S_FLOAT_TY]]]*
+// CHECK: [[VAR3_PRIV_PTR:%.+]] = bitcast [2 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]] to [[S_FLOAT_TY]]*
+// CHECK: [[PSEUDO_VAR3_PRIV:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[VAR3_PRIV_PTR]], i64 [[OFFSET]]
+// CHECK: [[VAR3_PRIV:%.+]] = bitcast [[S_FLOAT_TY]]* [[PSEUDO_VAR3_PRIV]] to [4 x [[S_FLOAT_TY]]]*
 
 // CHECK: store [4 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]], [4 x [[S_FLOAT_TY]]]** %
 
@@ -1136,8 +1145,9 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_FLOAT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (float* getelementptr (float, float* null, i32 1) to i64)
-// CHECK: [[PSEUDO_VAR3_PRIV:%.+]] = getelementptr [2 x [[S_FLOAT_TY]]], [2 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]], i64 [[OFFSET]]
-// CHECK: [[VAR3_PRIV:%.+]] = bitcast [2 x [[S_FLOAT_TY]]]* [[PSEUDO_VAR3_PRIV]] to [4 x [[S_FLOAT_TY]]]*
+// CHECK: [[VAR3_PRIV_PTR:%.+]] = bitcast [2 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]] to [[S_FLOAT_TY]]*
+// CHECK: [[PSEUDO_VAR3_PRIV:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[VAR3_PRIV_PTR]], i64 [[OFFSET]]
+// CHECK: [[VAR3_PRIV:%.+]] = bitcast [[S_FLOAT_TY]]* [[PSEUDO_VAR3_PRIV]] to [4 x [[S_FLOAT_TY]]]*
 
 // CHECK: store [4 x [[S_FLOAT_TY]]]* [[VAR3_PRIV]], [4 x [[S_FLOAT_TY]]]** %
 
@@ -1206,6 +1216,7 @@ int main() {
 // CHECK: ret
 //
 // CHECK: define internal void [[TMAIN_MICROTASK]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}}, i32* dereferenceable(4) %{{.+}}, [[S_INT_TY]]* dereferenceable(4) %{{.+}}, [[S_INT_TY]]* dereferenceable(4) %{{.+}}, i32* dereferenceable(4) %{{.+}}, [2 x i32]* dereferenceable(8) %{{.+}}, [2 x [[S_INT_TY]]]* dereferenceable(8) %{{.+}})
+// CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
@@ -1452,8 +1463,9 @@ int main() {
 // CHECK: [[LOW_BOUND:%.+]] = ptrtoint [[S_INT_TY]]* [[LOW]] to i64
 // CHECK: [[OFFSET_BYTES:%.+]] = sub i64 [[START]], [[LOW_BOUND]]
 // CHECK: [[OFFSET:%.+]] = sdiv exact i64 [[OFFSET_BYTES]], ptrtoint (i32* getelementptr (i32, i32* null, i32 1) to i64)
-// CHECK: [[PSEUDO_ARR_PRIV:%.+]] = getelementptr [40 x [[S_INT_TY]]], [40 x [[S_INT_TY]]]* [[ARR_PRIV]], i64 [[OFFSET]]
-// CHECK: [[ARR_PRIV:%.+]] = bitcast [40 x [[S_INT_TY]]]* [[PSEUDO_ARR_PRIV]] to [42 x [[S_INT_TY]]]*
+// CHECK: [[ARR_PRIV_PTR:%.+]] = bitcast [40 x [[S_INT_TY]]]* [[ARR_PRIV]] to [[S_INT_TY]]*
+// CHECK: [[PSEUDO_ARR_PRIV:%.+]] = getelementptr [[S_INT_TY]], [[S_INT_TY]]* [[ARR_PRIV_PTR]], i64 [[OFFSET]]
+// CHECK: [[ARR_PRIV:%.+]] = bitcast [[S_INT_TY]]* [[PSEUDO_ARR_PRIV]] to [42 x [[S_INT_TY]]]*
 
 // CHECK: ret void
 

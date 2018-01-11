@@ -87,6 +87,8 @@ GetFlattenedSpellings(const Record &Attr) {
     } else if (Variety == "Clang") {
       Ret.emplace_back("GNU", Name, "", false);
       Ret.emplace_back("CXX11", Name, "clang", false);
+      if (Spelling->getValueAsBit("AllowInC"))
+        Ret.emplace_back("C2x", Name, "clang", false);
     } else
       Ret.push_back(FlattenedSpelling(*Spelling));
   }
@@ -2063,10 +2065,13 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
     ArrayRef<std::pair<Record *, SMRange>> Supers = R.getSuperClasses();
     assert(!Supers.empty() && "Forgot to specify a superclass for the attr");
     std::string SuperName;
+    bool Inheritable = false;
     for (const auto &Super : llvm::reverse(Supers)) {
       const Record *R = Super.first;
       if (R->getName() != "TargetSpecificAttr" && SuperName.empty())
         SuperName = R->getName();
+      if (R->getName() == "InheritableAttr")
+        Inheritable = true;
     }
 
     OS << "class " << R.getName() << "Attr : public " << SuperName << " {\n";
@@ -2160,8 +2165,13 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
 
       OS << "             )\n";
       OS << "    : " << SuperName << "(attr::" << R.getName() << ", R, SI, "
-         << ( R.getValueAsBit("LateParsed") ? "true" : "false" ) << ", "
-         << ( R.getValueAsBit("DuplicatesAllowedWhileMerging") ? "true" : "false" ) << ")\n";
+         << ( R.getValueAsBit("LateParsed") ? "true" : "false" );
+      if (Inheritable) {
+        OS << ", "
+           << (R.getValueAsBit("InheritEvenIfAlreadyPresent") ? "true"
+                                                              : "false");
+      }
+      OS << ")\n";
 
       for (auto const &ai : Args) {
         OS << "              , ";
@@ -2622,6 +2632,31 @@ void EmitClangAttrPCHWrite(RecordKeeper &Records, raw_ostream &OS) {
   OS << "  }\n";
 }
 
+// Helper function for GenerateTargetSpecificAttrChecks that alters the 'Test'
+// parameter with only a single check type, if applicable.
+static void GenerateTargetSpecificAttrCheck(const Record *R, std::string &Test,
+                                            std::string *FnName,
+                                            StringRef ListName,
+                                            StringRef CheckAgainst,
+                                            StringRef Scope) {
+  if (!R->isValueUnset(ListName)) {
+    Test += " && (";
+    std::vector<StringRef> Items = R->getValueAsListOfStrings(ListName);
+    for (auto I = Items.begin(), E = Items.end(); I != E; ++I) {
+      StringRef Part = *I;
+      Test += CheckAgainst;
+      Test += " == ";
+      Test += Scope;
+      Test += Part;
+      if (I + 1 != E)
+        Test += " || ";
+      if (FnName)
+        *FnName += Part;
+    }
+    Test += ")";
+  }
+}
+
 // Generate a conditional expression to check if the current target satisfies
 // the conditions for a TargetSpecificAttr record, and append the code for
 // those checks to the Test string. If the FnName string pointer is non-null,
@@ -2635,53 +2670,35 @@ static void GenerateTargetSpecificAttrChecks(const Record *R,
   // named "T" and a TargetInfo object named "Target" within
   // scope that can be used to determine whether the attribute exists in
   // a given target.
-  Test += "(";
-
-  for (auto I = Arches.begin(), E = Arches.end(); I != E; ++I) {
-    StringRef Part = *I;
-    Test += "T.getArch() == llvm::Triple::";
-    Test += Part;
-    if (I + 1 != E)
-      Test += " || ";
-    if (FnName)
-      *FnName += Part;
+  Test += "true";
+  // If one or more architectures is specified, check those.  Arches are handled
+  // differently because GenerateTargetRequirements needs to combine the list
+  // with ParseKind.
+  if (!Arches.empty()) {
+    Test += " && (";
+    for (auto I = Arches.begin(), E = Arches.end(); I != E; ++I) {
+      StringRef Part = *I;
+      Test += "T.getArch() == llvm::Triple::";
+      Test += Part;
+      if (I + 1 != E)
+        Test += " || ";
+      if (FnName)
+        *FnName += Part;
+    }
+    Test += ")";
   }
-  Test += ")";
 
   // If the attribute is specific to particular OSes, check those.
-  if (!R->isValueUnset("OSes")) {
-    // We know that there was at least one arch test, so we need to and in the
-    // OS tests.
-    Test += " && (";
-    std::vector<StringRef> OSes = R->getValueAsListOfStrings("OSes");
-    for (auto I = OSes.begin(), E = OSes.end(); I != E; ++I) {
-      StringRef Part = *I;
-
-      Test += "T.getOS() == llvm::Triple::";
-      Test += Part;
-      if (I + 1 != E)
-        Test += " || ";
-      if (FnName)
-        *FnName += Part;
-    }
-    Test += ")";
-  }
+  GenerateTargetSpecificAttrCheck(R, Test, FnName, "OSes", "T.getOS()",
+                                  "llvm::Triple::");
 
   // If one or more CXX ABIs are specified, check those as well.
-  if (!R->isValueUnset("CXXABIs")) {
-    Test += " && (";
-    std::vector<StringRef> CXXABIs = R->getValueAsListOfStrings("CXXABIs");
-    for (auto I = CXXABIs.begin(), E = CXXABIs.end(); I != E; ++I) {
-      StringRef Part = *I;
-      Test += "Target.getCXXABI().getKind() == TargetCXXABI::";
-      Test += Part;
-      if (I + 1 != E)
-        Test += " || ";
-      if (FnName)
-        *FnName += Part;
-    }
-    Test += ")";
-  }
+  GenerateTargetSpecificAttrCheck(R, Test, FnName, "CXXABIs",
+                                  "Target.getCXXABI().getKind()",
+                                  "TargetCXXABI::");
+  // If one or more object formats is specified, check those.
+  GenerateTargetSpecificAttrCheck(R, Test, FnName, "ObjectFormats",
+                                  "T.getObjectFormat()", "llvm::Triple::");
 }
 
 static void GenerateHasAttrSpellingStringSwitch(
@@ -3029,136 +3046,72 @@ static void GenerateDefaultAppertainsTo(raw_ostream &OS) {
   OS << "}\n\n";
 }
 
+static std::string GetDiagnosticSpelling(const Record &R) {
+  std::string Ret = R.getValueAsString("DiagSpelling");
+  if (!Ret.empty())
+    return Ret;
+
+  // If we couldn't find the DiagSpelling in this object, we can check to see
+  // if the object is one that has a base, and if it is, loop up to the Base
+  // member recursively.
+  std::string Super = R.getSuperClasses().back().first->getName();
+  if (Super == "DDecl" || Super == "DStmt")
+    return GetDiagnosticSpelling(*R.getValueAsDef("Base"));
+
+  return "";
+}
+
 static std::string CalculateDiagnostic(const Record &S) {
   // If the SubjectList object has a custom diagnostic associated with it,
   // return that directly.
   const StringRef CustomDiag = S.getValueAsString("CustomDiag");
   if (!CustomDiag.empty())
-    return CustomDiag;
+    return ("\"" + Twine(CustomDiag) + "\"").str();
 
-  // Given the list of subjects, determine what diagnostic best fits.
-  enum {
-    Func = 1U << 0,
-    Var = 1U << 1,
-    ObjCMethod = 1U << 2,
-    Param = 1U << 3,
-    Class = 1U << 4,
-    GenericRecord = 1U << 5,
-    Type = 1U << 6,
-    ObjCIVar = 1U << 7,
-    ObjCProp = 1U << 8,
-    ObjCInterface = 1U << 9,
-    Block = 1U << 10,
-    Namespace = 1U << 11,
-    Field = 1U << 12,
-    CXXMethod = 1U << 13,
-    ObjCProtocol = 1U << 14,
-    Enum = 1U << 15,
-    Named = 1U << 16,
-  };
-  uint32_t SubMask = 0;
-
+  std::vector<std::string> DiagList;
   std::vector<Record *> Subjects = S.getValueAsListOfDefs("Subjects");
   for (const auto *Subject : Subjects) {
     const Record &R = *Subject;
-    std::string Name;
-
-    if (R.isSubClassOf("SubsetSubject")) {
-      PrintError(R.getLoc(), "SubsetSubjects should use a custom diagnostic");
-      // As a fallback, look through the SubsetSubject to see what its base
-      // type is, and use that. This needs to be updated if SubsetSubjects
-      // are allowed within other SubsetSubjects.
-      Name = R.getValueAsDef("Base")->getName();
-    } else
-      Name = R.getName();
-
-    uint32_t V = StringSwitch<uint32_t>(Name)
-                   .Case("Function", Func)
-                   .Case("Var", Var)
-                   .Case("ObjCMethod", ObjCMethod)
-                   .Case("ParmVar", Param)
-                   .Case("TypedefName", Type)
-                   .Case("ObjCIvar", ObjCIVar)
-                   .Case("ObjCProperty", ObjCProp)
-                   .Case("Record", GenericRecord)
-                   .Case("ObjCInterface", ObjCInterface)
-                   .Case("ObjCProtocol", ObjCProtocol)
-                   .Case("Block", Block)
-                   .Case("CXXRecord", Class)
-                   .Case("Namespace", Namespace)
-                   .Case("Field", Field)
-                   .Case("CXXMethod", CXXMethod)
-                   .Case("Enum", Enum)
-                   .Case("Named", Named)
-                   .Default(0);
-    if (!V) {
-      // Something wasn't in our mapping, so be helpful and let the developer
-      // know about it.
-      PrintFatalError(R.getLoc(), "Unknown subject type: " + R.getName());
-      return "";
+    // Get the diagnostic text from the Decl or Stmt node given.
+    std::string V = GetDiagnosticSpelling(R);
+    if (V.empty()) {
+      PrintError(R.getLoc(),
+                 "Could not determine diagnostic spelling for the node: " +
+                     R.getName() + "; please add one to DeclNodes.td");
+    } else {
+      // The node may contain a list of elements itself, so split the elements
+      // by a comma, and trim any whitespace.
+      SmallVector<StringRef, 2> Frags;
+      llvm::SplitString(V, Frags, ",");
+      for (auto Str : Frags) {
+        DiagList.push_back(Str.trim());
+      }
     }
-
-    SubMask |= V;
   }
 
-  switch (SubMask) {
-    // For the simple cases where there's only a single entry in the mask, we
-    // don't have to resort to bit fiddling.
-    case Func:  return "ExpectedFunction";
-    case Var:   return "ExpectedVariable";
-    case Param: return "ExpectedParameter";
-    case Class: return "ExpectedClass";
-    case Enum:  return "ExpectedEnum";
-    case CXXMethod:
-      // FIXME: Currently, this maps to ExpectedMethod based on existing code,
-      // but should map to something a bit more accurate at some point.
-    case ObjCMethod:  return "ExpectedMethod";
-    case Type:  return "ExpectedType";
-    case ObjCInterface: return "ExpectedObjectiveCInterface";
-    case ObjCProtocol: return "ExpectedObjectiveCProtocol";
-    
-    // "GenericRecord" means struct, union or class; check the language options
-    // and if not compiling for C++, strip off the class part. Note that this
-    // relies on the fact that the context for this declares "Sema &S".
-    case GenericRecord:
-      return "(S.getLangOpts().CPlusPlus ? ExpectedStructOrUnionOrClass : "
-                                           "ExpectedStructOrUnion)";
-    case Func | ObjCMethod | Block: return "ExpectedFunctionMethodOrBlock";
-    case Func | ObjCMethod | Class: return "ExpectedFunctionMethodOrClass";
-    case Func | Param:
-    case Func | ObjCMethod | Param: return "ExpectedFunctionMethodOrParameter";
-    case Func | ObjCMethod: return "ExpectedFunctionOrMethod";
-    case Func | Var: return "ExpectedVariableOrFunction";
-
-    // If not compiling for C++, the class portion does not apply.
-    case Func | Var | Class:
-      return "(S.getLangOpts().CPlusPlus ? ExpectedFunctionVariableOrClass : "
-                                           "ExpectedVariableOrFunction)";
-
-    case Func | Var | Class | ObjCInterface:
-      return "(S.getLangOpts().CPlusPlus"
-             "     ? ((S.getLangOpts().ObjC1 || S.getLangOpts().ObjC2)"
-             "            ? ExpectedFunctionVariableClassOrObjCInterface"
-             "            : ExpectedFunctionVariableOrClass)"
-             "     : ((S.getLangOpts().ObjC1 || S.getLangOpts().ObjC2)"
-             "            ? ExpectedFunctionVariableOrObjCInterface"
-             "            : ExpectedVariableOrFunction))";
-
-    case ObjCMethod | ObjCProp: return "ExpectedMethodOrProperty";
-    case Func | ObjCMethod | ObjCProp:
-      return "ExpectedFunctionOrMethodOrProperty";
-    case ObjCProtocol | ObjCInterface:
-      return "ExpectedObjectiveCInterfaceOrProtocol";
-    case Field | Var: return "ExpectedFieldOrGlobalVar";
-
-    case Named:
-      return "ExpectedNamedDecl";
+  if (DiagList.empty()) {
+    PrintFatalError(S.getLoc(),
+                    "Could not deduce diagnostic argument for Attr subjects");
+    return "";
   }
 
-  PrintFatalError(S.getLoc(),
-                  "Could not deduce diagnostic argument for Attr subjects");
+  // FIXME: this is not particularly good for localization purposes and ideally
+  // should be part of the diagnostics engine itself with some sort of list
+  // specifier.
 
-  return "";
+  // A single member of the list can be returned directly.
+  if (DiagList.size() == 1)
+    return '"' + DiagList.front() + '"';
+
+  if (DiagList.size() == 2)
+    return '"' + DiagList[0] + " and " + DiagList[1] + '"';
+
+  // If there are more than two in the list, we serialize the first N - 1
+  // elements with a comma. This leaves the string in the state: foo, bar,
+  // baz (but misses quux). We can then add ", and " for the last element
+  // manually.
+  std::string Diag = llvm::join(DiagList.begin(), DiagList.end() - 1, ", ");
+  return '"' + Diag + ", and " + *(DiagList.end() - 1) + '"';
 }
 
 static std::string GetSubjectWithSuffix(const Record *R) {
@@ -3245,8 +3198,8 @@ static std::string GenerateAppertainsTo(const Record &Attr, raw_ostream &OS) {
   }
   SS << ") {\n";
   SS << "    S.Diag(Attr.getLoc(), diag::";
-  SS << (Warn ? "warn_attribute_wrong_decl_type" :
-               "err_attribute_wrong_decl_type");
+  SS << (Warn ? "warn_attribute_wrong_decl_type_str" :
+               "err_attribute_wrong_decl_type_str");
   SS << ")\n";
   SS << "      << Attr.getName() << ";
   SS << CalculateDiagnostic(*SubjectObj) << ";\n";
@@ -3365,11 +3318,6 @@ static std::string GenerateTargetRequirements(const Record &Attr,
   // Get the list of architectures to be tested for.
   const Record *R = Attr.getValueAsDef("Target");
   std::vector<StringRef> Arches = R->getValueAsListOfStrings("Arches");
-  if (Arches.empty()) {
-    PrintError(Attr.getLoc(), "Empty list of target architectures for a "
-                              "target-specific attr");
-    return "defaultTargetRequirements";
-  }
 
   // If there are other attributes which share the same parsed attribute kind,
   // such as target-specific attributes with a shared spelling, collapse the

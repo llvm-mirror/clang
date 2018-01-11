@@ -517,8 +517,13 @@ private:
       } else if (Limit != 0 && !Line.startsWith(tok::kw_namespace) &&
                  !startsExternCBlock(Line)) {
         // We don't merge short records.
-        FormatToken *RecordTok =
-            Line.First->is(tok::kw_typedef) ? Line.First->Next : Line.First;
+        FormatToken *RecordTok = Line.First;
+        // Skip record modifiers.
+        while (RecordTok->Next &&
+               RecordTok->isOneOf(tok::kw_typedef, tok::kw_export,
+                                  Keywords.kw_declare, Keywords.kw_abstract,
+                                  tok::kw_default))
+          RecordTok = RecordTok->Next;
         if (RecordTok &&
             RecordTok->isOneOf(tok::kw_class, tok::kw_union, tok::kw_struct,
                                Keywords.kw_interface))
@@ -1116,6 +1121,9 @@ void UnwrappedLineFormatter::formatFirstToken(const AnnotatedLine &Line,
   if (RootToken.is(tok::r_brace) &&
       (!RootToken.Next ||
        (RootToken.Next->is(tok::semi) && !RootToken.Next->Next)))
+    Newlines = std::min(Newlines, 1u);
+  // Remove empty lines at the start of nested blocks (lambdas/arrow functions)
+  if (PreviousLine == nullptr && Line.Level > 0)
     Newlines = std::min(Newlines, 1u);
   if (Newlines == 0 && !RootToken.IsFirst)
     Newlines = 1;

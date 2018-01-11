@@ -13,6 +13,7 @@
 #include "clang/Basic/Cuda.h"
 #include "clang/Config/config.h"
 #include "clang/Basic/VirtualFileSystem.h"
+#include "clang/Driver/Distro.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -75,6 +76,11 @@ CudaInstallationDetector::CudaInstallationDetector(
     CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda");
     for (const char *Ver : Versions)
       CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda-" + Ver);
+
+    if (Distro(D.getVFS()).IsDebian())
+      // Special case for Debian to have nvidia-cuda-toolkit work
+      // out of the box. More info on http://bugs.debian.org/882505
+      CudaPathCandidates.push_back(D.SysRoot + "/usr/lib/cuda");
   }
 
   for (const auto &CudaPath : CudaPathCandidates) {
@@ -301,10 +307,7 @@ void NVPTX::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("--gpu-name");
   CmdArgs.push_back(Args.MakeArgString(CudaArchToString(gpu_arch)));
   CmdArgs.push_back("--output-file");
-  SmallString<256> OutputFileName(Output.getFilename());
-  if (JA.isOffloading(Action::OFK_OpenMP))
-    llvm::sys::path::replace_extension(OutputFileName, "cubin");
-  CmdArgs.push_back(Args.MakeArgString(OutputFileName));
+  CmdArgs.push_back(Args.MakeArgString(TC.getInputFilename(Output)));
   for (const auto& II : Inputs)
     CmdArgs.push_back(Args.MakeArgString(II.getFilename()));
 
@@ -431,11 +434,8 @@ void NVPTX::OpenMPLinker::ConstructJob(Compilation &C, const JobAction &JA,
     if (!II.isFilename())
       continue;
 
-    SmallString<256> Name(II.getFilename());
-    llvm::sys::path::replace_extension(Name, "cubin");
-
-    const char *CubinF =
-        C.addTempFile(C.getArgs().MakeArgString(Name));
+    const char *CubinF = C.addTempFile(
+        C.getArgs().MakeArgString(getToolChain().getInputFilename(II)));
 
     CmdArgs.push_back(CubinF);
   }
@@ -461,6 +461,20 @@ CudaToolChain::CudaToolChain(const Driver &D, const llvm::Triple &Triple,
   // Lookup binaries into the driver directory, this is used to
   // discover the clang-offload-bundler executable.
   getProgramPaths().push_back(getDriver().Dir);
+}
+
+std::string CudaToolChain::getInputFilename(const InputInfo &Input) const {
+  // Only object files are changed, for example assembly files keep their .s
+  // extensions. CUDA also continues to use .o as they don't use nvlink but
+  // fatbinary.
+  if (!(OK == Action::OFK_OpenMP && Input.getType() == types::TY_Object))
+    return ToolChain::getInputFilename(Input);
+
+  // Replace extension for object files with cubin because nvlink relies on
+  // these particular file names.
+  SmallString<256> Filename(ToolChain::getInputFilename(Input));
+  llvm::sys::path::replace_extension(Filename, "cubin");
+  return Filename.str();
 }
 
 void CudaToolChain::addClangTargetOptions(

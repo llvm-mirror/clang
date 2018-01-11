@@ -361,6 +361,7 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("FixNamespaceComments", Style.FixNamespaceComments);
     IO.mapOptional("ForEachMacros", Style.ForEachMacros);
+    IO.mapOptional("IncludeBlocks", Style.IncludeBlocks);
     IO.mapOptional("IncludeCategories", Style.IncludeCategories);
     IO.mapOptional("IncludeIsMainRegex", Style.IncludeIsMainRegex);
     IO.mapOptional("IndentCaseLabels", Style.IndentCaseLabels);
@@ -444,6 +445,14 @@ template <> struct MappingTraits<FormatStyle::IncludeCategory> {
   }
 };
 
+template <> struct ScalarEnumerationTraits<FormatStyle::IncludeBlocksStyle> {
+  static void enumeration(IO &IO, FormatStyle::IncludeBlocksStyle &Value) {
+    IO.enumCase(Value, "Preserve", FormatStyle::IBS_Preserve);
+    IO.enumCase(Value, "Merge", FormatStyle::IBS_Merge);
+    IO.enumCase(Value, "Regroup", FormatStyle::IBS_Regroup);
+  }
+};
+
 template <> struct MappingTraits<FormatStyle::RawStringFormat> {
   static void mapping(IO &IO, FormatStyle::RawStringFormat &Format) {
     IO.mapOptional("Delimiter", Format.Delimiter);
@@ -466,7 +475,7 @@ template <> struct DocumentListTraits<std::vector<FormatStyle>> {
     if (Index >= Seq.size()) {
       assert(Index == Seq.size());
       FormatStyle Template;
-      if (Seq.size() > 0 && Seq[0].Language == FormatStyle::LK_None) {
+      if (!Seq.empty() && Seq[0].Language == FormatStyle::LK_None) {
         Template = Seq[0];
       } else {
         Template = *((const FormatStyle *)IO.getContext());
@@ -614,6 +623,7 @@ FormatStyle getLLVMStyle() {
                                  {"^(<|\"(gtest|gmock|isl|json)/)", 3},
                                  {".*", 1}};
   LLVMStyle.IncludeIsMainRegex = "(Test)?$";
+  LLVMStyle.IncludeBlocks = FormatStyle::IBS_Preserve;
   LLVMStyle.IndentCaseLabels = false;
   LLVMStyle.IndentPPDirectives = FormatStyle::PPDIS_None;
   LLVMStyle.IndentWrappedFunctionNames = false;
@@ -1420,19 +1430,27 @@ static void sortCppIncludes(const FormatStyle &Style,
                             }),
                 Indices.end());
 
+  int CurrentCategory = Includes.front().Category;
+
   // If the #includes are out of order, we generate a single replacement fixing
   // the entire block. Otherwise, no replacement is generated.
   if (Indices.size() == Includes.size() &&
-      std::is_sorted(Indices.begin(), Indices.end()))
+      std::is_sorted(Indices.begin(), Indices.end()) &&
+      Style.IncludeBlocks == FormatStyle::IBS_Preserve)
     return;
 
   std::string result;
   for (unsigned Index : Indices) {
-    if (!result.empty())
+    if (!result.empty()) {
       result += "\n";
+      if (Style.IncludeBlocks == FormatStyle::IBS_Regroup &&
+          CurrentCategory != Includes[Index].Category)
+        result += "\n";
+    }
     result += Includes[Index].Text;
     if (Cursor && CursorIndex == Index)
       *Cursor = IncludesBeginOffset + result.size() - CursorToEOLOffset;
+    CurrentCategory = Includes[Index].Category;
   }
 
   auto Err = Replaces.add(tooling::Replacement(
@@ -1540,6 +1558,10 @@ tooling::Replacements sortCppIncludes(const FormatStyle &Style, StringRef Code,
     else if (Trimmed == "// clang-format on")
       FormattingOff = false;
 
+    const bool EmptyLineSkipped =
+        Trimmed.empty() && (Style.IncludeBlocks == FormatStyle::IBS_Merge ||
+                            Style.IncludeBlocks == FormatStyle::IBS_Regroup);
+
     if (!FormattingOff && !Line.endswith("\\")) {
       if (IncludeRegex.match(Line, &Matches)) {
         StringRef IncludeName = Matches[2];
@@ -1549,7 +1571,7 @@ tooling::Replacements sortCppIncludes(const FormatStyle &Style, StringRef Code,
         if (Category == 0)
           MainIncludeFound = true;
         IncludesInBlock.push_back({IncludeName, Line, Prev, Category});
-      } else if (!IncludesInBlock.empty()) {
+      } else if (!IncludesInBlock.empty() && !EmptyLineSkipped) {
         sortCppIncludes(Style, IncludesInBlock, Ranges, FileName, Replaces,
                         Cursor);
         IncludesInBlock.clear();
@@ -2051,7 +2073,8 @@ LangOptions getFormattingLangOpts(const FormatStyle &Style) {
   LangOpts.CPlusPlus = 1;
   LangOpts.CPlusPlus11 = Style.Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
   LangOpts.CPlusPlus14 = Style.Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
-  LangOpts.CPlusPlus1z = Style.Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
+  LangOpts.CPlusPlus17 = Style.Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
+  LangOpts.CPlusPlus2a = Style.Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
   LangOpts.LineComment = 1;
   bool AlternativeOperators = Style.isCpp();
   LangOpts.CXXOperatorNames = AlternativeOperators ? 1 : 0;
@@ -2084,6 +2107,11 @@ static FormatStyle::LanguageKind getLanguageByFileName(StringRef FileName) {
   if (FileName.endswith_lower(".proto") ||
       FileName.endswith_lower(".protodevel"))
     return FormatStyle::LK_Proto;
+  if (FileName.endswith_lower(".textpb") ||
+      FileName.endswith_lower(".pb.txt") ||
+      FileName.endswith_lower(".textproto") ||
+      FileName.endswith_lower(".asciipb"))
+    return FormatStyle::LK_TextProto;
   if (FileName.endswith_lower(".td"))
     return FormatStyle::LK_TableGen;
   return FormatStyle::LK_Cpp;
@@ -2102,7 +2130,9 @@ llvm::Expected<FormatStyle> getStyle(StringRef StyleName, StringRef FileName,
   // should be improved over time and probably be done on tokens, not one the
   // bare content of the file.
   if (Style.Language == FormatStyle::LK_Cpp && FileName.endswith(".h") &&
-      (Code.contains("\n- (") || Code.contains("\n+ (")))
+      (Code.contains("\n- (") || Code.contains("\n+ (") ||
+       Code.contains("\n@end\n") || Code.contains("\n@end ") ||
+       Code.endswith("@end")))
     Style.Language = FormatStyle::LK_ObjC;
 
   FormatStyle FallbackStyle = getNoStyle();

@@ -985,12 +985,8 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
   if (!S || !N)
     return false;
 
-  if (const Expr *Ex = dyn_cast<Expr>(S)) {
-    Ex = Ex->IgnoreParenCasts();
-    const Expr *PeeledEx = peelOffOuterExpr(Ex, N);
-    if (Ex != PeeledEx)
-      S = PeeledEx;
-  }
+  if (const Expr *Ex = dyn_cast<Expr>(S))
+    S = peelOffOuterExpr(Ex, N);
 
   const Expr *Inner = nullptr;
   if (const Expr *Ex = dyn_cast<Expr>(S)) {
@@ -1142,9 +1138,12 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
     else
       RVal = state->getSVal(L->getRegion());
 
-    const MemRegion *RegionRVal = RVal.getAsRegion();
     report.addVisitor(llvm::make_unique<UndefOrNullArgVisitor>(L->getRegion()));
+    if (Optional<KnownSVal> KV = RVal.getAs<KnownSVal>())
+      report.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
+          *KV, L->getRegion(), EnableNullFPSuppression));
 
+    const MemRegion *RegionRVal = RVal.getAsRegion();
     if (RegionRVal && isa<SymbolicRegion>(RegionRVal)) {
       report.markInteresting(RegionRVal);
       report.addVisitor(llvm::make_unique<TrackConstraintBRVisitor>(
@@ -1541,7 +1540,7 @@ ConditionBRVisitor::VisitTrueTest(const Expr *Cond, const BinaryOperator *BExpr,
   // For non-assignment operations, we require that we can understand
   // both the LHS and RHS.
   if (LhsString.empty() || RhsString.empty() ||
-      !BinaryOperator::isComparisonOp(Op))
+      !BinaryOperator::isComparisonOp(Op) || Op == BO_Cmp)
     return nullptr;
 
   // Should we invert the strings if the LHS is not a variable name?

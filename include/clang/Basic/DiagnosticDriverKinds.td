@@ -11,6 +11,8 @@ let Component = "Driver" in {
 
 def err_drv_no_such_file : Error<"no such file or directory: '%0'">;
 def err_drv_unsupported_opt : Error<"unsupported option '%0'">;
+def err_drv_unsupported_opt_with_suggestion
+  : Error<"unsupported option '%0', did you mean '%1'?">;
 def err_drv_unsupported_opt_for_target : Error<
   "unsupported option '%0' for target '%1'">;
 def err_drv_unsupported_option_argument : Error<
@@ -112,6 +114,18 @@ def err_drv_invalid_argument_to_fdebug_prefix_map : Error<
   "invalid argument '%0' to -fdebug-prefix-map">;
 def err_drv_malformed_sanitizer_blacklist : Error<
   "malformed sanitizer blacklist: '%0'">;
+def err_drv_duplicate_config : Error<
+  "no more than one option '--config' is allowed">;
+def err_drv_config_file_not_exist : Error<
+  "configuration file '%0' does not exist">;
+def err_drv_config_file_not_found : Error<
+  "configuration file '%0' cannot be found">;
+def note_drv_config_file_searched_in : Note<
+  "was searched for in the directory: %0">;
+def err_drv_cannot_read_config_file : Error<
+  "cannot read configuration file '%0'">;
+def err_drv_nested_config_file: Error<
+  "option '--config' is not allowed inside configuration file">;
 
 def err_target_unsupported_arch
   : Error<"the target architecture '%0' is not supported by the target '%1'">;
@@ -123,8 +137,13 @@ def err_arch_unsupported_isa
 def err_drv_I_dash_not_supported : Error<
   "'%0' not supported, please use -iquote instead">;
 def err_drv_unknown_argument : Error<"unknown argument: '%0'">;
+def err_drv_unknown_argument_with_suggestion
+  : Error<"unknown argument '%0', did you mean '%1'?">;
 def warn_drv_unknown_argument_clang_cl : Warning<
   "unknown argument ignored in clang-cl: '%0'">,
+  InGroup<UnknownArgument>;
+def warn_drv_unknown_argument_clang_cl_with_suggestion : Warning<
+  "unknown argument ignored in clang-cl '%0' (did you mean '%1'?)">,
   InGroup<UnknownArgument>;
 
 def warn_drv_ycyu_no_arg_clang_cl : Warning<
@@ -338,4 +357,8 @@ def warn_drv_msvc_not_found : Warning<
 def warn_drv_fine_grained_bitfield_accesses_ignored : Warning<
   "option '-ffine-grained-bitfield-accesses' cannot be enabled together with a sanitizer; flag ignored">,
   InGroup<OptionIgnored>;
+
+def note_drv_verify_prefix_spelling : Note<
+  "-verify prefixes must start with a letter and contain only alphanumeric"
+  " characters, hyphens, and underscores">;
 }

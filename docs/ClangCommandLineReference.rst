@@ -120,6 +120,10 @@ Output path for the plist report
 
 .. option:: -compatibility\_version<arg>
 
+.. option:: --config <arg>
+
+Specifies configuration file
+
 .. option:: --constant-cfstrings
 
 .. option:: -coverage, --coverage
@@ -524,9 +528,9 @@ Serialize compiler diagnostics to a file
 
 .. option:: -shared, --shared
 
-.. option:: -shared-libasan
-
 .. option:: -shared-libgcc
+
+.. option:: -shared-libsan, -shared-libasan
 
 .. option:: -single\_module
 
@@ -535,6 +539,8 @@ Serialize compiler diagnostics to a file
 .. option:: -static, --static
 
 .. option:: -static-libgcc
+
+.. option:: -static-libsan
 
 .. option:: -static-libstdc++
 
@@ -587,6 +593,8 @@ Show commands to run and use verbose output
 Verify the binary representation of debug output
 
 .. option:: --version
+
+Print version information
 
 .. option:: -w, --no-warnings
 
@@ -702,6 +710,10 @@ Print source range spans in numeric form
 
 Enables an experimental new pass manager in LLVM.
 
+.. option:: -ffine-grained-bitfield-accesses, -fno-fine-grained-bitfield-accesses
+
+Use separate accesses for bitfields with legal widths and alignments.
+
 .. option:: -finline-functions, -fno-inline-functions
 
 Inline suitable functions
@@ -742,7 +754,7 @@ Enable control flow integrity (CFI) checks for cross-DSO calls.
 
 .. option:: -fsanitize-cfi-icall-generalize-pointers
 
-Generalize pointers in function type signatures used for Control Flow Integrity (CFI) indirect call checking
+Generalize pointers in CFI indirect call type signature checks
 
 .. option:: -fsanitize-coverage=<arg1>,<arg2>..., -fno-sanitize-coverage=<arg1>,<arg2>...
 
@@ -760,7 +772,7 @@ Enable origins tracking in MemorySanitizer
 
 Enable origins tracking in MemorySanitizer
 
-.. option:: -fsanitize-memory-use-after-dtor
+.. option:: -fsanitize-memory-use-after-dtor, -fno-sanitize-memory-use-after-dtor
 
 Enable use-after-destroy detection in MemorySanitizer
 
@@ -1267,7 +1279,15 @@ Print a template comparison tree for differing templates
 
 Allow '$' in identifiers
 
+.. option:: -fdouble-square-bracket-attributes, -fno-double-square-bracket-attributes
+
+Enable '\[\[\]\]' attributes in all C and C++ language modes
+
 .. option:: -fdwarf-directory-asm, -fno-dwarf-directory-asm
+
+.. option:: -fdwarf-exceptions
+
+Use DWARF style exceptions
 
 .. option:: -felide-constructors, -fno-elide-constructors
 
@@ -1345,9 +1365,17 @@ Implicitly search the file system for module map files.
 
 .. option:: -finput-charset=<arg>
 
+.. option:: -finstrument-function-entry-bare
+
+Instrument function entry only, after inlining, without arguments to the instrumentation call
+
 .. option:: -finstrument-functions
 
 Generate calls to instrument function entry and exit
+
+.. option:: -finstrument-functions-after-inlining
+
+Like -finstrument-functions, but insert the calls after inlining
 
 .. option:: -fintegrated-as, -fno-integrated-as, -integrated-as
 
@@ -1521,6 +1549,10 @@ Enable ARC-style weak references in Objective-C
 
 OpenMP target code is compiled as relocatable using the -c flag. For OpenMP targets the code is relocatable by default.
 
+.. option:: -fopenmp-simd, -fno-openmp-simd
+
+Emit OpenMP code only for SIMD-based constructs.
+
 .. option:: -fopenmp-use-tls
 
 .. option:: -fopenmp-version=<arg>
@@ -1560,6 +1592,10 @@ Override the default ABI to return all structs on the stack
 .. option:: -fpic, -fno-pic
 
 .. option:: -fpie, -fno-pie
+
+.. option:: -fplt, -fno-plt
+
+Use the PLT to make function calls
 
 .. option:: -fplugin=<dsopath>
 
@@ -1657,6 +1693,10 @@ Turn on loop reroller
 .. option:: -fsave-optimization-record, -fno-save-optimization-record
 
 Generate a YAML optimization record file
+
+.. option:: -fseh-exceptions
+
+Use SEH style exceptions
 
 .. option:: -fshort-enums, -fno-short-enums
 
@@ -1842,6 +1882,10 @@ Treat signed integer overflow as two's complement
 
 Store string literals as writable data
 
+.. option:: -fxray-always-emit-customevents, -fno-xray-always-emit-customevents
+
+Determine whether to always emit \_\_xray\_customevent(...) calls even if the function it appears in is not always instrumented.
+
 .. option:: -fxray-always-instrument=<arg>
 
 Filename defining the whitelist for imbuing the 'always instrument' XRay attribute.
@@ -1962,7 +2006,7 @@ Link stack frames through backchain on System Z
 
 .. option:: -mconsole<arg>
 
-.. option:: -mcpu=<arg>, -mv4 (equivalent to -mcpu=hexagonv4), -mv5 (equivalent to -mcpu=hexagonv5), -mv55 (equivalent to -mcpu=hexagonv55), -mv60 (equivalent to -mcpu=hexagonv60), -mv62 (equivalent to -mcpu=hexagonv62)
+.. option:: -mcpu=<arg>, -mv4 (equivalent to -mcpu=hexagonv4), -mv5 (equivalent to -mcpu=hexagonv5), -mv55 (equivalent to -mcpu=hexagonv55), -mv60 (equivalent to -mcpu=hexagonv60), -mv62 (equivalent to -mcpu=hexagonv62), -mv65 (equivalent to -mcpu=hexagonv65)
 
 .. option:: -mdefault-build-attributes<arg>, -mno-default-build-attributes<arg>
 
@@ -2084,6 +2128,10 @@ Omit frame pointer setup for leaf functions
 
 Use copy relocations support for PIE builds
 
+.. option:: -mprefer-vector-width=<arg>
+
+Specifies preferred vector width for auto-vectorization. Defaults to 'none' which allows target specific decisions.
+
 .. option:: -mqdsp6-compat
 
 Enable hexagon-qdsp6 backward compatibility
@@ -2166,6 +2214,10 @@ Generate code which only uses the general purpose registers (AArch64 only)
 
 AMDGPU
 ------
+.. option:: -mxnack, -mno-xnack
+
+Enable XNACK (AMDGPU only)
+
 ARM
 ---
 .. option:: -ffixed-r9
@@ -2196,9 +2248,17 @@ Disallow use of CRC instructions (ARM only)
 
 Disallow generation of deprecated IT blocks for ARMv8. It is on by default for ARMv8 Thumb mode.
 
+.. option:: -mtp=<arg>
+
+Read thread pointer from coprocessor register (ARM only)
+
 .. option:: -munaligned-access, -mno-unaligned-access
 
 Allow memory accesses to be unaligned (AArch32/AArch64 only)
+
+Hexagon
+-------
+.. option:: -mieee-rnd-near
 
 Hexagon
 -------
@@ -2210,7 +2270,15 @@ Enable Hexagon Vector eXtensions
 
 Enable Hexagon Double Vector eXtensions
 
-.. option:: -mieee-rnd-near
+.. option:: -mhvx-length=<arg>
+
+Set Hexagon Vector Length
+
+.. program:: clang1
+.. option:: -mhvx=<arg>
+.. program:: clang
+
+Enable Hexagon Vector eXtensions
 
 PowerPC
 -------
@@ -2250,6 +2318,8 @@ PowerPC
 
 WebAssembly
 -----------
+.. option:: -mnontrapping-fptoint, -mno-nontrapping-fptoint
+
 .. option:: -msimd128, -mno-simd128
 
 X86
@@ -2265,6 +2335,8 @@ X86
 .. option:: -mavx, -mno-avx
 
 .. option:: -mavx2, -mno-avx2
+
+.. option:: -mavx512bitalg, -mno-avx512bitalg
 
 .. option:: -mavx512bw, -mno-avx512bw
 
@@ -2282,7 +2354,11 @@ X86
 
 .. option:: -mavx512vbmi, -mno-avx512vbmi
 
+.. option:: -mavx512vbmi2, -mno-avx512vbmi2
+
 .. option:: -mavx512vl, -mno-avx512vl
+
+.. option:: -mavx512vnni, -mno-avx512vnni
 
 .. option:: -mavx512vpopcntdq, -mno-avx512vpopcntdq
 
@@ -2307,6 +2383,10 @@ X86
 .. option:: -mfsgsbase, -mno-fsgsbase
 
 .. option:: -mfxsr, -mno-fxsr
+
+.. option:: -mgfni, -mno-gfni
+
+.. option:: -mibt, -mno-ibt
 
 .. option:: -mlwp, -mno-lwp
 
@@ -2340,6 +2420,8 @@ X86
 
 .. option:: -msha, -mno-sha
 
+.. option:: -mshstk, -mno-shstk
+
 .. option:: -msse, -mno-sse
 
 .. option:: -msse2, -mno-sse2
@@ -2357,6 +2439,10 @@ X86
 .. option:: -mssse3, -mno-ssse3
 
 .. option:: -mtbm, -mno-tbm
+
+.. option:: -mvaes, -mno-vaes
+
+.. option:: -mvpclmulqdq, -mno-vpclmulqdq
 
 .. option:: -mx87, -m80387, -mno-x87
 

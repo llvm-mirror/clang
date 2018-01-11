@@ -36,8 +36,9 @@ private:
   public:
     llvm::Function *WorkerFn;
     const CGFunctionInfo *CGFI;
+    SourceLocation Loc;
 
-    WorkerFunctionState(CodeGenModule &CGM);
+    WorkerFunctionState(CodeGenModule &CGM, SourceLocation Loc);
 
   private:
     void createWorkerFunction(CodeGenModule &CGM);
@@ -305,6 +306,17 @@ private:
   // target region and used by containing directives such as 'parallel'
   // to emit optimized code.
   ExecutionMode CurrentExecutionMode;
+
+  /// Map between an outlined function and its wrapper.
+  llvm::DenseMap<llvm::Function *, llvm::Function *> WrapperFunctionsMap;
+
+  /// Emit function which wraps the outline parallel region
+  /// and controls the parameters which are passed to this function.
+  /// The wrapper ensures that the outlined function is called
+  /// with the correct arguments when data is shared.
+  llvm::Function *
+  createDataSharingWrapper(llvm::Function *OutlinedParallelFn,
+      const OMPExecutableDirective &D);
 };
 
 } // CodeGen namespace.

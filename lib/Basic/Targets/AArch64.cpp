@@ -159,7 +159,7 @@ void AArch64TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__ARM_FP_FAST", "1");
 
   Builder.defineMacro("__ARM_SIZEOF_WCHAR_T",
-                      llvm::utostr(Opts.WCharSize ? Opts.WCharSize : 4));
+                      Twine(Opts.WCharSize ? Opts.WCharSize : 4));
 
   Builder.defineMacro("__ARM_SIZEOF_MINIMAL_ENUM", Opts.ShortEnums ? "1" : "4");
 
@@ -180,6 +180,9 @@ void AArch64TargetInfo::getTargetDefines(const LangOptions &Opts,
 
   if (Unaligned)
     Builder.defineMacro("__ARM_FEATURE_UNALIGNED", "1");
+
+  if ((FPU & NeonMode) && HasFullFP16)
+    Builder.defineMacro("__ARM_FEATURE_FP16_VECTOR_ARITHMETIC", "1");
 
   switch (ArchKind) {
   default:
@@ -474,8 +477,6 @@ MicrosoftARM64TargetInfo::MicrosoftARM64TargetInfo(const llvm::Triple &Triple,
 void MicrosoftARM64TargetInfo::getVisualStudioDefines(
     const LangOptions &Opts, MacroBuilder &Builder) const {
   WindowsTargetInfo<AArch64leTargetInfo>::getVisualStudioDefines(Opts, Builder);
-  Builder.defineMacro("_WIN32", "1");
-  Builder.defineMacro("_WIN64", "1");
   Builder.defineMacro("_M_ARM64", "1");
 }
 
@@ -490,17 +491,6 @@ MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
     : WindowsARM64TargetInfo(Triple, Opts) {
   TheCXXABI.set(TargetCXXABI::GenericAArch64);
 }
-
-void MinGWARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
-                                            MacroBuilder &Builder) const {
-  WindowsTargetInfo::getTargetDefines(Opts, Builder);
-  Builder.defineMacro("_WIN32", "1");
-  Builder.defineMacro("_WIN64", "1");
-  Builder.defineMacro("WIN32", "1");
-  Builder.defineMacro("WIN64", "1");
-  addMinGWDefines(Opts, Builder);
-}
-
 
 DarwinAArch64TargetInfo::DarwinAArch64TargetInfo(const llvm::Triple &Triple,
                                                  const TargetOptions &Opts)

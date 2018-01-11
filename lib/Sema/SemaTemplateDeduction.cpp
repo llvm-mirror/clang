@@ -344,7 +344,7 @@ static Sema::TemplateDeductionResult DeduceNonTypeTemplateArgument(
   }
 
   Deduced[NTTP->getIndex()] = Result;
-  if (!S.getLangOpts().CPlusPlus1z)
+  if (!S.getLangOpts().CPlusPlus17)
     return Sema::TDK_Success;
 
   if (NTTP->isExpandedParameterPack())
@@ -354,8 +354,9 @@ static Sema::TemplateDeductionResult DeduceNonTypeTemplateArgument(
     // expanded NTTP should be a pack expansion type?
     return Sema::TDK_Success;
 
-  // Get the type of the parameter for deduction.
-  QualType ParamType = NTTP->getType();
+  // Get the type of the parameter for deduction. If it's a (dependent) array
+  // or function type, we will not have decayed it yet, so do that now.
+  QualType ParamType = S.Context.getAdjustedParameterType(NTTP->getType());
   if (auto *Expansion = dyn_cast<PackExpansionType>(ParamType))
     ParamType = Expansion->getPattern();
 
@@ -500,6 +501,10 @@ DeduceTemplateArguments(Sema &S,
                         TemplateDeductionInfo &Info,
                         SmallVectorImpl<DeducedTemplateArgument> &Deduced) {
   assert(Arg.isCanonical() && "Argument type must be canonical");
+
+  // Treat an injected-class-name as its underlying template-id.
+  if (auto *Injected = dyn_cast<InjectedClassNameType>(Arg))
+    Arg = Injected->getInjectedSpecializationType();
 
   // Check whether the template argument is a dependent template-id.
   if (const TemplateSpecializationType *SpecArg
@@ -2933,7 +2938,7 @@ Sema::SubstituteExplicitTemplateArguments(
     // so substitution into the type must also substitute into the exception
     // specification.
     SmallVector<QualType, 4> ExceptionStorage;
-    if (getLangOpts().CPlusPlus1z &&
+    if (getLangOpts().CPlusPlus17 &&
         SubstExceptionSpec(
             Function->getLocation(), EPI.ExceptionSpec, ExceptionStorage,
             MultiLevelTemplateArgumentList(*ExplicitArgumentList)))
@@ -3907,7 +3912,7 @@ Sema::TemplateDeductionResult Sema::DeduceTemplateArguments(
   // so we can check that the exception specification matches.
   auto *SpecializationFPT =
       Specialization->getType()->castAs<FunctionProtoType>();
-  if (getLangOpts().CPlusPlus1z &&
+  if (getLangOpts().CPlusPlus17 &&
       isUnresolvedExceptionSpec(SpecializationFPT->getExceptionSpecType()) &&
       !ResolveExceptionSpec(Info.getLocation(), SpecializationFPT))
     return TDK_MiscellaneousDeductionFailure;
@@ -3939,117 +3944,6 @@ Sema::TemplateDeductionResult Sema::DeduceTemplateArguments(
   return TDK_Success;
 }
 
-/// \brief Given a function declaration (e.g. a generic lambda conversion
-///  function) that contains an 'auto' in its result type, substitute it
-///  with TypeToReplaceAutoWith.  Be careful to pass in the type you want
-///  to replace 'auto' with and not the actual result type you want
-///  to set the function to.
-static inline void
-SubstAutoWithinFunctionReturnType(FunctionDecl *F,
-                                    QualType TypeToReplaceAutoWith, Sema &S) {
-  assert(!TypeToReplaceAutoWith->getContainedAutoType());
-  QualType AutoResultType = F->getReturnType();
-  assert(AutoResultType->getContainedAutoType());
-  QualType DeducedResultType = S.SubstAutoType(AutoResultType,
-                                               TypeToReplaceAutoWith);
-  S.Context.adjustDeducedFunctionResultType(F, DeducedResultType);
-}
-
-/// \brief Given a specialized conversion operator of a generic lambda
-/// create the corresponding specializations of the call operator and
-/// the static-invoker. If the return type of the call operator is auto,
-/// deduce its return type and check if that matches the
-/// return type of the destination function ptr.
-
-static inline Sema::TemplateDeductionResult
-SpecializeCorrespondingLambdaCallOperatorAndInvoker(
-    CXXConversionDecl *ConversionSpecialized,
-    SmallVectorImpl<DeducedTemplateArgument> &DeducedArguments,
-    QualType ReturnTypeOfDestFunctionPtr,
-    TemplateDeductionInfo &TDInfo,
-    Sema &S) {
-
-  CXXRecordDecl *LambdaClass = ConversionSpecialized->getParent();
-  assert(LambdaClass && LambdaClass->isGenericLambda());
-
-  CXXMethodDecl *CallOpGeneric = LambdaClass->getLambdaCallOperator();
-  QualType CallOpResultType = CallOpGeneric->getReturnType();
-  const bool GenericLambdaCallOperatorHasDeducedReturnType =
-      CallOpResultType->getContainedAutoType();
-
-  FunctionTemplateDecl *CallOpTemplate =
-      CallOpGeneric->getDescribedFunctionTemplate();
-
-  FunctionDecl *CallOpSpecialized = nullptr;
-  // Use the deduced arguments of the conversion function, to specialize our
-  // generic lambda's call operator.
-  if (Sema::TemplateDeductionResult Result
-      = S.FinishTemplateArgumentDeduction(CallOpTemplate,
-                                          DeducedArguments,
-                                          0, CallOpSpecialized, TDInfo))
-    return Result;
-
-  // If we need to deduce the return type, do so (instantiates the callop).
-  if (GenericLambdaCallOperatorHasDeducedReturnType &&
-      CallOpSpecialized->getReturnType()->isUndeducedType())
-    S.DeduceReturnType(CallOpSpecialized,
-                       CallOpSpecialized->getPointOfInstantiation(),
-                       /*Diagnose*/ true);
-
-  // Check to see if the return type of the destination ptr-to-function
-  // matches the return type of the call operator.
-  if (!S.Context.hasSameType(CallOpSpecialized->getReturnType(),
-                             ReturnTypeOfDestFunctionPtr))
-    return Sema::TDK_NonDeducedMismatch;
-  // Since we have succeeded in matching the source and destination
-  // ptr-to-functions (now including return type), and have successfully
-  // specialized our corresponding call operator, we are ready to
-  // specialize the static invoker with the deduced arguments of our
-  // ptr-to-function.
-  FunctionDecl *InvokerSpecialized = nullptr;
-  FunctionTemplateDecl *InvokerTemplate = LambdaClass->
-                  getLambdaStaticInvoker()->getDescribedFunctionTemplate();
-
-#ifndef NDEBUG
-  Sema::TemplateDeductionResult LLVM_ATTRIBUTE_UNUSED Result =
-#endif
-    S.FinishTemplateArgumentDeduction(InvokerTemplate, DeducedArguments, 0,
-          InvokerSpecialized, TDInfo);
-  assert(Result == Sema::TDK_Success &&
-    "If the call operator succeeded so should the invoker!");
-  // Set the result type to match the corresponding call operator
-  // specialization's result type.
-  if (GenericLambdaCallOperatorHasDeducedReturnType &&
-      InvokerSpecialized->getReturnType()->isUndeducedType()) {
-    // Be sure to get the type to replace 'auto' with and not
-    // the full result type of the call op specialization
-    // to substitute into the 'auto' of the invoker and conversion
-    // function.
-    // For e.g.
-    //  int* (*fp)(int*) = [](auto* a) -> auto* { return a; };
-    // We don't want to subst 'int*' into 'auto' to get int**.
-
-    QualType TypeToReplaceAutoWith = CallOpSpecialized->getReturnType()
-                                         ->getContainedAutoType()
-                                         ->getDeducedType();
-    SubstAutoWithinFunctionReturnType(InvokerSpecialized,
-        TypeToReplaceAutoWith, S);
-    SubstAutoWithinFunctionReturnType(ConversionSpecialized,
-        TypeToReplaceAutoWith, S);
-  }
-
-  // Ensure that static invoker doesn't have a const qualifier.
-  // FIXME: When creating the InvokerTemplate in SemaLambda.cpp
-  // do not use the CallOperator's TypeSourceInfo which allows
-  // the const qualifier to leak through.
-  const FunctionProtoType *InvokerFPT = InvokerSpecialized->
-                  getType().getTypePtr()->castAs<FunctionProtoType>();
-  FunctionProtoType::ExtProtoInfo EPI = InvokerFPT->getExtProtoInfo();
-  EPI.TypeQuals = 0;
-  InvokerSpecialized->setType(S.Context.getFunctionType(
-      InvokerFPT->getReturnType(), InvokerFPT->getParamTypes(), EPI));
-  return Sema::TDK_Success;
-}
 /// \brief Deduce template arguments for a templated conversion
 /// function (C++ [temp.deduct.conv]) and, if successful, produce a
 /// conversion function template specialization.
@@ -4157,35 +4051,6 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *ConversionTemplate,
       = FinishTemplateArgumentDeduction(ConversionTemplate, Deduced, 0,
                                         ConversionSpecialized, Info);
   Specialization = cast_or_null<CXXConversionDecl>(ConversionSpecialized);
-
-  // If the conversion operator is being invoked on a lambda closure to convert
-  // to a ptr-to-function, use the deduced arguments from the conversion
-  // function to specialize the corresponding call operator.
-  //   e.g., int (*fp)(int) = [](auto a) { return a; };
-  if (Result == TDK_Success && isLambdaConversionOperator(ConversionGeneric)) {
-
-    // Get the return type of the destination ptr-to-function we are converting
-    // to.  This is necessary for matching the lambda call operator's return
-    // type to that of the destination ptr-to-function's return type.
-    assert(A->isPointerType() &&
-        "Can only convert from lambda to ptr-to-function");
-    const FunctionType *ToFunType =
-        A->getPointeeType().getTypePtr()->getAs<FunctionType>();
-    const QualType DestFunctionPtrReturnType = ToFunType->getReturnType();
-
-    // Create the corresponding specializations of the call operator and
-    // the static-invoker; and if the return type is auto,
-    // deduce the return type and check if it matches the
-    // DestFunctionPtrReturnType.
-    // For instance:
-    //   auto L = [](auto a) { return f(a); };
-    //   int (*fp)(int) = L;
-    //   char (*fp2)(int) = L; <-- Not OK.
-
-    Result = SpecializeCorrespondingLambdaCallOperatorAndInvoker(
-        Specialization, Deduced, DestFunctionPtrReturnType,
-        Info, *this);
-  }
   return Result;
 }
 
@@ -4534,6 +4399,43 @@ void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
 bool Sema::DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                             bool Diagnose) {
   assert(FD->getReturnType()->isUndeducedType());
+
+  // For a lambda's conversion operator, deduce any 'auto' or 'decltype(auto)'
+  // within the return type from the call operator's type.
+  if (isLambdaConversionOperator(FD)) {
+    CXXRecordDecl *Lambda = cast<CXXMethodDecl>(FD)->getParent();
+    FunctionDecl *CallOp = Lambda->getLambdaCallOperator();
+
+    // For a generic lambda, instantiate the call operator if needed. 
+    if (auto *Args = FD->getTemplateSpecializationArgs()) {
+      CallOp = InstantiateFunctionDeclaration(
+          CallOp->getDescribedFunctionTemplate(), Args, Loc);
+      if (!CallOp || CallOp->isInvalidDecl())
+        return true;
+
+      // We might need to deduce the return type by instantiating the definition
+      // of the operator() function.
+      if (CallOp->getReturnType()->isUndeducedType())
+        InstantiateFunctionDefinition(Loc, CallOp);
+    }
+
+    if (CallOp->isInvalidDecl())
+      return true;
+    assert(!CallOp->getReturnType()->isUndeducedType() &&
+           "failed to deduce lambda return type");
+
+    // Build the new return type from scratch.
+    QualType RetType = getLambdaConversionFunctionResultType(
+        CallOp->getType()->castAs<FunctionProtoType>());
+    if (FD->getReturnType()->getAs<PointerType>())
+      RetType = Context.getPointerType(RetType);
+    else {
+      assert(FD->getReturnType()->getAs<BlockPointerType>());
+      RetType = Context.getBlockPointerType(RetType);
+    }
+    Context.adjustDeducedFunctionResultType(FD, RetType);
+    return false;
+  }
 
   if (FD->getTemplateInstantiationPattern())
     InstantiateFunctionDefinition(Loc, FD);
@@ -5151,9 +5053,9 @@ MarkUsedTemplateParameters(ASTContext &Ctx,
   if (NTTP->getDepth() == Depth)
     Used[NTTP->getIndex()] = true;
 
-  // In C++1z mode, additional arguments may be deduced from the type of a
+  // In C++17 mode, additional arguments may be deduced from the type of a
   // non-type argument.
-  if (Ctx.getLangOpts().CPlusPlus1z)
+  if (Ctx.getLangOpts().CPlusPlus17)
     MarkUsedTemplateParameters(Ctx, NTTP->getType(), OnlyDeduced, Depth, Used);
 }
 
@@ -5323,7 +5225,7 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
 
   case Type::InjectedClassName:
     T = cast<InjectedClassNameType>(T)->getInjectedSpecializationType();
-    // fall through
+    LLVM_FALLTHROUGH;
 
   case Type::TemplateSpecialization: {
     const TemplateSpecializationType *Spec
@@ -5430,6 +5332,7 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
     MarkUsedTemplateParameters(Ctx,
                                cast<DeducedType>(T)->getDeducedType(),
                                OnlyDeduced, Depth, Used);
+    break;
 
   // None of these types have any template parameters in them.
   case Type::Builtin:

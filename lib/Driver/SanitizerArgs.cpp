@@ -31,9 +31,10 @@ enum : SanitizerMask {
   NotAllowedWithTrap = Vptr,
   NotAllowedWithMinimalRuntime = Vptr,
   RequiresPIE = DataFlow | Scudo,
-  NeedsUnwindTables = Address | Thread | Memory | DataFlow,
-  SupportsCoverage = Address | KernelAddress | Memory | Leak | Undefined |
-                     Integer | Nullability | DataFlow | Fuzzer | FuzzerNoLink,
+  NeedsUnwindTables = Address | HWAddress | Thread | Memory | DataFlow,
+  SupportsCoverage = Address | HWAddress | KernelAddress | Memory | Leak |
+                     Undefined | Integer | Nullability | DataFlow | Fuzzer |
+                     FuzzerNoLink,
   RecoverableByDefault = Undefined | Integer | Nullability,
   Unrecoverable = Unreachable | Return,
   LegacyFsanitizeRecoverMask = Undefined | Integer,
@@ -96,6 +97,8 @@ static bool getDefaultBlacklist(const Driver &D, SanitizerMask Kinds,
   const char *BlacklistFile = nullptr;
   if (Kinds & Address)
     BlacklistFile = "asan_blacklist.txt";
+  else if (Kinds & HWAddress)
+    BlacklistFile = "hwasan_blacklist.txt";
   else if (Kinds & Memory)
     BlacklistFile = "msan_blacklist.txt";
   else if (Kinds & Thread)
@@ -172,8 +175,8 @@ static SanitizerMask parseSanitizeTrapArgs(const Driver &D,
 
 bool SanitizerArgs::needsUbsanRt() const {
   // All of these include ubsan.
-  if (needsAsanRt() || needsMsanRt() || needsTsanRt() || needsDfsanRt() ||
-      needsLsanRt() || needsCfiDiagRt() || needsScudoRt())
+  if (needsAsanRt() || needsMsanRt() || needsHwasanRt() || needsTsanRt() ||
+      needsDfsanRt() || needsLsanRt() || needsCfiDiagRt() || needsScudoRt())
     return false;
 
   return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) ||
@@ -373,11 +376,12 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       std::make_pair(Address, Thread | Memory),
       std::make_pair(Thread, Memory),
       std::make_pair(Leak, Thread | Memory),
-      std::make_pair(KernelAddress, Address| Leak | Thread | Memory),
-      std::make_pair(Efficiency, Address | Leak | Thread | Memory |
-                                 KernelAddress),
-      std::make_pair(Scudo, Address | Leak | Thread | Memory | KernelAddress |
-                            Efficiency) };
+      std::make_pair(KernelAddress, Address | Leak | Thread | Memory),
+      std::make_pair(HWAddress, Address | Thread | Memory | KernelAddress),
+      std::make_pair(Efficiency, Address | HWAddress | Leak | Thread | Memory |
+                                     KernelAddress),
+      std::make_pair(Scudo, Address | HWAddress | Leak | Thread | Memory |
+                                KernelAddress | Efficiency)};
   for (auto G : IncompatibleGroups) {
     SanitizerMask Group = G.first;
     if (Kinds & Group) {
@@ -436,6 +440,7 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   RecoverableKinds &= ~Unrecoverable;
 
   TrappingKinds &= Kinds;
+  RecoverableKinds &= ~TrappingKinds;
 
   // Setup blacklist files.
   // Add default blacklist from resource directory.
@@ -679,6 +684,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   Sanitizers.Mask |= Kinds;
   RecoverableSanitizers.Mask |= RecoverableKinds;
   TrapSanitizers.Mask |= TrappingKinds;
+  assert(!(RecoverableKinds & TrappingKinds) &&
+         "Overlap between recoverable and trapping sanitizers");
 }
 
 static std::string toString(const clang::SanitizerSet &Sanitizers) {
@@ -787,7 +794,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   if (MsanTrackOrigins)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-track-origins=" +
-                                         llvm::utostr(MsanTrackOrigins)));
+                                         Twine(MsanTrackOrigins)));
 
   if (MsanUseAfterDtor)
     CmdArgs.push_back("-fsanitize-memory-use-after-dtor");
@@ -822,7 +829,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
-                                         llvm::utostr(AsanFieldPadding)));
+                                         Twine(AsanFieldPadding)));
 
   if (AsanUseAfterScope)
     CmdArgs.push_back("-fsanitize-address-use-after-scope");
@@ -832,7 +839,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   // MSan: Workaround for PR16386.
   // ASan: This is mainly to help LSan with cases such as
-  // https://code.google.com/p/address-sanitizer/issues/detail?id=373
+  // https://github.com/google/sanitizers/issues/373
   // We can't make this conditional on -fsanitize=leak, as that flag shouldn't
   // affect compilation.
   if (Sanitizers.has(Memory) || Sanitizers.has(Address))
