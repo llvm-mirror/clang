@@ -1005,7 +1005,9 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
   if (RV.isScalar()) {
     Builder.CreateStore(RV.getScalarVal(), ReturnValue);
   } else if (RV.isAggregate()) {
-    EmitAggregateCopy(ReturnValue, RV.getAggregateAddress(), Ty);
+    LValue Dest = MakeAddrLValue(ReturnValue, Ty);
+    LValue Src = MakeAddrLValue(RV.getAggregateAddress(), Ty);
+    EmitAggregateCopy(Dest, Src, Ty);
   } else {
     EmitStoreOfComplex(RV.getComplexVal(), MakeAddrLValue(ReturnValue, Ty),
                        /*init*/ true);
@@ -2131,7 +2133,8 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
   llvm::InlineAsm *IA =
     llvm::InlineAsm::get(FTy, AsmString, Constraints, HasSideEffect,
                          /* IsAlignStack */ false, AsmDialect);
-  llvm::CallInst *Result = Builder.CreateCall(IA, Args);
+  llvm::CallInst *Result =
+      Builder.CreateCall(IA, Args, getBundlesForFunclet(IA));
   Result->addAttribute(llvm::AttributeList::FunctionIndex,
                        llvm::Attribute::NoUnwind);
 

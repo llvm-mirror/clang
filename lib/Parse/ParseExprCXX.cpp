@@ -1183,7 +1183,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     if (Tok.is(tok::arrow)) {
       FunLocalRangeEnd = Tok.getLocation();
       SourceRange Range;
-      TrailingReturnType = ParseTrailingReturnType(Range);
+      TrailingReturnType =
+          ParseTrailingReturnType(Range, /*MayBeFollowedByDirectInit*/ false);
       if (Range.getEnd().isValid())
         DeclEndLoc = Range.getEnd();
     }
@@ -1253,7 +1254,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     // Parse the return type, if there is one.
     if (Tok.is(tok::arrow)) {
       SourceRange Range;
-      TrailingReturnType = ParseTrailingReturnType(Range);
+      TrailingReturnType =
+          ParseTrailingReturnType(Range, /*MayBeFollowedByDirectInit*/ false);
       if (Range.getEnd().isValid())
         DeclEndLoc = Range.getEnd();
     }
@@ -1672,9 +1674,9 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
     if (Init.isInvalid())
       return Init;
     Expr *InitList = Init.get();
-    return Actions.ActOnCXXTypeConstructExpr(TypeRep, SourceLocation(),
-                                             MultiExprArg(&InitList, 1),
-                                             SourceLocation());
+    return Actions.ActOnCXXTypeConstructExpr(
+        TypeRep, InitList->getLocStart(), MultiExprArg(&InitList, 1),
+        InitList->getLocEnd(), /*ListInitialization=*/true);
   } else {
     BalancedDelimiterTracker T(*this, tok::l_paren);
     T.consumeOpen();
@@ -1702,9 +1704,9 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
 
     assert((Exprs.size() == 0 || Exprs.size()-1 == CommaLocs.size())&&
            "Unexpected number of commas!");
-    return Actions.ActOnCXXTypeConstructExpr(TypeRep, T.getOpenLocation(), 
-                                             Exprs,
-                                             T.getCloseLocation());
+    return Actions.ActOnCXXTypeConstructExpr(TypeRep, T.getOpenLocation(),
+                                             Exprs, T.getCloseLocation(),
+                                             /*ListInitialization=*/false);
   }
 }
 

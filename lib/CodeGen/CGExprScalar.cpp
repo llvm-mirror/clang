@@ -165,7 +165,7 @@ static bool CanElideOverflowCheck(const ASTContext &Ctx, const BinOpInfo &Op) {
 
   // If a unary op has a widened operand, the op cannot overflow.
   if (const auto *UO = dyn_cast<UnaryOperator>(Op.E))
-    return IsWidenedIntegerOp(Ctx, UO->getSubExpr());
+    return !UO->canOverflow();
 
   // We usually don't need overflow checks for binops with widened operands.
   // Multiplication with promoted unsigned operands is a special case.
@@ -1873,7 +1873,7 @@ llvm::Value *ScalarExprEmitter::EmitIncDecConsiderOverflowBehavior(
       return Builder.CreateNSWAdd(InVal, Amount, Name);
     // Fall through.
   case LangOptions::SOB_Trapping:
-    if (IsWidenedIntegerOp(CGF.getContext(), E->getSubExpr()))
+    if (!E->canOverflow())
       return Builder.CreateNSWAdd(InVal, Amount, Name);
     return EmitOverflowCheckedBinOp(createBinOpInfoFromIncDec(E, InVal, IsInc));
   }
@@ -1955,11 +1955,9 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
   } else if (type->isIntegerType()) {
     // Note that signed integer inc/dec with width less than int can't
     // overflow because of promotion rules; we're just eliding a few steps here.
-    bool CanOverflow = value->getType()->getIntegerBitWidth() >=
-                       CGF.IntTy->getIntegerBitWidth();
-    if (CanOverflow && type->isSignedIntegerOrEnumerationType()) {
+    if (E->canOverflow() && type->isSignedIntegerOrEnumerationType()) {
       value = EmitIncDecConsiderOverflowBehavior(E, value, isInc);
-    } else if (CanOverflow && type->isUnsignedIntegerType() &&
+    } else if (E->canOverflow() && type->isUnsignedIntegerType() &&
                CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow)) {
       value =
           EmitOverflowCheckedBinOp(createBinOpInfoFromIncDec(E, value, isInc));
@@ -1975,7 +1973,7 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
     // VLA types don't have constant size.
     if (const VariableArrayType *vla
           = CGF.getContext().getAsVariableArrayType(type)) {
-      llvm::Value *numElts = CGF.getVLASize(vla).first;
+      llvm::Value *numElts = CGF.getVLASize(vla).NumElts;
       if (!isInc) numElts = Builder.CreateNSWNeg(numElts, "vla.negsize");
       if (CGF.getLangOpts().isSignedOverflowDefined())
         value = Builder.CreateGEP(value, numElts, "vla.inc");
@@ -2273,16 +2271,13 @@ ScalarExprEmitter::VisitUnaryExprOrTypeTraitExpr(
         CGF.EmitIgnoredExpr(E->getArgumentExpr());
       }
 
-      QualType eltType;
-      llvm::Value *numElts;
-      std::tie(numElts, eltType) = CGF.getVLASize(VAT);
-
-      llvm::Value *size = numElts;
+      auto VlaSize = CGF.getVLASize(VAT);
+      llvm::Value *size = VlaSize.NumElts;
 
       // Scale the number of non-VLA elements by the non-VLA element size.
-      CharUnits eltSize = CGF.getContext().getTypeSizeInChars(eltType);
+      CharUnits eltSize = CGF.getContext().getTypeSizeInChars(VlaSize.Type);
       if (!eltSize.isOne())
-        size = CGF.Builder.CreateNUWMul(CGF.CGM.getSize(eltSize), numElts);
+        size = CGF.Builder.CreateNUWMul(CGF.CGM.getSize(eltSize), size);
 
       return size;
     }
@@ -2769,7 +2764,7 @@ static Value *emitPointerArithmetic(CodeGenFunction &CGF,
   if (const VariableArrayType *vla
         = CGF.getContext().getAsVariableArrayType(elementType)) {
     // The element count here is the total number of non-VLA elements.
-    llvm::Value *numElements = CGF.getVLASize(vla).first;
+    llvm::Value *numElements = CGF.getVLASize(vla).NumElts;
 
     // Effectively, the multiply by the VLA size is part of the GEP.
     // GEP indexes are signed, and scaling an index isn't permitted to
@@ -2964,10 +2959,9 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
   // For a variable-length array, this is going to be non-constant.
   if (const VariableArrayType *vla
         = CGF.getContext().getAsVariableArrayType(elementType)) {
-    llvm::Value *numElements;
-    std::tie(numElements, elementType) = CGF.getVLASize(vla);
-
-    divisor = numElements;
+    auto VlaSize = CGF.getVLASize(vla);
+    elementType = VlaSize.Type;
+    divisor = VlaSize.NumElts;
 
     // Scale the number of non-VLA elements by the non-VLA element size.
     CharUnits eltSize = CGF.getContext().getTypeSizeInChars(elementType);

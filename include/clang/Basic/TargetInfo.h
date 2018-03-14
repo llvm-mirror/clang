@@ -358,7 +358,7 @@ public:
 
   /// \brief Determine whether the __int128 type is supported on this target.
   virtual bool hasInt128Type() const {
-    return getPointerWidth(0) >= 64;
+    return (getPointerWidth(0) >= 64) || getTargetOpts().ForceEnableInt128;
   } // FIXME
 
   /// \brief Determine whether the __float128 type is supported on this target.
@@ -623,9 +623,9 @@ public:
   /// ReturnCanonical = true and Name = "rax", will return "ax".
   StringRef getNormalizedGCCRegisterName(StringRef Name,
                                          bool ReturnCanonical = false) const;
- 
-  virtual StringRef getConstraintRegister(const StringRef &Constraint,
-                                          const StringRef &Expression) const {
+
+  virtual StringRef getConstraintRegister(StringRef Constraint,
+                                          StringRef Expression) const {
     return "";
   }
 
@@ -867,6 +867,9 @@ public:
     return false;
   }
 
+  /// Fill a SmallVectorImpl with the valid values to setCPU.
+  virtual void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const {}
+
   /// brief Determine whether this TargetInfo supports the given CPU name.
   virtual bool isValidCPUName(StringRef Name) const {
     return true;
@@ -920,9 +923,19 @@ public:
     return false;
   }
 
+  /// \brief Identify whether this taret supports multiversioning of functions,
+  /// which requires support for cpu_supports and cpu_is functionality.
+  virtual bool supportsMultiVersioning() const { return false; }
+
   // \brief Validate the contents of the __builtin_cpu_supports(const char*)
   // argument.
   virtual bool validateCpuSupports(StringRef Name) const { return false; }
+
+  // \brief Return the target-specific priority for features/cpus/vendors so
+  // that they can be properly sorted for checking.
+  virtual unsigned multiVersionSortPriority(StringRef Name) const {
+    return 0;
+  }
 
   // \brief Validate the contents of the __builtin_cpu_is(const char*)
   // argument.
@@ -1038,6 +1051,18 @@ public:
   /// Controls if __builtin_longjmp / __builtin_setjmp can be lowered to
   /// llvm.eh.sjlj.longjmp / llvm.eh.sjlj.setjmp.
   virtual bool hasSjLjLowering() const {
+    return false;
+  }
+
+  /// Check if the target supports CFProtection branch.
+  virtual bool
+  checkCFProtectionBranchSupported(DiagnosticsEngine &Diags) const {
+    return false;
+  }
+
+  /// Check if the target supports CFProtection branch.
+  virtual bool
+  checkCFProtectionReturnSupported(DiagnosticsEngine &Diags) const {
     return false;
   }
 

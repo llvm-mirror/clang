@@ -1075,7 +1075,7 @@ location.
 Building a relocatable precompiled header requires two additional
 arguments. First, pass the ``--relocatable-pch`` flag to indicate that
 the resulting PCH file should be relocatable. Second, pass
-`-isysroot /path/to/build`, which makes all includes for your library
+``-isysroot /path/to/build``, which makes all includes for your library
 relative to the build directory. For example:
 
 .. code-block:: console
@@ -1085,9 +1085,9 @@ relative to the build directory. For example:
 When loading the relocatable PCH file, the various headers used in the
 PCH file are found from the system header root. For example, ``mylib.h``
 can be found in ``/usr/include/mylib.h``. If the headers are installed
-in some other system root, the `-isysroot` option can be used provide
+in some other system root, the ``-isysroot`` option can be used provide
 a different system root from which the headers will be based. For
-example, `-isysroot /Developer/SDKs/MacOSX10.4u.sdk` will look for
+example, ``-isysroot /Developer/SDKs/MacOSX10.4u.sdk`` will look for
 ``mylib.h`` in ``/Developer/SDKs/MacOSX10.4u.sdk/usr/include/mylib.h``.
 
 Relocatable precompiled headers are intended to be used in a limited
@@ -1375,7 +1375,8 @@ Profile Guided Optimization
 Profile information enables better optimization. For example, knowing that a
 branch is taken very frequently helps the compiler make better decisions when
 ordering basic blocks. Knowing that a function ``foo`` is called more
-frequently than another function ``bar`` helps the inliner.
+frequently than another function ``bar`` helps the inliner. Optimization
+levels ``-O2`` and above are recommended for use of profile guided optimization.
 
 Clang supports profile guided optimization with two different kinds of
 profiling. A sampling profiler can generate a profile with very low runtime
@@ -1852,6 +1853,27 @@ features. You can "tune" the debug info for one of several different debuggers.
   debugger, respectively. Each of these options implies **-g**. (Therefore, if
   you want both **-gline-tables-only** and debugger tuning, the tuning option
   must come first.)
+
+
+Controlling LLVM IR Output
+--------------------------
+
+Controlling Value Names in LLVM IR
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Emitting value names in LLVM IR increases the size and verbosity of the IR.
+By default, value names are only emitted in assertion-enabled builds of Clang.
+However, when reading IR it can be useful to re-enable the emission of value
+names to improve readability.
+
+.. option:: -fdiscard-value-names
+
+  Discard value names when generating LLVM IR.
+
+.. option:: -fno-discard-value-names
+
+  Do not discard value names when generating LLVM IR. This option can be used
+  to re-enable names for release builds of Clang.
 
 
 Comment Parsing Options
@@ -2662,10 +2684,37 @@ compatibility with the Visual C++ compiler, cl.exe.
 To enable clang-cl to find system headers, libraries, and the linker when run
 from the command-line, it should be executed inside a Visual Studio Native Tools
 Command Prompt or a regular Command Prompt where the environment has been set
-up using e.g. `vcvars32.bat <http://msdn.microsoft.com/en-us/library/f2ccy3wt.aspx>`_.
+up using e.g. `vcvarsall.bat <http://msdn.microsoft.com/en-us/library/f2ccy3wt.aspx>`_.
 
-clang-cl can also be used from inside Visual Studio by using an LLVM Platform
-Toolset.
+clang-cl can also be used from inside Visual Studio by selecting the LLVM
+Platform Toolset. The toolset is installed by the LLVM installer, which can be
+downloaded from the `LLVM release <http://releases.llvm.org/download.html>`_ or
+`snapshot build <http://llvm.org/builds/>`_ web pages. To use the toolset,
+select a project in Solution Explorer, open its Property Page (Alt+F7), and in
+the "General" section of "Configuration Properties" change "Platform Toolset"
+to e.g. LLVM-vs2014.
+
+To use the toolset with MSBuild directly, invoke it with e.g.
+``/p:PlatformToolset=LLVM-vs2014``. This allows trying out the clang-cl
+toolchain without modifying your project files.
+
+It's also possible to point MSBuild at clang-cl without changing toolset by
+passing ``/p:CLToolPath=c:\llvm\bin /p:CLToolExe=clang-cl.exe``.
+
+When using CMake and the Visual Studio generators, the toolset can be set with the ``-T`` flag:
+
+  ::
+
+    cmake -G"Visual Studio 15 2017" -T LLVM-vs2014 ..
+
+When using CMake with the Ninja generator, set the ``CMAKE_C_COMPILER`` and
+``CMAKE_CXX_COMPILER`` variables to clang-cl:
+
+  ::
+
+    cmake -GNinja -DCMAKE_C_COMPILER="c:/Program Files (x86)/LLVM/bin/clang-cl.exe"
+        -DCMAKE_CXX_COMPILER="c:/Program Files (x86)/LLVM/bin/clang-cl.exe" ..
+
 
 Command-Line Options
 --------------------

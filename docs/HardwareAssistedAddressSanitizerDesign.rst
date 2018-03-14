@@ -61,8 +61,6 @@ verifies the tags. Currently, the following sequence is used:
       14:	00 00 40 b9 	ldr	w0, [x0]         // original load
       18:	c0 03 5f d6 	ret             
       1c:	40 20 40 d4 	hlt	#0x102           // halt
-      20:	00 00 40 b9 	ldr	w0, [x0]         // original load
-      24:	c0 03 5f d6 	ret
 
 
 Alternatively, memory accesses are prefixed with a function call.
@@ -77,11 +75,18 @@ This can be based on any malloc that forces all objects to be N-aligned.
 Stack
 -----
 
-Special compiler instrumentation is required to align the local variables
-by N, tag the memory and the pointers.
+Stack frames are instrumented by aligning all non-promotable allocas
+by `N` and tagging stack memory in function prologue and epilogue.
+
+Tags for different allocas in one function are **not** generated
+independently; doing that in a function with `M` allocas would require
+maintaining `M` live stack pointers, significantly increasing register
+pressure. Instead we generate a single base tag value in the prologue,
+and build the tag for alloca number `M` as `ReTag(BaseTag, M)`, where
+ReTag can be as simple as exclusive-or with constant `M`.
+
 Stack instrumentation is expected to be a major source of overhead,
 but could be optional.
-TODO: details.
 
 Globals
 -------

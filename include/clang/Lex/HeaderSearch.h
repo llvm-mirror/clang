@@ -416,7 +416,7 @@ public:
     return FrameworkMap[FWName];
   }
 
-  /// \brief Mark the specified file as a target of of a \#include,
+  /// \brief Mark the specified file as a target of a \#include,
   /// \#include_next, or \#import directive.
   ///
   /// \return false if \#including the file will have no effect or true
@@ -693,13 +693,22 @@ public:
 
   /// \brief Retrieve a uniqued framework name.
   StringRef getUniqueFrameworkName(StringRef Framework);
-  
+
   /// \brief Suggest a path by which the specified file could be found, for
   /// use in diagnostics to suggest a #include.
   ///
   /// \param IsSystem If non-null, filled in to indicate whether the suggested
   ///        path is relative to a system header directory.
   std::string suggestPathToFileForDiagnostics(const FileEntry *File,
+                                              bool *IsSystem = nullptr);
+
+  /// \brief Suggest a path by which the specified file could be found, for
+  /// use in diagnostics to suggest a #include.
+  ///
+  /// \param WorkingDir If non-empty, this will be prepended to search directory
+  /// paths that are relative.
+  std::string suggestPathToFileForDiagnostics(llvm::StringRef File,
+                                              llvm::StringRef WorkingDir,
                                               bool *IsSystem = nullptr);
 
   void PrintStats();

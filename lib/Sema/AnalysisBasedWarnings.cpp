@@ -281,114 +281,62 @@ static void checkRecursiveFunction(Sema &S, const FunctionDecl *FD,
 //===----------------------------------------------------------------------===//
 // Check for throw in a non-throwing function.
 //===----------------------------------------------------------------------===//
-enum ThrowState {
-  FoundNoPathForThrow,
-  FoundPathForThrow,
-  FoundPathWithNoThrowOutFunction,
-};
 
-static bool isThrowCaught(const CXXThrowExpr *Throw,
-                          const CXXCatchStmt *Catch) {
-  const Type *CaughtType = Catch->getCaughtType().getTypePtrOrNull();
-  if (!CaughtType)
-    return true;
-  const Type *ThrowType = nullptr;
-  if (Throw->getSubExpr())
-    ThrowType = Throw->getSubExpr()->getType().getTypePtrOrNull();
-  if (!ThrowType)
-    return false;
-  if (ThrowType->isReferenceType())
-    ThrowType = ThrowType->castAs<ReferenceType>()
-                    ->getPointeeType()
-                    ->getUnqualifiedDesugaredType();
-  if (CaughtType->isReferenceType())
-    CaughtType = CaughtType->castAs<ReferenceType>()
-                     ->getPointeeType()
-                     ->getUnqualifiedDesugaredType();
-  if (ThrowType->isPointerType() && CaughtType->isPointerType()) {
-    ThrowType = ThrowType->getPointeeType()->getUnqualifiedDesugaredType();
-    CaughtType = CaughtType->getPointeeType()->getUnqualifiedDesugaredType();
-  }
-  if (CaughtType == ThrowType)
-    return true;
-  const CXXRecordDecl *CaughtAsRecordType =
-      CaughtType->getAsCXXRecordDecl();
-  const CXXRecordDecl *ThrowTypeAsRecordType = ThrowType->getAsCXXRecordDecl();
-  if (CaughtAsRecordType && ThrowTypeAsRecordType)
-    return ThrowTypeAsRecordType->isDerivedFrom(CaughtAsRecordType);
-  return false;
-}
-
-static bool isThrowCaughtByHandlers(const CXXThrowExpr *CE,
-                                    const CXXTryStmt *TryStmt) {
-  for (unsigned H = 0, E = TryStmt->getNumHandlers(); H < E; ++H) {
-    if (isThrowCaught(CE, TryStmt->getHandler(H)))
-      return true;
-  }
-  return false;
-}
-
-static bool doesThrowEscapePath(CFGBlock Block, SourceLocation &OpLoc) {
-  for (const auto &B : Block) {
-    if (B.getKind() != CFGElement::Statement)
-      continue;
-    const auto *CE = dyn_cast<CXXThrowExpr>(B.getAs<CFGStmt>()->getStmt());
-    if (!CE)
-      continue;
-
-    OpLoc = CE->getThrowLoc();
-    for (const auto &I : Block.succs()) {
-      if (!I.isReachable())
-        continue;
-      if (const auto *Terminator =
-              dyn_cast_or_null<CXXTryStmt>(I->getTerminator()))
-        if (isThrowCaughtByHandlers(CE, Terminator))
-          return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-static bool hasThrowOutNonThrowingFunc(SourceLocation &OpLoc, CFG *BodyCFG) {
-
-  unsigned ExitID = BodyCFG->getExit().getBlockID();
-
-  SmallVector<ThrowState, 16> States(BodyCFG->getNumBlockIDs(),
-                                     FoundNoPathForThrow);
-  States[BodyCFG->getEntry().getBlockID()] = FoundPathWithNoThrowOutFunction;
-
+/// Determine whether an exception thrown by E, unwinding from ThrowBlock,
+/// can reach ExitBlock.
+static bool throwEscapes(Sema &S, const CXXThrowExpr *E, CFGBlock &ThrowBlock,
+                         CFG *Body) {
   SmallVector<CFGBlock *, 16> Stack;
-  Stack.push_back(&BodyCFG->getEntry());
-  while (!Stack.empty()) {
-    CFGBlock *CurBlock = Stack.pop_back_val();
+  llvm::BitVector Queued(Body->getNumBlockIDs());
 
-    unsigned ID = CurBlock->getBlockID();
-    ThrowState CurState = States[ID];
-    if (CurState == FoundPathWithNoThrowOutFunction) {
-      if (ExitID == ID)
+  Stack.push_back(&ThrowBlock);
+  Queued[ThrowBlock.getBlockID()] = true;
+
+  while (!Stack.empty()) {
+    CFGBlock &UnwindBlock = *Stack.back();
+    Stack.pop_back();
+
+    for (auto &Succ : UnwindBlock.succs()) {
+      if (!Succ.isReachable() || Queued[Succ->getBlockID()])
         continue;
 
-      if (doesThrowEscapePath(*CurBlock, OpLoc))
-        CurState = FoundPathForThrow;
-    }
+      if (Succ->getBlockID() == Body->getExit().getBlockID())
+        return true;
 
-    // Loop over successor blocks and add them to the Stack if their state
-    // changes.
-    for (const auto &I : CurBlock->succs())
-      if (I.isReachable()) {
-        unsigned NextID = I->getBlockID();
-        if (NextID == ExitID && CurState == FoundPathForThrow) {
-          States[NextID] = CurState;
-        } else if (States[NextID] < CurState) {
-          States[NextID] = CurState;
-          Stack.push_back(I);
-        }
+      if (auto *Catch =
+              dyn_cast_or_null<CXXCatchStmt>(Succ->getLabel())) {
+        QualType Caught = Catch->getCaughtType();
+        if (Caught.isNull() || // catch (...) catches everything
+            !E->getSubExpr() || // throw; is considered cuaght by any handler
+            S.handlerCanCatch(Caught, E->getSubExpr()->getType()))
+          // Exception doesn't escape via this path.
+          break;
+      } else {
+        Stack.push_back(Succ);
+        Queued[Succ->getBlockID()] = true;
       }
+    }
   }
-  // Return true if the exit node is reachable, and only reachable through
-  // a throw expression.
-  return States[ExitID] == FoundPathForThrow;
+
+  return false;
+}
+
+static void visitReachableThrows(
+    CFG *BodyCFG,
+    llvm::function_ref<void(const CXXThrowExpr *, CFGBlock &)> Visit) {
+  llvm::BitVector Reachable(BodyCFG->getNumBlockIDs());
+  clang::reachable_code::ScanReachableFromBlock(&BodyCFG->getEntry(), Reachable);
+  for (CFGBlock *B : *BodyCFG) {
+    if (!Reachable[B->getBlockID()])
+      continue;
+    for (CFGElement &E : *B) {
+      Optional<CFGStmt> S = E.getAs<CFGStmt>();
+      if (!S)
+        continue;
+      if (auto *Throw = dyn_cast<CXXThrowExpr>(S->getStmt()))
+        Visit(Throw, *B);
+    }
+  }
 }
 
 static void EmitDiagForCXXThrowInNonThrowingFunc(Sema &S, SourceLocation OpLoc,
@@ -418,9 +366,10 @@ static void checkThrowInNonThrowingFunc(Sema &S, const FunctionDecl *FD,
     return;
   if (BodyCFG->getExit().pred_empty())
     return;
-  SourceLocation OpLoc;
-  if (hasThrowOutNonThrowingFunc(OpLoc, BodyCFG))
-    EmitDiagForCXXThrowInNonThrowingFunc(S, OpLoc, FD);
+  visitReachableThrows(BodyCFG, [&](const CXXThrowExpr *Throw, CFGBlock &Block) {
+    if (throwEscapes(S, Throw, Block, BodyCFG))
+      EmitDiagForCXXThrowInNonThrowingFunc(S, Throw->getThrowLoc(), FD);
+  });
 }
 
 static bool isNoexcept(const FunctionDecl *FD) {

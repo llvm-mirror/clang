@@ -226,8 +226,7 @@ RawComment *ASTContext::getRawCommentForDeclNoCache(const Decl *D) const {
     // for is usually among the last two comments we parsed -- check them
     // first.
     RawComment CommentAtDeclLoc(
-        SourceMgr, SourceRange(DeclLoc), false,
-        LangOpts.CommentOpts.ParseAllComments);
+        SourceMgr, SourceRange(DeclLoc), LangOpts.CommentOpts, false);
     BeforeThanCompare<RawComment> Compare(SourceMgr);
     ArrayRef<RawComment *>::iterator MaybeBeforeDecl = RawComments.end() - 1;
     bool Found = Compare(*MaybeBeforeDecl, &CommentAtDeclLoc);
@@ -253,7 +252,8 @@ RawComment *ASTContext::getRawCommentForDeclNoCache(const Decl *D) const {
 
   // First check whether we have a trailing comment.
   if (Comment != RawComments.end() &&
-      (*Comment)->isDocumentation() && (*Comment)->isTrailingComment() &&
+      ((*Comment)->isDocumentation() || LangOpts.CommentOpts.ParseAllComments)
+      && (*Comment)->isTrailingComment() &&
       (isa<FieldDecl>(D) || isa<EnumConstantDecl>(D) || isa<VarDecl>(D) ||
        isa<ObjCMethodDecl>(D) || isa<ObjCPropertyDecl>(D))) {
     std::pair<FileID, unsigned> CommentBeginDecomp
@@ -275,7 +275,9 @@ RawComment *ASTContext::getRawCommentForDeclNoCache(const Decl *D) const {
   --Comment;
 
   // Check that we actually have a non-member Doxygen comment.
-  if (!(*Comment)->isDocumentation() || (*Comment)->isTrailingComment())
+  if (!((*Comment)->isDocumentation() ||
+        LangOpts.CommentOpts.ParseAllComments) ||
+      (*Comment)->isTrailingComment())
     return nullptr;
 
   // Decompose the end of the comment.
@@ -428,7 +430,7 @@ const RawComment *ASTContext::getRawCommentForAnyRedecl(
   }
 
   // If we found a comment, it should be a documentation comment.
-  assert(!RC || RC->isDocumentation());
+  assert(!RC || RC->isDocumentation() || LangOpts.CommentOpts.ParseAllComments);
 
   if (OriginalDecl)
     *OriginalDecl = OriginalDeclForRC;
@@ -2145,7 +2147,7 @@ static bool unionHasUniqueObjectRepresentations(const ASTContext &Context,
     if (FieldSize != UnionSize)
       return false;
   }
-  return true;
+  return !RD->field_empty();
 }
 
 static bool isStructEmpty(QualType Ty) {
@@ -2398,7 +2400,7 @@ Expr *ASTContext::getBlockVarCopyInits(const VarDecl*VD) {
          "getBlockVarCopyInits - not __block var");
   llvm::DenseMap<const VarDecl*, Expr*>::iterator
     I = BlockVarCopyInits.find(VD);
-  return (I != BlockVarCopyInits.end()) ? cast<Expr>(I->second) : nullptr;
+  return (I != BlockVarCopyInits.end()) ? I->second : nullptr;
 }
 
 /// \brief Set the copy inialization expression of a block var decl.
@@ -2638,6 +2640,12 @@ void ASTContext::adjustExceptionSpec(
            "TypeLoc size mismatch from updating exception specification");
     TSInfo->overrideType(Updated);
   }
+}
+
+bool ASTContext::isParamDestroyedInCallee(QualType T) const {
+  return getTargetInfo().getCXXABI().areArgsDestroyedLeftToRightInCallee() ||
+         T.hasTrivialABIOverride() ||
+         T.isDestructedType() == QualType::DK_nontrivial_c_struct;
 }
 
 /// getComplexType - Return the uniqued reference to the type for a complex
@@ -5766,6 +5774,11 @@ bool ASTContext::BlockRequiresCopying(QualType Ty,
     return true;
   }
   
+  // The block needs copy/destroy helpers if Ty is non-trivial to destructively
+  // move or destroy.
+  if (Ty.isNonTrivialToPrimitiveDestructiveMove() || Ty.isDestructedType())
+    return true;
+
   if (!Ty->isObjCRetainableType()) return false;
   
   Qualifiers qs = Ty.getQualifiers();
@@ -5779,13 +5792,12 @@ bool ASTContext::BlockRequiresCopying(QualType Ty,
       case Qualifiers::OCL_ExplicitNone:
       case Qualifiers::OCL_Autoreleasing:
         return false;
-        
-      // Tell the runtime that this is ARC __weak, called by the
-      // byref routines.
+
+      // These cases should have been taken care of when checking the type's
+      // non-triviality.
       case Qualifiers::OCL_Weak:
-      // ARC __strong __block variables need to be retained.
       case Qualifiers::OCL_Strong:
-        return true;
+        llvm_unreachable("impossible");
     }
     llvm_unreachable("fell out of lifetime switch!");
   }
@@ -6565,7 +6577,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       SmallVector<const ObjCIvarDecl*, 32> Ivars;
       DeepCollectObjCIvars(OI, true, Ivars);
       for (unsigned i = 0, e = Ivars.size(); i != e; ++i) {
-        const FieldDecl *Field = cast<FieldDecl>(Ivars[i]);
+        const FieldDecl *Field = Ivars[i];
         if (Field->isBitField())
           getObjCEncodingForTypeImpl(Field->getType(), S, false, true, Field);
         else
@@ -6626,7 +6638,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
         SmallVector<const ObjCIvarDecl*, 32> Ivars;
         DeepCollectObjCIvars(OI, true, Ivars);
         for (unsigned i = 0, e = Ivars.size(); i != e; ++i) {
-          if (cast<FieldDecl>(Ivars[i]) == FD) {
+          if (Ivars[i] == FD) {
             S += '{';
             S += OI->getObjCRuntimeNameAsString();
             S += '}';
@@ -9481,6 +9493,23 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
           return true;
 
   return false;
+}
+
+void ASTContext::forEachMultiversionedFunctionVersion(
+    const FunctionDecl *FD,
+    llvm::function_ref<void(const FunctionDecl *)> Pred) const {
+  assert(FD->isMultiVersion() && "Only valid for multiversioned functions");
+  llvm::SmallDenseSet<const FunctionDecl*, 4> SeenDecls;
+  FD = FD->getCanonicalDecl();
+  for (auto *CurDecl :
+       FD->getDeclContext()->getRedeclContext()->lookup(FD->getDeclName())) {
+    FunctionDecl *CurFD = CurDecl->getAsFunction()->getCanonicalDecl();
+    if (CurFD && hasSameType(CurFD->getType(), FD->getType()) &&
+        std::end(SeenDecls) == llvm::find(SeenDecls, CurFD)) {
+      SeenDecls.insert(CurFD);
+      Pred(CurFD);
+    }
+  }
 }
 
 CallingConv ASTContext::getDefaultCallingConvention(bool IsVariadic,

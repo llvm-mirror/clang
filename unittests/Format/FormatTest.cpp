@@ -588,6 +588,23 @@ TEST_F(FormatTest, FormatShortBracedStatements) {
                AllowSimpleBracedStatements);
 }
 
+TEST_F(FormatTest, ShortBlocksInMacrosDontMergeWithCodeAfterMacro) {
+  FormatStyle Style = getLLVMStyleWithColumns(60);
+  Style.AllowShortBlocksOnASingleLine = true;
+  Style.AllowShortIfStatementsOnASingleLine = true;
+  Style.BreakBeforeBraces = FormatStyle::BS_Allman;
+  EXPECT_EQ("#define A                                                  \\\n"
+            "  if (HANDLEwernufrnuLwrmviferuvnierv)                     \\\n"
+            "  { RET_ERR1_ANUIREUINERUIFNIOAerwfwrvnuier; }\n"
+            "X;",
+            format("#define A \\\n"
+                   "   if (HANDLEwernufrnuLwrmviferuvnierv) { \\\n"
+                   "      RET_ERR1_ANUIREUINERUIFNIOAerwfwrvnuier; \\\n"
+                   "   }\n"
+                   "X;",
+                   Style));
+}
+
 TEST_F(FormatTest, ParseIfElse) {
   verifyFormat("if (true)\n"
                "  if (true)\n"
@@ -724,6 +741,12 @@ TEST_F(FormatTest, FormatsForLoop) {
                "         aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);\n"
                "     aaaaaaaaaaaaaaaaaaaaaaaaaaa != bbbbbbbbbbbbbbbbbbbbbbb;\n"
                "     ++aaaaaaaaaaaaaaaaaaaaaaaaaaa) {");
+
+  // These should not be formatted as Objective-C for-in loops.
+  verifyFormat("for (Foo *x = 0; x != in; x++) {\n}");
+  verifyFormat("Foo *x;\nfor (x = 0; x != in; x++) {\n}");
+  verifyFormat("Foo *x;\nfor (x in y) {\n}");
+  verifyFormat("for (const Foo<Bar> &baz = in.value(); !baz.at_end(); ++baz) {\n}");
 
   FormatStyle NoBinPacking = getLLVMStyle();
   NoBinPacking.BinPackParameters = false;
@@ -2484,8 +2507,6 @@ TEST_F(FormatTest, IndentPreprocessorDirectives) {
                "#endif",
                Style);
   // Test with include guards.
-  // EXPECT_EQ is used because verifyFormat() calls messUp() which incorrectly
-  // merges lines.
   verifyFormat("#ifndef HEADER_H\n"
                "#define HEADER_H\n"
                "code();\n"
@@ -2531,6 +2552,20 @@ TEST_F(FormatTest, IndentPreprocessorDirectives) {
                "code();\n"
                "#elif FOO\n"
                "#endif",
+               Style);
+  // Non-identifier #define after potential include guard.
+  verifyFormat("#ifndef FOO\n"
+               "#  define 1\n"
+               "#endif\n",
+               Style);
+  // #if closes past last non-preprocessor line.
+  verifyFormat("#ifndef FOO\n"
+               "#define FOO\n"
+               "#if 1\n"
+               "int i;\n"
+               "#  define A 0\n"
+               "#endif\n"
+               "#endif\n",
                Style);
   // FIXME: This doesn't handle the case where there's code between the
   // #ifndef and #define but all other conditions hold. This is because when
@@ -2580,21 +2615,85 @@ TEST_F(FormatTest, IndentPreprocessorDirectives) {
                    "code();\n"
                    "#endif",
                    Style));
-  // FIXME: The comment indent corrector in TokenAnnotator gets thrown off by
-  // preprocessor indentation.
-  EXPECT_EQ("#if 1\n"
-            "  // comment\n"
-            "#  define A 0\n"
-            "// comment\n"
-            "#  define B 0\n"
-            "#endif",
-            format("#if 1\n"
-                   "// comment\n"
-                   "#  define A 0\n"
-                   "   // comment\n"
-                   "#  define B 0\n"
-                   "#endif",
-                   Style));
+  // Keep comments aligned with #, otherwise indent comments normally. These
+  // tests cannot use verifyFormat because messUp manipulates leading
+  // whitespace.
+  {
+    const char *Expected = ""
+                           "void f() {\n"
+                           "#if 1\n"
+                           "// Preprocessor aligned.\n"
+                           "#  define A 0\n"
+                           "  // Code. Separated by blank line.\n"
+                           "\n"
+                           "#  define B 0\n"
+                           "  // Code. Not aligned with #\n"
+                           "#  define C 0\n"
+                           "#endif";
+    const char *ToFormat = ""
+                           "void f() {\n"
+                           "#if 1\n"
+                           "// Preprocessor aligned.\n"
+                           "#  define A 0\n"
+                           "// Code. Separated by blank line.\n"
+                           "\n"
+                           "#  define B 0\n"
+                           "   // Code. Not aligned with #\n"
+                           "#  define C 0\n"
+                           "#endif";
+    EXPECT_EQ(Expected, format(ToFormat, Style));
+    EXPECT_EQ(Expected, format(Expected, Style));
+  }
+  // Keep block quotes aligned.
+  {
+    const char *Expected = ""
+                           "void f() {\n"
+                           "#if 1\n"
+                           "/* Preprocessor aligned. */\n"
+                           "#  define A 0\n"
+                           "  /* Code. Separated by blank line. */\n"
+                           "\n"
+                           "#  define B 0\n"
+                           "  /* Code. Not aligned with # */\n"
+                           "#  define C 0\n"
+                           "#endif";
+    const char *ToFormat = ""
+                           "void f() {\n"
+                           "#if 1\n"
+                           "/* Preprocessor aligned. */\n"
+                           "#  define A 0\n"
+                           "/* Code. Separated by blank line. */\n"
+                           "\n"
+                           "#  define B 0\n"
+                           "   /* Code. Not aligned with # */\n"
+                           "#  define C 0\n"
+                           "#endif";
+    EXPECT_EQ(Expected, format(ToFormat, Style));
+    EXPECT_EQ(Expected, format(Expected, Style));
+  }
+  // Keep comments aligned with un-indented directives.
+  {
+    const char *Expected = ""
+                           "void f() {\n"
+                           "// Preprocessor aligned.\n"
+                           "#define A 0\n"
+                           "  // Code. Separated by blank line.\n"
+                           "\n"
+                           "#define B 0\n"
+                           "  // Code. Not aligned with #\n"
+                           "#define C 0\n";
+    const char *ToFormat = ""
+                           "void f() {\n"
+                           "// Preprocessor aligned.\n"
+                           "#define A 0\n"
+                           "// Code. Separated by blank line.\n"
+                           "\n"
+                           "#define B 0\n"
+                           "   // Code. Not aligned with #\n"
+                           "#define C 0\n";
+    EXPECT_EQ(Expected, format(ToFormat, Style));
+    EXPECT_EQ(Expected, format(Expected, Style));
+  }
   // Test with tabs.
   Style.UseTab = FormatStyle::UT_Always;
   Style.IndentWidth = 8;
@@ -5562,6 +5661,8 @@ TEST_F(FormatTest, UnderstandsUnaryOperators) {
   verifyFormat("(a->f())++;");
   verifyFormat("a[42]++;");
   verifyFormat("if (!(a->f())) {\n}");
+  verifyFormat("if (!+i) {\n}");
+  verifyFormat("~&a;");
 
   verifyFormat("a-- > b;");
   verifyFormat("b ? -a : c;");
@@ -8840,6 +8941,114 @@ TEST_F(FormatTest, ConfigurableSpaceBeforeAssignmentOperators) {
   verifyFormat("a or_eq 8;", Spaces);
 }
 
+TEST_F(FormatTest, ConfigurableSpaceBeforeColon) {
+  verifyFormat("class Foo : public Bar {};");
+  verifyFormat("Foo::Foo() : foo(1) {}");
+  verifyFormat("for (auto a : b) {\n}");
+  verifyFormat("int x = a ? b : c;");
+  verifyFormat("{\n"
+               "label0:\n"
+               "  int x = 0;\n"
+               "}");
+  verifyFormat("switch (x) {\n"
+               "case 1:\n"
+               "default:\n"
+               "}");
+
+  FormatStyle CtorInitializerStyle = getLLVMStyleWithColumns(30);
+  CtorInitializerStyle.SpaceBeforeCtorInitializerColon = false;
+  verifyFormat("class Foo : public Bar {};", CtorInitializerStyle);
+  verifyFormat("Foo::Foo(): foo(1) {}", CtorInitializerStyle);
+  verifyFormat("for (auto a : b) {\n}", CtorInitializerStyle);
+  verifyFormat("int x = a ? b : c;", CtorInitializerStyle);
+  verifyFormat("{\n"
+               "label1:\n"
+               "  int x = 0;\n"
+               "}",
+               CtorInitializerStyle);
+  verifyFormat("switch (x) {\n"
+               "case 1:\n"
+               "default:\n"
+               "}",
+               CtorInitializerStyle);
+  CtorInitializerStyle.BreakConstructorInitializers =
+      FormatStyle::BCIS_AfterColon;
+  verifyFormat("Fooooooooooo::Fooooooooooo():\n"
+               "    aaaaaaaaaaaaaaaa(1),\n"
+               "    bbbbbbbbbbbbbbbb(2) {}",
+               CtorInitializerStyle);
+  CtorInitializerStyle.BreakConstructorInitializers =
+      FormatStyle::BCIS_BeforeComma;
+  verifyFormat("Fooooooooooo::Fooooooooooo()\n"
+               "    : aaaaaaaaaaaaaaaa(1)\n"
+               "    , bbbbbbbbbbbbbbbb(2) {}",
+               CtorInitializerStyle);
+  CtorInitializerStyle.BreakConstructorInitializers =
+      FormatStyle::BCIS_BeforeColon;
+  verifyFormat("Fooooooooooo::Fooooooooooo()\n"
+               "    : aaaaaaaaaaaaaaaa(1),\n"
+               "      bbbbbbbbbbbbbbbb(2) {}",
+               CtorInitializerStyle);
+  CtorInitializerStyle.ConstructorInitializerIndentWidth = 0;
+  verifyFormat("Fooooooooooo::Fooooooooooo()\n"
+               ": aaaaaaaaaaaaaaaa(1),\n"
+               "  bbbbbbbbbbbbbbbb(2) {}",
+               CtorInitializerStyle);
+
+  FormatStyle InheritanceStyle = getLLVMStyle();
+  InheritanceStyle.SpaceBeforeInheritanceColon = false;
+  verifyFormat("class Foo: public Bar {};", InheritanceStyle);
+  verifyFormat("Foo::Foo() : foo(1) {}", InheritanceStyle);
+  verifyFormat("for (auto a : b) {\n}", InheritanceStyle);
+  verifyFormat("int x = a ? b : c;", InheritanceStyle);
+  verifyFormat("{\n"
+               "label2:\n"
+               "  int x = 0;\n"
+               "}",
+               InheritanceStyle);
+  verifyFormat("switch (x) {\n"
+               "case 1:\n"
+               "default:\n"
+               "}",
+               InheritanceStyle);
+
+  FormatStyle ForLoopStyle = getLLVMStyle();
+  ForLoopStyle.SpaceBeforeRangeBasedForLoopColon = false;
+  verifyFormat("class Foo : public Bar {};", ForLoopStyle);
+  verifyFormat("Foo::Foo() : foo(1) {}", ForLoopStyle);
+  verifyFormat("for (auto a: b) {\n}", ForLoopStyle);
+  verifyFormat("int x = a ? b : c;", ForLoopStyle);
+  verifyFormat("{\n"
+               "label2:\n"
+               "  int x = 0;\n"
+               "}",
+               ForLoopStyle);
+  verifyFormat("switch (x) {\n"
+               "case 1:\n"
+               "default:\n"
+               "}",
+               ForLoopStyle);
+
+  FormatStyle NoSpaceStyle = getLLVMStyle();
+  NoSpaceStyle.SpaceBeforeCtorInitializerColon = false;
+  NoSpaceStyle.SpaceBeforeInheritanceColon = false;
+  NoSpaceStyle.SpaceBeforeRangeBasedForLoopColon = false;
+  verifyFormat("class Foo: public Bar {};", NoSpaceStyle);
+  verifyFormat("Foo::Foo(): foo(1) {}", NoSpaceStyle);
+  verifyFormat("for (auto a: b) {\n}", NoSpaceStyle);
+  verifyFormat("int x = a ? b : c;", NoSpaceStyle);
+  verifyFormat("{\n"
+               "label3:\n"
+               "  int x = 0;\n"
+               "}",
+               NoSpaceStyle);
+  verifyFormat("switch (x) {\n"
+               "case 1:\n"
+               "default:\n"
+               "}",
+               NoSpaceStyle);
+}
+
 TEST_F(FormatTest, AlignConsecutiveAssignments) {
   FormatStyle Alignment = getLLVMStyle();
   Alignment.AlignConsecutiveAssignments = false;
@@ -10181,6 +10390,9 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   CHECK_PARSE_BOOL(SpaceAfterCStyleCast);
   CHECK_PARSE_BOOL(SpaceAfterTemplateKeyword);
   CHECK_PARSE_BOOL(SpaceBeforeAssignmentOperators);
+  CHECK_PARSE_BOOL(SpaceBeforeCtorInitializerColon);
+  CHECK_PARSE_BOOL(SpaceBeforeInheritanceColon);
+  CHECK_PARSE_BOOL(SpaceBeforeRangeBasedForLoopColon);
 
   CHECK_PARSE_NESTED_BOOL(BraceWrapping, AfterClass);
   CHECK_PARSE_NESTED_BOOL(BraceWrapping, AfterControlStatement);
@@ -10410,16 +10622,38 @@ TEST_F(FormatTest, ParsesConfiguration) {
 
   Style.RawStringFormats.clear();
   std::vector<FormatStyle::RawStringFormat> ExpectedRawStringFormats = {
-      {"pb", FormatStyle::LK_TextProto, "llvm"},
-      {"cpp", FormatStyle::LK_Cpp, "google"}};
+      {
+          FormatStyle::LK_TextProto,
+          {"pb", "proto"},
+          {"PARSE_TEXT_PROTO"},
+          /*CanonicalDelimiter=*/"",
+          "llvm",
+      },
+      {
+          FormatStyle::LK_Cpp,
+          {"cc", "cpp"},
+          {"C_CODEBLOCK", "CPPEVAL"},
+          /*CanonicalDelimiter=*/"cc",
+          /*BasedOnStyle=*/"",
+      },
+  };
 
   CHECK_PARSE("RawStringFormats:\n"
-              "  - Delimiter: 'pb'\n"
-              "    Language: TextProto\n"
+              "  - Language: TextProto\n"
+              "    Delimiters:\n"
+              "      - 'pb'\n"
+              "      - 'proto'\n"
+              "    EnclosingFunctions:\n"
+              "      - 'PARSE_TEXT_PROTO'\n"
               "    BasedOnStyle: llvm\n"
-              "  - Delimiter: 'cpp'\n"
-              "    Language: Cpp\n"
-              "    BasedOnStyle: google",
+              "  - Language: Cpp\n"
+              "    Delimiters:\n"
+              "      - 'cc'\n"
+              "      - 'cpp'\n"
+              "    EnclosingFunctions:\n"
+              "      - 'C_CODEBLOCK'\n"
+              "      - 'CPPEVAL'\n"
+              "    CanonicalDelimiter: 'cc'",
               RawStringFormats, ExpectedRawStringFormats);
 }
 
@@ -11608,6 +11842,13 @@ TEST_F(FormatTest, NoSpaceAfterSuper) {
     verifyFormat("__super::FooBar();");
 }
 
+TEST(FormatStyle, GetStyleWithEmptyFileName) {
+  vfs::InMemoryFileSystem FS;
+  auto Style1 = getStyle("file", "", "Google", "", &FS);
+  ASSERT_TRUE((bool)Style1);
+  ASSERT_EQ(*Style1, getGoogleStyle());
+}
+
 TEST(FormatStyle, GetStyleOfFile) {
   vfs::InMemoryFileSystem FS;
   // Test 1: format file in the same directory.
@@ -11835,6 +12076,41 @@ TEST_F(FormatTest, StructuredBindings) {
   verifyFormat("auto &[ a, b ] = f();", Spaces);
   verifyFormat("auto const &&[ a, b ] = f();", Spaces);
   verifyFormat("auto const &[ a, b ] = f();", Spaces);
+}
+
+TEST_F(FormatTest, FileAndCode) {
+  EXPECT_EQ(FormatStyle::LK_Cpp, guessLanguage("foo.cc", ""));
+  EXPECT_EQ(FormatStyle::LK_ObjC, guessLanguage("foo.m", ""));
+  EXPECT_EQ(FormatStyle::LK_ObjC, guessLanguage("foo.mm", ""));
+  EXPECT_EQ(FormatStyle::LK_Cpp, guessLanguage("foo.h", ""));
+  EXPECT_EQ(FormatStyle::LK_ObjC, guessLanguage("foo.h", "@interface Foo\n@end\n"));
+  EXPECT_EQ(FormatStyle::LK_Cpp, guessLanguage("foo", ""));
+  EXPECT_EQ(FormatStyle::LK_ObjC, guessLanguage("foo", "@interface Foo\n@end\n"));
+}
+
+TEST_F(FormatTest, GuessLanguageWithForIn) {
+  EXPECT_EQ(FormatStyle::LK_Cpp,
+            guessLanguage("foo.h", "for (Foo *x = 0; x != in; x++) {}"));
+  EXPECT_EQ(FormatStyle::LK_ObjC,
+            guessLanguage("foo.h", "for (Foo *x in bar) {}"));
+  EXPECT_EQ(FormatStyle::LK_ObjC,
+            guessLanguage("foo.h", "for (Foo *x in [bar baz]) {}"));
+  EXPECT_EQ(FormatStyle::LK_ObjC,
+            guessLanguage("foo.h", "for (Foo *x in [bar baz:blech]) {}"));
+  EXPECT_EQ(
+      FormatStyle::LK_ObjC,
+      guessLanguage("foo.h", "for (Foo *x in [bar baz:blech, 1, 2, 3, 0]) {}"));
+  EXPECT_EQ(FormatStyle::LK_ObjC,
+            guessLanguage("foo.h", "for (Foo *x in [bar baz:^{[uh oh];}]) {}"));
+  EXPECT_EQ(FormatStyle::LK_Cpp,
+            guessLanguage("foo.h", "Foo *x; for (x = 0; x != in; x++) {}"));
+  EXPECT_EQ(FormatStyle::LK_ObjC,
+            guessLanguage("foo.h", "Foo *x; for (x in y) {}"));
+  EXPECT_EQ(
+      FormatStyle::LK_Cpp,
+      guessLanguage(
+          "foo.h",
+          "for (const Foo<Bar>& baz = in.value(); !baz.at_end(); ++baz) {}"));
 }
 
 } // end namespace

@@ -1096,6 +1096,11 @@ The following type trait primitives are supported by Clang:
 * ``__is_constructible`` (MSVC 2013, clang)
 * ``__is_nothrow_constructible`` (MSVC 2013, clang)
 * ``__is_assignable`` (MSVC 2015, clang)
+* ``__reference_binds_to_temporary(T, U)`` (Clang):  Determines whether a
+  reference of type ``T`` bound to an expression of type ``U`` would bind to a
+  materialized temporary object. If ``T`` is not a reference type the result
+  is false. Note this trait will also return false when the initialization of
+  ``T`` from ``U`` is ill-formed.
 
 Blocks
 ======
@@ -1186,12 +1191,14 @@ Automatic reference counting
 
 Clang provides support for :doc:`automated reference counting
 <AutomaticReferenceCounting>` in Objective-C, which eliminates the need
-for manual ``retain``/``release``/``autorelease`` message sends.  There are two
+for manual ``retain``/``release``/``autorelease`` message sends.  There are three
 feature macros associated with automatic reference counting:
 ``__has_feature(objc_arc)`` indicates the availability of automated reference
 counting in general, while ``__has_feature(objc_arc_weak)`` indicates that
 automated reference counting also includes support for ``__weak`` pointers to
-Objective-C objects.
+Objective-C objects. ``__has_feature(objc_arc_fields)`` indicates that C structs
+are allowed to have fields that are pointers to Objective-C objects managed by
+automatic reference counting.
 
 .. _objc-fixed-enum:
 
@@ -2720,3 +2727,11 @@ The ``#pragma clang section`` directive obeys the following rules:
 * The decision about which section-kind applies to each global is taken in the back-end.
   Once the section-kind is known, appropriate section name, as specified by the user using
   ``#pragma clang section`` directive, is applied to that global.
+
+Specifying Linker Options on ELF Targets
+========================================
+
+The ``#pragma comment(lib, ...)`` directive is supported on all ELF targets.
+The second parameter is the library name (without the traditional Unix prefix of
+``lib``).  This allows you to provide an implicit link of dependent libraries.
+

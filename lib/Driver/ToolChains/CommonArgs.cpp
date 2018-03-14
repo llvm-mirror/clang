@@ -363,12 +363,9 @@ unsigned tools::getLTOParallelism(const ArgList &Args, const Driver &D) {
   return Parallelism;
 }
 
-// CloudABI and WebAssembly use -ffunction-sections and -fdata-sections by
-// default.
+// CloudABI uses -ffunction-sections and -fdata-sections by default.
 bool tools::isUseSeparateSections(const llvm::Triple &Triple) {
-  return Triple.getOS() == llvm::Triple::CloudABI ||
-         Triple.getArch() == llvm::Triple::wasm32 ||
-         Triple.getArch() == llvm::Triple::wasm64;
+  return Triple.getOS() == llvm::Triple::CloudABI;
 }
 
 void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
@@ -511,9 +508,9 @@ static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
                                 bool IsShared, bool IsWhole) {
   // Wrap any static runtimes that must be forced into executable in
   // whole-archive.
-  if (IsWhole) CmdArgs.push_back("-whole-archive");
+  if (IsWhole) CmdArgs.push_back("--whole-archive");
   CmdArgs.push_back(TC.getCompilerRTArgString(Args, Sanitizer, IsShared));
-  if (IsWhole) CmdArgs.push_back("-no-whole-archive");
+  if (IsWhole) CmdArgs.push_back("--no-whole-archive");
 
   if (IsShared) {
     addArchSpecificRPath(TC, Args, CmdArgs);
@@ -525,6 +522,10 @@ static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
 static bool addSanitizerDynamicList(const ToolChain &TC, const ArgList &Args,
                                     ArgStringList &CmdArgs,
                                     StringRef Sanitizer) {
+  // Solaris ld defaults to --export-dynamic behaviour but doesn't support
+  // the option, so don't try to pass it.
+  if (TC.getTriple().getOS() == llvm::Triple::Solaris)
+    return true;
   SmallString<128> SanRT(TC.getCompilerRT(Args, Sanitizer));
   if (llvm::sys::fs::exists(SanRT + ".syms")) {
     CmdArgs.push_back(Args.MakeArgString("--dynamic-list=" + SanRT + ".syms"));
@@ -541,19 +542,19 @@ void tools::linkSanitizerRuntimeDeps(const ToolChain &TC,
   // There's no libpthread or librt on RTEMS.
   if (TC.getTriple().getOS() != llvm::Triple::RTEMS) {
     CmdArgs.push_back("-lpthread");
-    CmdArgs.push_back("-lrt");
+    if (TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+      CmdArgs.push_back("-lrt");
   }
   CmdArgs.push_back("-lm");
   // There's no libdl on all OSes.
   if (TC.getTriple().getOS() != llvm::Triple::FreeBSD &&
       TC.getTriple().getOS() != llvm::Triple::NetBSD &&
+      TC.getTriple().getOS() != llvm::Triple::OpenBSD &&
       TC.getTriple().getOS() != llvm::Triple::RTEMS)
     CmdArgs.push_back("-ldl");
-  // Required for forkpty on some OSes
-  if (TC.getTriple().getOS() == llvm::Triple::NetBSD)
-    CmdArgs.push_back("-lutil");
   // Required for backtrace on some OSes
-  if (TC.getTriple().getOS() == llvm::Triple::NetBSD)
+  if (TC.getTriple().getOS() == llvm::Triple::NetBSD ||
+      TC.getTriple().getOS() == llvm::Triple::FreeBSD)
     CmdArgs.push_back("-lexecinfo");
 }
 
@@ -691,7 +692,7 @@ bool tools::addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   // If there is a static runtime with no dynamic list, force all the symbols
   // to be dynamic to be sure we export sanitizer interface functions.
   if (AddExportDynamic)
-    CmdArgs.push_back("-export-dynamic");
+    CmdArgs.push_back("--export-dynamic");
 
   const SanitizerArgs &SanArgs = TC.getSanitizerArgs();
   if (SanArgs.hasCrossDsoCfi() && !AddExportDynamic)
@@ -858,6 +859,10 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
       break;
     }
   }
+
+  // AMDGPU-specific defaults for PIC.
+  if (Triple.getArch() == llvm::Triple::amdgcn)
+    PIC = true;
 
   // The last argument relating to either PIC or PIE wins, and no
   // other argument is used. If the last argument is any flavor of the

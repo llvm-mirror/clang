@@ -323,13 +323,27 @@ static StringRef getArchNameForCompilerRTLib(const ToolChain &TC,
   return llvm::Triple::getArchTypeName(TC.getArch());
 }
 
+StringRef ToolChain::getOSLibName() const {
+  switch (Triple.getOS()) {
+  case llvm::Triple::FreeBSD:
+    return "freebsd";
+  case llvm::Triple::NetBSD:
+    return "netbsd";
+  case llvm::Triple::OpenBSD:
+    return "openbsd";
+  case llvm::Triple::Solaris:
+    return "sunos";
+  default:
+    return getOS();
+  }
+}
+
 std::string ToolChain::getCompilerRTPath() const {
   SmallString<128> Path(getDriver().ResourceDir);
   if (Triple.isOSUnknown()) {
     llvm::sys::path::append(Path, "lib");
   } else {
-    StringRef OSLibName = Triple.isOSFreeBSD() ? "freebsd" : getOS();
-    llvm::sys::path::append(Path, "lib", OSLibName);
+    llvm::sys::path::append(Path, "lib", getOSLibName());
   }
   return Path.str();
 }
@@ -360,8 +374,7 @@ const char *ToolChain::getCompilerRTArgString(const llvm::opt::ArgList &Args,
 
 std::string ToolChain::getArchSpecificLibPath() const {
   SmallString<128> Path(getDriver().ResourceDir);
-  StringRef OSLibName = getTriple().isOSFreeBSD() ? "freebsd" : getOS();
-  llvm::sys::path::append(Path, "lib", OSLibName,
+  llvm::sys::path::append(Path, "lib", getOSLibName(),
                           llvm::Triple::getArchTypeName(getArch()));
   return Path.str();
 }
@@ -403,7 +416,7 @@ std::string ToolChain::GetLinkerPath() const {
   if (llvm::sys::path::is_absolute(UseLinker)) {
     // If we're passed what looks like an absolute path, don't attempt to
     // second-guess that.
-    if (llvm::sys::fs::exists(UseLinker))
+    if (llvm::sys::fs::can_execute(UseLinker))
       return UseLinker;
   } else if (UseLinker.empty() || UseLinker == "ld") {
     // If we're passed -fuse-ld= with no argument, or with the argument ld,
@@ -418,7 +431,7 @@ std::string ToolChain::GetLinkerPath() const {
     LinkerName.append(UseLinker);
 
     std::string LinkerPath(GetProgramPath(LinkerName.c_str()));
-    if (llvm::sys::fs::exists(LinkerPath))
+    if (llvm::sys::fs::can_execute(LinkerPath))
       return LinkerPath;
   }
 

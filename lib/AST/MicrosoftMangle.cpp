@@ -362,6 +362,10 @@ private:
                           const TemplateArgumentList &TemplateArgs);
   void mangleTemplateArg(const TemplateDecl *TD, const TemplateArgument &TA,
                          const NamedDecl *Parm);
+
+  void mangleObjCProtocol(const ObjCProtocolDecl *PD);
+  void mangleObjCLifetime(const QualType T, Qualifiers Quals,
+                          SourceRange Range);
 };
 }
 
@@ -950,11 +954,10 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
   }
 }
 
+// <postfix> ::= <unqualified-name> [<postfix>]
+//           ::= <substitution> [<postfix>]
 void MicrosoftCXXNameMangler::mangleNestedName(const NamedDecl *ND) {
-  // <postfix> ::= <unqualified-name> [<postfix>]
-  //           ::= <substitution> [<postfix>]
   const DeclContext *DC = getEffectiveDeclContext(ND);
-
   while (!DC->isTranslationUnit()) {
     if (isa<TagDecl>(ND) || isa<VarDecl>(ND)) {
       unsigned Disc;
@@ -1365,7 +1368,7 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
     break;
   }
   case TemplateArgument::Declaration: {
-    const NamedDecl *ND = cast<NamedDecl>(TA.getAsDecl());
+    const NamedDecl *ND = TA.getAsDecl();
     if (isa<FieldDecl>(ND) || isa<IndirectFieldDecl>(ND)) {
       mangleMemberDataPointer(
           cast<CXXRecordDecl>(ND->getDeclContext())->getMostRecentDecl(),
@@ -1455,6 +1458,47 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
     break;
   }
   }
+}
+
+void MicrosoftCXXNameMangler::mangleObjCProtocol(const ObjCProtocolDecl *PD) {
+  llvm::SmallString<64> TemplateMangling;
+  llvm::raw_svector_ostream Stream(TemplateMangling);
+  MicrosoftCXXNameMangler Extra(Context, Stream);
+
+  Stream << "?$";
+  Extra.mangleSourceName("Protocol");
+  Extra.mangleArtificalTagType(TTK_Struct, PD->getName());
+
+  mangleArtificalTagType(TTK_Struct, TemplateMangling, {"__ObjC"});
+}
+
+void MicrosoftCXXNameMangler::mangleObjCLifetime(const QualType Type,
+                                                 Qualifiers Quals,
+                                                 SourceRange Range) {
+  llvm::SmallString<64> TemplateMangling;
+  llvm::raw_svector_ostream Stream(TemplateMangling);
+  MicrosoftCXXNameMangler Extra(Context, Stream);
+
+  Stream << "?$";
+  switch (Quals.getObjCLifetime()) {
+  case Qualifiers::OCL_None:
+  case Qualifiers::OCL_ExplicitNone:
+    break;
+  case Qualifiers::OCL_Autoreleasing:
+    Extra.mangleSourceName("Autoreleasing");
+    break;
+  case Qualifiers::OCL_Strong:
+    Extra.mangleSourceName("Strong");
+    break;
+  case Qualifiers::OCL_Weak:
+    Extra.mangleSourceName("Weak");
+    break;
+  }
+  Extra.manglePointerCVQualifiers(Quals);
+  Extra.manglePointerExtQualifiers(Quals, Type);
+  Extra.mangleType(Type, Range);
+
+  mangleArtificalTagType(TTK_Struct, TemplateMangling, {"__ObjC"});
 }
 
 void MicrosoftCXXNameMangler::mangleQualifiers(Qualifiers Quals,
@@ -1559,12 +1603,11 @@ MicrosoftCXXNameMangler::mangleRefQualifier(RefQualifierKind RefQualifier) {
 
 void MicrosoftCXXNameMangler::manglePointerExtQualifiers(Qualifiers Quals,
                                                          QualType PointeeType) {
-  bool HasRestrict = Quals.hasRestrict();
   if (PointersAre64Bit &&
       (PointeeType.isNull() || !PointeeType->isFunctionType()))
     Out << 'E';
 
-  if (HasRestrict)
+  if (Quals.hasRestrict())
     Out << 'I';
 
   if (Quals.hasUnaligned() ||
@@ -1685,6 +1728,8 @@ void MicrosoftCXXNameMangler::mangleType(QualType T, SourceRange Range,
 
   switch (QMM) {
   case QMM_Drop:
+    if (Quals.hasObjCLifetime())
+      Quals = Quals.withoutObjCLifetime();
     break;
   case QMM_Mangle:
     if (const FunctionType *FT = dyn_cast<FunctionType>(T)) {
@@ -1703,6 +1748,8 @@ void MicrosoftCXXNameMangler::mangleType(QualType T, SourceRange Range,
   case QMM_Result:
     // Presence of __unaligned qualifier shouldn't affect mangling here.
     Quals.removeUnaligned();
+    if (Quals.hasObjCLifetime())
+      Quals = Quals.withoutObjCLifetime();
     if ((!IsPointer && Quals) || isa<TagType>(T)) {
       Out << '?';
       mangleQualifiers(Quals, false);
@@ -1833,15 +1880,12 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
     llvm_unreachable("placeholder types shouldn't get to name mangling");
 
   case BuiltinType::ObjCId:
-    Out << "PA";
     mangleArtificalTagType(TTK_Struct, "objc_object");
     break;
   case BuiltinType::ObjCClass:
-    Out << "PA";
     mangleArtificalTagType(TTK_Struct, "objc_class");
     break;
   case BuiltinType::ObjCSel:
-    Out << "PA";
     mangleArtificalTagType(TTK_Struct, "objc_selector");
     break;
 
@@ -2140,6 +2184,7 @@ void MicrosoftCXXNameMangler::mangleCallingConvention(CallingConv CC) {
     case CC_X86StdCall: Out << 'G'; break;
     case CC_X86FastCall: Out << 'I'; break;
     case CC_X86VectorCall: Out << 'Q'; break;
+    case CC_Swift: Out << 'S'; break;
     case CC_X86RegCall: Out << 'w'; break;
   }
 }
@@ -2337,10 +2382,16 @@ void MicrosoftCXXNameMangler::mangleType(const PointerType *T, Qualifiers Quals,
 
 void MicrosoftCXXNameMangler::mangleType(const ObjCObjectPointerType *T,
                                          Qualifiers Quals, SourceRange Range) {
-  if (T->isObjCIdType() || T->isObjCClassType())
-    return mangleType(T->getPointeeType(), Range, QMM_Drop);
-
   QualType PointeeType = T->getPointeeType();
+  switch (Quals.getObjCLifetime()) {
+  case Qualifiers::OCL_None:
+  case Qualifiers::OCL_ExplicitNone:
+    break;
+  case Qualifiers::OCL_Autoreleasing:
+  case Qualifiers::OCL_Strong:
+  case Qualifiers::OCL_Weak:
+    return mangleObjCLifetime(PointeeType, Quals, Range);
+  }
   manglePointerCVQualifiers(Quals);
   manglePointerExtQualifiers(Quals, PointeeType);
   mangleType(PointeeType, Range);
@@ -2457,9 +2508,33 @@ void MicrosoftCXXNameMangler::mangleType(const ObjCInterfaceType *T, Qualifiers,
 
 void MicrosoftCXXNameMangler::mangleType(const ObjCObjectType *T, Qualifiers,
                                          SourceRange Range) {
-  // We don't allow overloading by different protocol qualification,
-  // so mangling them isn't necessary.
-  mangleType(T->getBaseType(), Range, QMM_Drop);
+  if (T->qual_empty())
+    return mangleType(T->getBaseType(), Range, QMM_Drop);
+
+  ArgBackRefMap OuterArgsContext;
+  BackRefVec OuterTemplateContext;
+
+  TypeBackReferences.swap(OuterArgsContext);
+  NameBackReferences.swap(OuterTemplateContext);
+
+  mangleTagTypeKind(TTK_Struct);
+
+  Out << "?$";
+  if (T->isObjCId())
+    mangleSourceName("objc_object");
+  else if (T->isObjCClass())
+    mangleSourceName("objc_class");
+  else
+    mangleSourceName(T->getInterface()->getName());
+
+  for (const auto &Q : T->quals())
+    mangleObjCProtocol(Q);
+  Out << '@';
+
+  Out << '@';
+
+  TypeBackReferences.swap(OuterArgsContext);
+  NameBackReferences.swap(OuterTemplateContext);
 }
 
 void MicrosoftCXXNameMangler::mangleType(const BlockPointerType *T,

@@ -294,6 +294,7 @@ TEST_F(FormatTestJS, ReservedWords) {
   verifyFormat("x.for = 1;");
   verifyFormat("x.of();");
   verifyFormat("of(null);");
+  verifyFormat("return of(null);");
   verifyFormat("import {of} from 'x';");
   verifyFormat("x.in();");
   verifyFormat("x.let();");
@@ -1157,6 +1158,9 @@ TEST_F(FormatTestJS, WrapRespectsAutomaticSemicolonInsertion) {
                "foo() {}",
                getGoogleJSStyleWithColumns(10));
   verifyFormat("await theReckoning;", getGoogleJSStyleWithColumns(10));
+  verifyFormat("some['a']['b']", getGoogleJSStyleWithColumns(10));
+  verifyFormat("x = (a['a']\n"
+               "      ['b']);", getGoogleJSStyleWithColumns(10));
 }
 
 TEST_F(FormatTestJS, AutomaticSemicolonInsertionHeuristic) {
@@ -2129,6 +2133,7 @@ TEST_F(FormatTestJS, NonNullAssertionOperator) {
   verifyFormat("let x = foo!.bar();\n");
   verifyFormat("let x = foo ? bar! : baz;\n");
   verifyFormat("let x = !foo;\n");
+  verifyFormat("if (!+a) {\n}");
   verifyFormat("let x = foo[0]!;\n");
   verifyFormat("let x = (foo)!;\n");
   verifyFormat("let x = x(foo!);\n");

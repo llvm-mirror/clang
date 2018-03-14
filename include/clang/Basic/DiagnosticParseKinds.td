@@ -1072,7 +1072,7 @@ def warn_pragma_expected_colon_r_paren : Warning<
 def err_omp_unknown_directive : Error<
   "expected an OpenMP directive">;
 def err_omp_unexpected_directive : Error<
-  "unexpected OpenMP directive '#pragma omp %0'">;
+  "unexpected OpenMP directive %select{|'#pragma omp %1'}0">;
 def err_omp_expected_punc : Error<
   "expected ',' or ')' in '%0' %select{clause|directive}1">;
 def err_omp_unexpected_clause : Error<
@@ -1162,6 +1162,9 @@ def err_objc_parameterized_implementation : Error<
 
 def err_objc_type_args_after_protocols : Error<
   "protocol qualifiers must precede type arguments">;
+
+def note_meant_to_use_typename : Note<
+  "did you mean to use 'typename'?">;
 }
 
 let CategoryName = "Coroutines Issue" in {

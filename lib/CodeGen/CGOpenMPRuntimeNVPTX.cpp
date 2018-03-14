@@ -262,8 +262,8 @@ void CGOpenMPRuntimeNVPTX::WorkerFunctionState::createWorkerFunction(
 
   WorkerFn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(*CGFI), llvm::GlobalValue::InternalLinkage,
-      /* placeholder */ "_worker", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*D=*/nullptr, WorkerFn, *CGFI);
+      /*placeholder=*/"_worker", &CGM.getModule());
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), WorkerFn, *CGFI);
 }
 
 bool CGOpenMPRuntimeNVPTX::isInSpmdExecutionMode() const {
@@ -271,21 +271,10 @@ bool CGOpenMPRuntimeNVPTX::isInSpmdExecutionMode() const {
 }
 
 static CGOpenMPRuntimeNVPTX::ExecutionMode
-getExecutionModeForDirective(CodeGenModule &CGM,
-                             const OMPExecutableDirective &D) {
-  OpenMPDirectiveKind DirectiveKind = D.getDirectiveKind();
-  switch (DirectiveKind) {
-  case OMPD_target:
-  case OMPD_target_teams:
-    return CGOpenMPRuntimeNVPTX::ExecutionMode::Generic;
-  case OMPD_target_parallel:
-  case OMPD_target_parallel_for:
-  case OMPD_target_parallel_for_simd:
-    return CGOpenMPRuntimeNVPTX::ExecutionMode::Spmd;
-  default:
-    llvm_unreachable("Unsupported directive on NVPTX device.");
-  }
-  llvm_unreachable("Unsupported directive on NVPTX device.");
+getExecutionMode(CodeGenModule &CGM) {
+  return CGM.getLangOpts().OpenMPCUDAMode
+             ? CGOpenMPRuntimeNVPTX::ExecutionMode::Spmd
+             : CGOpenMPRuntimeNVPTX::ExecutionMode::Generic;
 }
 
 void CGOpenMPRuntimeNVPTX::emitGenericKernel(const OMPExecutableDirective &D,
@@ -323,12 +312,12 @@ void CGOpenMPRuntimeNVPTX::emitGenericKernel(const OMPExecutableDirective &D,
   emitTargetOutlinedFunctionHelper(D, ParentName, OutlinedFn, OutlinedFnID,
                                    IsOffloadEntry, CodeGen);
 
-  // Create the worker function
-  emitWorkerFunction(WST);
-
   // Now change the name of the worker function to correspond to this target
   // region's entry function.
   WST.WorkerFn->setName(OutlinedFn->getName() + "_worker");
+
+  // Create the worker function
+  emitWorkerFunction(WST);
 }
 
 // Setup NVPTX threads for master-worker OpenMP scheme.
@@ -819,8 +808,7 @@ void CGOpenMPRuntimeNVPTX::emitTargetOutlinedFunction(
 
   assert(!ParentName.empty() && "Invalid target region parent name!");
 
-  CGOpenMPRuntimeNVPTX::ExecutionMode Mode =
-      getExecutionModeForDirective(CGM, D);
+  CGOpenMPRuntimeNVPTX::ExecutionMode Mode = getExecutionMode(CGM);
   switch (Mode) {
   case CGOpenMPRuntimeNVPTX::ExecutionMode::Generic:
     emitGenericKernel(D, ParentName, OutlinedFn, OutlinedFnID, IsOffloadEntry,
@@ -1051,10 +1039,13 @@ void CGOpenMPRuntimeNVPTX::emitSpmdParallelCall(
   // TODO: Do something with IfCond when support for the 'if' clause
   // is added on Spmd target directives.
   llvm::SmallVector<llvm::Value *, 16> OutlinedFnArgs;
-  OutlinedFnArgs.push_back(
-      llvm::ConstantPointerNull::get(CGM.Int32Ty->getPointerTo()));
-  OutlinedFnArgs.push_back(
-      llvm::ConstantPointerNull::get(CGM.Int32Ty->getPointerTo()));
+
+  Address ZeroAddr = CGF.CreateMemTemp(
+      CGF.getContext().getIntTypeForBitwidth(/*DestWidth=*/32, /*Signed=*/1),
+      ".zero.addr");
+  CGF.InitTempAlloca(ZeroAddr, CGF.Builder.getInt32(/*C*/ 0));
+  OutlinedFnArgs.push_back(ZeroAddr.getPointer());
+  OutlinedFnArgs.push_back(ZeroAddr.getPointer());
   OutlinedFnArgs.append(CapturedVars.begin(), CapturedVars.end());
   emitOutlinedFunctionCall(CGF, Loc, OutlinedFn, OutlinedFnArgs);
 }
@@ -1260,7 +1251,7 @@ static void emitReductionListCopy(
         SrcElementAddr, CGF.ConvertTypeForMem(Private->getType()));
     llvm::Value *Elem =
         CGF.EmitLoadOfScalar(SrcElementAddr, /*Volatile=*/false,
-                             Private->getType(), SourceLocation());
+                             Private->getType(), Private->getExprLoc());
 
     // Now that all active lanes have read the element in the
     // Reduce list, shuffle over the value from the remote lane.
@@ -1369,7 +1360,7 @@ static llvm::Value *emitReduceScratchpadFunction(
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       "_omp_reduction_load_and_reduce", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*DC=*/nullptr, Fn, CGFI);
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   CodeGenFunction CGF(CGM);
   CGF.StartFunction(GlobalDecl(), C.VoidTy, Fn, CGFI, Args, Loc, Loc);
 
@@ -1380,29 +1371,27 @@ static llvm::Value *emitReduceScratchpadFunction(
   Address ReduceListAddr(
       Bld.CreatePointerBitCastOrAddrSpaceCast(
           CGF.EmitLoadOfScalar(AddrReduceListArg, /*Volatile=*/false,
-                               C.VoidPtrTy, SourceLocation()),
+                               C.VoidPtrTy, Loc),
           CGF.ConvertTypeForMem(ReductionArrayTy)->getPointerTo()),
       CGF.getPointerAlign());
 
   Address AddrScratchPadArg = CGF.GetAddrOfLocalVar(&ScratchPadArg);
   llvm::Value *ScratchPadBase = CGF.EmitLoadOfScalar(
-      AddrScratchPadArg, /*Volatile=*/false, C.VoidPtrTy, SourceLocation());
+      AddrScratchPadArg, /*Volatile=*/false, C.VoidPtrTy, Loc);
 
   Address AddrIndexArg = CGF.GetAddrOfLocalVar(&IndexArg);
-  llvm::Value *IndexVal =
-      Bld.CreateIntCast(CGF.EmitLoadOfScalar(AddrIndexArg, /*Volatile=*/false,
-                                             Int32Ty, SourceLocation()),
-                        CGM.SizeTy, /*isSigned=*/true);
+  llvm::Value *IndexVal = Bld.CreateIntCast(
+      CGF.EmitLoadOfScalar(AddrIndexArg, /*Volatile=*/false, Int32Ty, Loc),
+      CGM.SizeTy, /*isSigned=*/true);
 
   Address AddrWidthArg = CGF.GetAddrOfLocalVar(&WidthArg);
-  llvm::Value *WidthVal =
-      Bld.CreateIntCast(CGF.EmitLoadOfScalar(AddrWidthArg, /*Volatile=*/false,
-                                             Int32Ty, SourceLocation()),
-                        CGM.SizeTy, /*isSigned=*/true);
+  llvm::Value *WidthVal = Bld.CreateIntCast(
+      CGF.EmitLoadOfScalar(AddrWidthArg, /*Volatile=*/false, Int32Ty, Loc),
+      CGM.SizeTy, /*isSigned=*/true);
 
   Address AddrShouldReduceArg = CGF.GetAddrOfLocalVar(&ShouldReduceArg);
   llvm::Value *ShouldReduceVal = CGF.EmitLoadOfScalar(
-      AddrShouldReduceArg, /*Volatile=*/false, Int32Ty, SourceLocation());
+      AddrShouldReduceArg, /*Volatile=*/false, Int32Ty, Loc);
 
   // The absolute ptr address to the base addr of the next element to copy.
   llvm::Value *CumulativeElemBasePtr =
@@ -1492,7 +1481,7 @@ static llvm::Value *emitCopyToScratchpad(CodeGenModule &CGM,
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       "_omp_reduction_copy_to_scratchpad", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*DC=*/nullptr, Fn, CGFI);
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   CodeGenFunction CGF(CGM);
   CGF.StartFunction(GlobalDecl(), C.VoidTy, Fn, CGFI, Args, Loc, Loc);
 
@@ -1502,19 +1491,18 @@ static llvm::Value *emitCopyToScratchpad(CodeGenModule &CGM,
   Address SrcDataAddr(
       Bld.CreatePointerBitCastOrAddrSpaceCast(
           CGF.EmitLoadOfScalar(AddrReduceListArg, /*Volatile=*/false,
-                               C.VoidPtrTy, SourceLocation()),
+                               C.VoidPtrTy, Loc),
           CGF.ConvertTypeForMem(ReductionArrayTy)->getPointerTo()),
       CGF.getPointerAlign());
 
   Address AddrScratchPadArg = CGF.GetAddrOfLocalVar(&ScratchPadArg);
   llvm::Value *ScratchPadBase = CGF.EmitLoadOfScalar(
-      AddrScratchPadArg, /*Volatile=*/false, C.VoidPtrTy, SourceLocation());
+      AddrScratchPadArg, /*Volatile=*/false, C.VoidPtrTy, Loc);
 
   Address AddrIndexArg = CGF.GetAddrOfLocalVar(&IndexArg);
-  llvm::Value *IndexVal =
-      Bld.CreateIntCast(CGF.EmitLoadOfScalar(AddrIndexArg, /*Volatile=*/false,
-                                             Int32Ty, SourceLocation()),
-                        CGF.SizeTy, /*isSigned=*/true);
+  llvm::Value *IndexVal = Bld.CreateIntCast(
+      CGF.EmitLoadOfScalar(AddrIndexArg, /*Volatile=*/false, Int32Ty, Loc),
+      CGF.SizeTy, /*isSigned=*/true);
 
   Address AddrWidthArg = CGF.GetAddrOfLocalVar(&WidthArg);
   llvm::Value *WidthVal =
@@ -1574,7 +1562,7 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       "_omp_reduction_inter_warp_copy_func", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*DC=*/nullptr, Fn, CGFI);
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   CodeGenFunction CGF(CGM);
   CGF.StartFunction(GlobalDecl(), C.VoidTy, Fn, CGFI, Args, Loc, Loc);
 
@@ -1824,7 +1812,7 @@ static llvm::Value *emitShuffleAndReduceFunction(
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       "_omp_reduction_shuffle_and_reduce_func", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*D=*/nullptr, Fn, CGFI);
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   CodeGenFunction CGF(CGM);
   CGF.StartFunction(GlobalDecl(), C.VoidTy, Fn, CGFI, Args, Loc, Loc);
 
@@ -2235,7 +2223,7 @@ void CGOpenMPRuntimeNVPTX::emitReduction(
       llvm::Value *Size = CGF.Builder.CreateIntCast(
           CGF.getVLASize(
                  CGF.getContext().getAsVariableArrayType((*IPriv)->getType()))
-              .first,
+              .NumElts,
           CGF.SizeTy, /*isSigned=*/false);
       CGF.Builder.CreateStore(CGF.Builder.CreateIntToPtr(Size, CGF.VoidPtrTy),
                               Elem);
@@ -2428,7 +2416,7 @@ void CGOpenMPRuntimeNVPTX::emitOutlinedFunctionCall(
 llvm::Function *CGOpenMPRuntimeNVPTX::createDataSharingWrapper(
     llvm::Function *OutlinedParallelFn, const OMPExecutableDirective &D) {
   ASTContext &Ctx = CGM.getContext();
-  const auto &CS = *cast<CapturedStmt>(D.getAssociatedStmt());
+  const CapturedStmt &CS = *D.getCapturedStmt(OMPD_parallel);
 
   // Create a function that takes as argument the source thread.
   FunctionArgList WrapperArgs;
@@ -2457,7 +2445,7 @@ llvm::Function *CGOpenMPRuntimeNVPTX::createDataSharingWrapper(
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       OutlinedParallelFn->getName() + "_wrapper", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(/*D=*/nullptr, Fn, CGFI);
+  CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   Fn->setLinkage(llvm::GlobalValue::InternalLinkage);
 
   CodeGenFunction CGF(CGM, /*suppressNewContext=*/true);

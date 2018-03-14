@@ -37,6 +37,7 @@
 #include "clang/Sema/SemaConsumer.h"
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/TemplateDeduction.h"
+#include "clang/Sema/TemplateInstCallback.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 using namespace clang;
@@ -1393,8 +1394,8 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
     delete Scope;
 }
 
-void Sema::PushCompoundScope() {
-  getCurFunction()->CompoundScopes.push_back(CompoundScopeInfo());
+void Sema::PushCompoundScope(bool IsStmtExpr) {
+  getCurFunction()->CompoundScopes.push_back(CompoundScopeInfo(IsStmtExpr));
 }
 
 void Sema::PopCompoundScope() {
@@ -1462,8 +1463,7 @@ void Sema::ActOnComment(SourceRange Comment) {
   if (!LangOpts.RetainCommentsFromSystemHeaders &&
       SourceMgr.isInSystemHeader(Comment.getBegin()))
     return;
-  RawComment RC(SourceMgr, Comment, false,
-                LangOpts.CommentOpts.ParseAllComments);
+  RawComment RC(SourceMgr, Comment, LangOpts.CommentOpts, false);
   if (RC.isAlmostTrailingComment()) {
     SourceRange MagicMarkerRange(Comment.getBegin(),
                                  Comment.getBegin().getLocWithOffset(3));
@@ -1647,6 +1647,12 @@ static void noteOverloads(Sema &S, const UnresolvedSetImpl &Overloads,
     }
 
     NamedDecl *Fn = (*It)->getUnderlyingDecl();
+    // Don't print overloads for non-default multiversioned functions.
+    if (const auto *FD = Fn->getAsFunction()) {
+      if (FD->isMultiVersion() &&
+          !FD->getAttr<TargetAttr>()->isDefaultVersion())
+        continue;
+    }
     S.Diag(Fn->getLocation(), diag::note_possible_target_of_call);
     ++ShownOverloads;
   }

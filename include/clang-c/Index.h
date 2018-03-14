@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 46
+#define CINDEX_VERSION_MINOR 48
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -4092,6 +4092,89 @@ CINDEX_LINKAGE CXSourceRange clang_Cursor_getSpellingNameRange(CXCursor,
                                                           unsigned options);
 
 /**
+ * \brief Opaque pointer representing a policy that controls pretty printing
+ * for \c clang_getCursorPrettyPrinted.
+ */
+typedef void *CXPrintingPolicy;
+
+/**
+ * \brief Properties for the printing policy.
+ *
+ * See \c clang::PrintingPolicy for more information.
+ */
+enum CXPrintingPolicyProperty {
+  CXPrintingPolicy_Indentation,
+  CXPrintingPolicy_SuppressSpecifiers,
+  CXPrintingPolicy_SuppressTagKeyword,
+  CXPrintingPolicy_IncludeTagDefinition,
+  CXPrintingPolicy_SuppressScope,
+  CXPrintingPolicy_SuppressUnwrittenScope,
+  CXPrintingPolicy_SuppressInitializers,
+  CXPrintingPolicy_ConstantArraySizeAsWritten,
+  CXPrintingPolicy_AnonymousTagLocations,
+  CXPrintingPolicy_SuppressStrongLifetime,
+  CXPrintingPolicy_SuppressLifetimeQualifiers,
+  CXPrintingPolicy_SuppressTemplateArgsInCXXConstructors,
+  CXPrintingPolicy_Bool,
+  CXPrintingPolicy_Restrict,
+  CXPrintingPolicy_Alignof,
+  CXPrintingPolicy_UnderscoreAlignof,
+  CXPrintingPolicy_UseVoidForZeroParams,
+  CXPrintingPolicy_TerseOutput,
+  CXPrintingPolicy_PolishForDeclaration,
+  CXPrintingPolicy_Half,
+  CXPrintingPolicy_MSWChar,
+  CXPrintingPolicy_IncludeNewlines,
+  CXPrintingPolicy_MSVCFormatting,
+  CXPrintingPolicy_ConstantsAsWritten,
+  CXPrintingPolicy_SuppressImplicitBase,
+  CXPrintingPolicy_FullyQualifiedName,
+
+  CXPrintingPolicy_LastProperty = CXPrintingPolicy_FullyQualifiedName
+};
+
+/**
+ * \brief Get a property value for the given printing policy.
+ */
+CINDEX_LINKAGE unsigned
+clang_PrintingPolicy_getProperty(CXPrintingPolicy Policy,
+                                 enum CXPrintingPolicyProperty Property);
+
+/**
+ * \brief Set a property value for the given printing policy.
+ */
+CINDEX_LINKAGE void clang_PrintingPolicy_setProperty(CXPrintingPolicy Policy,
+                                                     enum CXPrintingPolicyProperty Property,
+                                                     unsigned Value);
+
+/**
+ * \brief Retrieve the default policy for the cursor.
+ *
+ * The policy should be released after use with \c
+ * clang_PrintingPolicy_dispose.
+ */
+CINDEX_LINKAGE CXPrintingPolicy clang_getCursorPrintingPolicy(CXCursor);
+
+/**
+ * \brief Release a printing policy.
+ */
+CINDEX_LINKAGE void clang_PrintingPolicy_dispose(CXPrintingPolicy Policy);
+
+/**
+ * \brief Pretty print declarations.
+ *
+ * \param Cursor The cursor representing a declaration.
+ *
+ * \param Policy The policy to control the entities being printed. If
+ * NULL, a default policy is used.
+ *
+ * \returns The pretty printed declaration or the empty string for
+ * other cursors.
+ */
+CINDEX_LINKAGE CXString clang_getCursorPrettyPrinted(CXCursor Cursor,
+                                                     CXPrintingPolicy Policy);
+
+/**
  * \brief Retrieve the display name for the entity referenced by this cursor.
  *
  * The display name contains extra information that helps identify the cursor,
@@ -5161,7 +5244,14 @@ enum CXCodeComplete_Flags {
    * \brief Whether to include brief documentation within the set of code
    * completions returned.
    */
-  CXCodeComplete_IncludeBriefComments = 0x04
+  CXCodeComplete_IncludeBriefComments = 0x04,
+
+  /**
+   * Whether to speed up completion by omitting top- or namespace-level entities
+   * defined in the preamble. There's no guarantee any particular entity is
+   * omitted. This may be useful if the headers are indexed externally.
+   */
+  CXCodeComplete_SkipPreamble = 0x08
 };
 
 /**
@@ -6002,6 +6092,9 @@ typedef struct {
 
 /**
  * \brief Data for IndexerCallbacks#indexEntityReference.
+ *
+ * This may be deprecated in a future version as this duplicates
+ * the \c CXSymbolRole_Implicit bit in \c CXSymbolRole.
  */
 typedef enum {
   /**
@@ -6014,6 +6107,25 @@ typedef enum {
    */
   CXIdxEntityRef_Implicit = 2
 } CXIdxEntityRefKind;
+
+/**
+ * \brief Roles that are attributed to symbol occurrences.
+ *
+ * Internal: this currently mirrors low 9 bits of clang::index::SymbolRole with
+ * higher bits zeroed. These high bits may be exposed in the future.
+ */
+typedef enum {
+  CXSymbolRole_None = 0,
+  CXSymbolRole_Declaration = 1 << 0,
+  CXSymbolRole_Definition = 1 << 1,
+  CXSymbolRole_Reference = 1 << 2,
+  CXSymbolRole_Read = 1 << 3,
+  CXSymbolRole_Write = 1 << 4,
+  CXSymbolRole_Call = 1 << 5,
+  CXSymbolRole_Dynamic = 1 << 6,
+  CXSymbolRole_AddressOf = 1 << 7,
+  CXSymbolRole_Implicit = 1 << 8
+} CXSymbolRole;
 
 /**
  * \brief Data for IndexerCallbacks#indexEntityReference.
@@ -6045,6 +6157,10 @@ typedef struct {
    * \brief Lexical container context of the reference.
    */
   const CXIdxContainerInfo *container;
+  /**
+   * \brief Sets of symbol roles of the reference.
+   */
+  CXSymbolRole role;
 } CXIdxEntityRefInfo;
 
 /**

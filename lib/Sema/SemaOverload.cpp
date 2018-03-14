@@ -327,7 +327,8 @@ StandardConversionSequence::getNarrowingKind(ASTContext &Ctx,
   FloatingIntegralConversion:
     if (FromType->isRealFloatingType() && ToType->isIntegralType(Ctx)) {
       return NK_Type_Narrowing;
-    } else if (FromType->isIntegralType(Ctx) && ToType->isRealFloatingType()) {
+    } else if (FromType->isIntegralOrUnscopedEnumerationType() &&
+               ToType->isRealFloatingType()) {
       llvm::APSInt IntConstantValue;
       const Expr *Initializer = IgnoreNarrowingConversion(Converted);
       assert(Initializer && "Unknown conversion expression");
@@ -1764,8 +1765,8 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
                                    (FromType == S.Context.LongDoubleTy &&
                                     ToType == S.Context.Float128Ty));
       if (Float128AndLongDouble &&
-          (&S.Context.getFloatTypeSemantics(S.Context.LongDoubleTy) !=
-           &llvm::APFloat::IEEEdouble()))
+          (&S.Context.getFloatTypeSemantics(S.Context.LongDoubleTy) ==
+           &llvm::APFloat::PPCDoubleDouble()))
         return false;
     }
     // Floating point conversions (C++ 4.8).
@@ -5957,6 +5958,13 @@ Sema::AddOverloadCandidate(FunctionDecl *Function,
   Candidate.IgnoreObjectArgument = false;
   Candidate.ExplicitCallArguments = Args.size();
 
+  if (Function->isMultiVersion() &&
+      !Function->getAttr<TargetAttr>()->isDefaultVersion()) {
+    Candidate.Viable = false;
+    Candidate.FailureKind = ovl_non_default_multiversion_function;
+    return;
+  }
+
   if (Constructor) {
     // C++ [class.copy]p3:
     //   A member function template is never instantiated to perform the copy
@@ -6581,6 +6589,12 @@ Sema::AddMethodCandidate(CXXMethodDecl *Method, DeclAccessPair FoundDecl,
     Candidate.DeductionFailure.Data = FailedAttr;
     return;
   }
+
+  if (Method->isMultiVersion() &&
+      !Method->getAttr<TargetAttr>()->isDefaultVersion()) {
+    Candidate.Viable = false;
+    Candidate.FailureKind = ovl_non_default_multiversion_function;
+  }
 }
 
 /// \brief Add a C++ member function template as a candidate to the candidate
@@ -6983,6 +6997,12 @@ Sema::AddConversionCandidate(CXXConversionDecl *Conversion,
     Candidate.FailureKind = ovl_fail_enable_if;
     Candidate.DeductionFailure.Data = FailedAttr;
     return;
+  }
+
+  if (Conversion->isMultiVersion() &&
+      !Conversion->getAttr<TargetAttr>()->isDefaultVersion()) {
+    Candidate.Viable = false;
+    Candidate.FailureKind = ovl_non_default_multiversion_function;
   }
 }
 
@@ -9392,6 +9412,8 @@ void Sema::NoteOverloadCandidate(NamedDecl *Found, FunctionDecl *Fn,
                                  QualType DestType, bool TakingAddress) {
   if (TakingAddress && !checkAddressOfCandidateIsAvailable(*this, Fn))
     return;
+  if (Fn->isMultiVersion() && !Fn->getAttr<TargetAttr>()->isDefaultVersion())
+    return;
 
   std::string FnDesc;
   OverloadCandidateKind K = ClassifyOverloadCandidate(*this, Found, Fn, FnDesc);
@@ -10193,6 +10215,9 @@ static void NoteFunctionCandidate(Sema &S, OverloadCandidate *Cand,
     assert(!Available);
     break;
   }
+  case ovl_non_default_multiversion_function:
+    // Do nothing, these should simply be ignored.
+    break;
   }
 }
 
@@ -10510,9 +10535,8 @@ static void CompleteNonViableCandidate(Sema &S, OverloadCandidate *Cand,
   }
 }
 
-/// PrintOverloadCandidates - When overload resolution fails, prints
-/// diagnostic messages containing the candidates in the candidate
-/// set.
+/// When overload resolution fails, prints diagnostic messages containing the
+/// candidates in the candidate set.
 void OverloadCandidateSet::NoteCandidates(
     Sema &S, OverloadCandidateDisplayKind OCD, ArrayRef<Expr *> Args,
     StringRef Opc, SourceLocation OpLoc,
@@ -10929,6 +10953,12 @@ private:
         if (FunctionDecl *Caller = dyn_cast<FunctionDecl>(S.CurContext))
           if (!Caller->isImplicit() && !S.IsAllowedCUDACall(Caller, FunDecl))
             return false;
+      if (FunDecl->isMultiVersion()) {
+        const auto *TA = FunDecl->getAttr<TargetAttr>();
+        assert(TA && "Multiversioned functions require a target attribute");
+        if (!TA->isDefaultVersion())
+          return false;
+      }
 
       // If any candidate has a placeholder return type, trigger its deduction
       // now.
@@ -11992,7 +12022,7 @@ Sema::CreateOverloadedUnaryOp(SourceLocation OpLoc, UnaryOperatorKind Opc,
   if (Input->isTypeDependent()) {
     if (Fns.empty())
       return new (Context) UnaryOperator(Input, Opc, Context.DependentTy,
-                                         VK_RValue, OK_Ordinary, OpLoc);
+                                         VK_RValue, OK_Ordinary, OpLoc, false);
 
     CXXRecordDecl *NamingClass = nullptr; // lookup ignores member operators
     UnresolvedLookupExpr *Fn
@@ -13522,7 +13552,7 @@ Expr *Sema::FixOverloadedFunctionReference(Expr *E, DeclAccessPair Found,
 
         return new (Context) UnaryOperator(SubExpr, UO_AddrOf, MemPtrType,
                                            VK_RValue, OK_Ordinary,
-                                           UnOp->getOperatorLoc());
+                                           UnOp->getOperatorLoc(), false);
       }
     }
     Expr *SubExpr = FixOverloadedFunctionReference(UnOp->getSubExpr(),
@@ -13533,7 +13563,7 @@ Expr *Sema::FixOverloadedFunctionReference(Expr *E, DeclAccessPair Found,
     return new (Context) UnaryOperator(SubExpr, UO_AddrOf,
                                      Context.getPointerType(SubExpr->getType()),
                                        VK_RValue, OK_Ordinary,
-                                       UnOp->getOperatorLoc());
+                                       UnOp->getOperatorLoc(), false);
   }
 
   // C++ [except.spec]p17:

@@ -234,14 +234,17 @@ UnwrappedLineParser::UnwrappedLineParser(const FormatStyle &Style,
       CurrentLines(&Lines), Style(Style), Keywords(Keywords),
       CommentPragmasRegex(Style.CommentPragmas), Tokens(nullptr),
       Callback(Callback), AllTokens(Tokens), PPBranchLevel(-1),
-      IfNdefCondition(nullptr), FoundIncludeGuardStart(false),
-      IncludeGuardRejected(false), FirstStartColumn(FirstStartColumn) {}
+      IncludeGuard(Style.IndentPPDirectives == FormatStyle::PPDIS_None
+                       ? IG_Rejected
+                       : IG_Inited),
+      IncludeGuardToken(nullptr), FirstStartColumn(FirstStartColumn) {}
 
 void UnwrappedLineParser::reset() {
   PPBranchLevel = -1;
-  IfNdefCondition = nullptr;
-  FoundIncludeGuardStart = false;
-  IncludeGuardRejected = false;
+  IncludeGuard = Style.IndentPPDirectives == FormatStyle::PPDIS_None
+                     ? IG_Rejected
+                     : IG_Inited;
+  IncludeGuardToken = nullptr;
   Line.reset(new UnwrappedLine);
   CommentsBeforeNextToken.clear();
   FormatTok = nullptr;
@@ -264,6 +267,14 @@ void UnwrappedLineParser::parse() {
 
     readToken();
     parseFile();
+
+    // If we found an include guard then all preprocessor directives (other than
+    // the guard) are over-indented by one.
+    if (IncludeGuard == IG_Found)
+      for (auto &Line : Lines)
+        if (Line.InPPDirective && Line.Level > 0)
+          --Line.Level;
+
     // Create line with eof token.
     pushToken(FormatTok);
     addUnwrappedLine();
@@ -333,7 +344,19 @@ void UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
       nextToken();
       addUnwrappedLine();
       break;
-    case tok::kw_default:
+    case tok::kw_default: {
+      unsigned StoredPosition = Tokens->getPosition();
+      FormatToken *Next = Tokens->getNextToken();
+      FormatTok = Tokens->setPosition(StoredPosition);
+      if (Next && Next->isNot(tok::colon)) {
+        // default not followed by ':' is not a case label; treat it like
+        // an identifier.
+        parseStructuralElement();
+        break;
+      }
+      // Else, if it is 'default:', fall through to the case handling.
+      LLVM_FALLTHROUGH;
+    }
     case tok::kw_case:
       if (Style.Language == FormatStyle::LK_JavaScript &&
           Line->MustBeDeclaration) {
@@ -712,26 +735,27 @@ void UnwrappedLineParser::parsePPIf(bool IfDef) {
   // If there's a #ifndef on the first line, and the only lines before it are
   // comments, it could be an include guard.
   bool MaybeIncludeGuard = IfNDef;
-  if (!IncludeGuardRejected && !FoundIncludeGuardStart && MaybeIncludeGuard) {
+  if (IncludeGuard == IG_Inited && MaybeIncludeGuard)
     for (auto &Line : Lines) {
       if (!Line.Tokens.front().Tok->is(tok::comment)) {
         MaybeIncludeGuard = false;
-        IncludeGuardRejected = true;
+        IncludeGuard = IG_Rejected;
         break;
       }
     }
-  }
   --PPBranchLevel;
   parsePPUnknown();
   ++PPBranchLevel;
-  if (!IncludeGuardRejected && !FoundIncludeGuardStart && MaybeIncludeGuard)
-    IfNdefCondition = IfCondition;
+  if (IncludeGuard == IG_Inited && MaybeIncludeGuard) {
+    IncludeGuard = IG_IfNdefed;
+    IncludeGuardToken = IfCondition;
+  }
 }
 
 void UnwrappedLineParser::parsePPElse() {
   // If a potential include guard has an #else, it's not an include guard.
-  if (FoundIncludeGuardStart && PPBranchLevel == 0)
-    FoundIncludeGuardStart = false;
+  if (IncludeGuard == IG_Defined && PPBranchLevel == 0)
+    IncludeGuard = IG_Rejected;
   conditionalCompilationAlternative();
   if (PPBranchLevel > -1)
     --PPBranchLevel;
@@ -745,34 +769,37 @@ void UnwrappedLineParser::parsePPEndIf() {
   conditionalCompilationEnd();
   parsePPUnknown();
   // If the #endif of a potential include guard is the last thing in the file,
-  // then we count it as a real include guard and subtract one from every
-  // preprocessor indent.
+  // then we found an include guard.
   unsigned TokenPosition = Tokens->getPosition();
   FormatToken *PeekNext = AllTokens[TokenPosition];
-  if (FoundIncludeGuardStart && PPBranchLevel == -1 && PeekNext->is(tok::eof) &&
+  if (IncludeGuard == IG_Defined && PPBranchLevel == -1 &&
+      PeekNext->is(tok::eof) &&
       Style.IndentPPDirectives != FormatStyle::PPDIS_None)
-    for (auto &Line : Lines)
-      if (Line.InPPDirective && Line.Level > 0)
-        --Line.Level;
+    IncludeGuard = IG_Found;
 }
 
 void UnwrappedLineParser::parsePPDefine() {
   nextToken();
 
   if (FormatTok->Tok.getKind() != tok::identifier) {
+    IncludeGuard = IG_Rejected;
+    IncludeGuardToken = nullptr;
     parsePPUnknown();
     return;
   }
-  if (IfNdefCondition && IfNdefCondition->TokenText == FormatTok->TokenText) {
-    FoundIncludeGuardStart = true;
+
+  if (IncludeGuard == IG_IfNdefed &&
+      IncludeGuardToken->TokenText == FormatTok->TokenText) {
+    IncludeGuard = IG_Defined;
+    IncludeGuardToken = nullptr;
     for (auto &Line : Lines) {
       if (!Line.Tokens.front().Tok->isOneOf(tok::comment, tok::hash)) {
-        FoundIncludeGuardStart = false;
+        IncludeGuard = IG_Rejected;
         break;
       }
     }
   }
-  IfNdefCondition = nullptr;
+
   nextToken();
   if (FormatTok->Tok.getKind() == tok::l_paren &&
       FormatTok->WhitespaceRange.getBegin() ==
@@ -799,7 +826,6 @@ void UnwrappedLineParser::parsePPUnknown() {
   if (Style.IndentPPDirectives == FormatStyle::PPDIS_AfterHash)
     Line->Level += PPBranchLevel + 1;
   addUnwrappedLine();
-  IfNdefCondition = nullptr;
 }
 
 // Here we blacklist certain tokens that are not usually the first token in an
@@ -932,49 +958,6 @@ void UnwrappedLineParser::parseStructuralElement() {
     return;
   }
   switch (FormatTok->Tok.getKind()) {
-  case tok::at:
-    nextToken();
-    if (FormatTok->Tok.is(tok::l_brace)) {
-      nextToken();
-      parseBracedList();
-      break;
-    }
-    switch (FormatTok->Tok.getObjCKeywordID()) {
-    case tok::objc_public:
-    case tok::objc_protected:
-    case tok::objc_package:
-    case tok::objc_private:
-      return parseAccessSpecifier();
-    case tok::objc_interface:
-    case tok::objc_implementation:
-      return parseObjCInterfaceOrImplementation();
-    case tok::objc_protocol:
-      return parseObjCProtocol();
-    case tok::objc_end:
-      return; // Handled by the caller.
-    case tok::objc_optional:
-    case tok::objc_required:
-      nextToken();
-      addUnwrappedLine();
-      return;
-    case tok::objc_autoreleasepool:
-      nextToken();
-      if (FormatTok->Tok.is(tok::l_brace)) {
-        if (Style.BraceWrapping.AfterObjCDeclaration)
-          addUnwrappedLine();
-        parseBlock(/*MustBeDeclaration=*/false);
-      }
-      addUnwrappedLine();
-      return;
-    case tok::objc_try:
-      // This branch isn't strictly necessary (the kw_try case below would
-      // do this too after the tok::at is parsed above).  But be explicit.
-      parseTryCatch();
-      return;
-    default:
-      break;
-    }
-    break;
   case tok::kw_asm:
     nextToken();
     if (FormatTok->is(tok::l_brace)) {
@@ -1032,8 +1015,12 @@ void UnwrappedLineParser::parseStructuralElement() {
       // 'default: string' field declaration.
       break;
     nextToken();
-    parseLabel();
-    return;
+    if (FormatTok->is(tok::colon)) {
+      parseLabel();
+      return;
+    }
+    // e.g. "default void f() {}" in a Java interface.
+    break;
   case tok::kw_case:
     if (Style.Language == FormatStyle::LK_JavaScript && Line->MustBeDeclaration)
       // 'case: string' field declaration.
@@ -1117,6 +1104,56 @@ void UnwrappedLineParser::parseStructuralElement() {
       if (FormatTok->Tok.is(tok::l_brace)) {
         nextToken();
         parseBracedList();
+        break;
+      }
+      switch (FormatTok->Tok.getObjCKeywordID()) {
+      case tok::objc_public:
+      case tok::objc_protected:
+      case tok::objc_package:
+      case tok::objc_private:
+        return parseAccessSpecifier();
+      case tok::objc_interface:
+      case tok::objc_implementation:
+        return parseObjCInterfaceOrImplementation();
+      case tok::objc_protocol:
+        if (parseObjCProtocol())
+          return;
+        break;
+      case tok::objc_end:
+        return; // Handled by the caller.
+      case tok::objc_optional:
+      case tok::objc_required:
+        nextToken();
+        addUnwrappedLine();
+        return;
+      case tok::objc_autoreleasepool:
+        nextToken();
+        if (FormatTok->Tok.is(tok::l_brace)) {
+          if (Style.BraceWrapping.AfterControlStatement)
+            addUnwrappedLine();
+          parseBlock(/*MustBeDeclaration=*/false);
+        }
+        addUnwrappedLine();
+        return;
+      case tok::objc_synchronized:
+        nextToken();
+        if (FormatTok->Tok.is(tok::l_paren))
+           // Skip synchronization object
+           parseParens();
+        if (FormatTok->Tok.is(tok::l_brace)) {
+          if (Style.BraceWrapping.AfterControlStatement)
+            addUnwrappedLine();
+          parseBlock(/*MustBeDeclaration=*/false);
+        }
+        addUnwrappedLine();
+        return;
+      case tok::objc_try:
+        // This branch isn't strictly necessary (the kw_try case below would
+        // do this too after the tok::at is parsed above).  But be explicit.
+        parseTryCatch();
+        return;
+      default:
+        break;
       }
       break;
     case tok::kw_enum:
@@ -2113,6 +2150,8 @@ void UnwrappedLineParser::parseObjCUntilAtEnd() {
 }
 
 void UnwrappedLineParser::parseObjCInterfaceOrImplementation() {
+  assert(FormatTok->Tok.getObjCKeywordID() == tok::objc_interface ||
+         FormatTok->Tok.getObjCKeywordID() == tok::objc_implementation);
   nextToken();
   nextToken(); // interface name
 
@@ -2140,8 +2179,21 @@ void UnwrappedLineParser::parseObjCInterfaceOrImplementation() {
   parseObjCUntilAtEnd();
 }
 
-void UnwrappedLineParser::parseObjCProtocol() {
+// Returns true for the declaration/definition form of @protocol,
+// false for the expression form.
+bool UnwrappedLineParser::parseObjCProtocol() {
+  assert(FormatTok->Tok.getObjCKeywordID() == tok::objc_protocol);
   nextToken();
+
+  if (FormatTok->is(tok::l_paren))
+    // The expression form of @protocol, e.g. "Protocol* p = @protocol(foo);".
+    return false;
+
+  // The definition/declaration form,
+  // @protocol Foo
+  // - (int)someMethod;
+  // @end
+
   nextToken(); // protocol name
 
   if (FormatTok->Tok.is(tok::less))
@@ -2150,11 +2202,13 @@ void UnwrappedLineParser::parseObjCProtocol() {
   // Check for protocol declaration.
   if (FormatTok->Tok.is(tok::semi)) {
     nextToken();
-    return addUnwrappedLine();
+    addUnwrappedLine();
+    return true;
   }
 
   addUnwrappedLine();
   parseObjCUntilAtEnd();
+  return true;
 }
 
 void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {

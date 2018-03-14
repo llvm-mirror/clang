@@ -15,7 +15,7 @@
 #ifndef LLVM_CLANG_ANALYSIS_CFG_H
 #define LLVM_CLANG_ANALYSIS_CFG_H
 
-#include "clang/AST/Stmt.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/Analysis/Support/BumpVector.h"
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
@@ -38,6 +38,7 @@ namespace clang {
 class ASTContext;
 class BinaryOperator;
 class CFG;
+class ConstructionContext;
 class CXXBaseSpecifier;
 class CXXBindTemporaryExpr;
 class CXXCtorInitializer;
@@ -55,11 +56,15 @@ class CFGElement {
 public:
   enum Kind {
     // main kind
-    Statement,
     Initializer,
     NewAllocator,
     LifetimeEnds,
     LoopExit,
+    // stmt kind
+    Statement,
+    Constructor,
+    STMT_BEGIN = Statement,
+    STMT_END = Constructor,
     // dtor kind
     AutomaticObjectDtor,
     DeleteDtor,
@@ -117,7 +122,9 @@ public:
 
 class CFGStmt : public CFGElement {
 public:
-  CFGStmt(Stmt *S) : CFGElement(Statement, S) {}
+  explicit CFGStmt(Stmt *S, Kind K = Statement) : CFGElement(K, S) {
+    assert(isKind(*this));
+  }
 
   const Stmt *getStmt() const {
     return static_cast<const Stmt *>(Data1.getPointer());
@@ -126,10 +133,40 @@ public:
 private:
   friend class CFGElement;
 
+  static bool isKind(const CFGElement &E) {
+    return E.getKind() >= STMT_BEGIN && E.getKind() <= STMT_END;
+  }
+
+protected:
   CFGStmt() = default;
+};
+
+/// CFGConstructor - Represents C++ constructor call. Maintains information
+/// necessary to figure out what memory is being initialized by the
+/// constructor expression. For now this is only used by the analyzer's CFG.
+class CFGConstructor : public CFGStmt {
+public:
+  explicit CFGConstructor(CXXConstructExpr *CE, const ConstructionContext *C)
+      : CFGStmt(CE, Constructor) {
+    assert(C);
+    Data2.setPointer(const_cast<ConstructionContext *>(C));
+  }
+
+  const ConstructionContext *getConstructionContext() const {
+    return static_cast<ConstructionContext *>(Data2.getPointer());
+  }
+
+  QualType getType() const {
+    return cast<CXXConstructExpr>(getStmt())->getType();
+  }
+
+private:
+  friend class CFGElement;
+
+  CFGConstructor() = default;
 
   static bool isKind(const CFGElement &E) {
-    return E.getKind() == Statement;
+    return E.getKind() == Constructor;
   }
 };
 
@@ -137,7 +174,7 @@ private:
 /// constructor's initialization list.
 class CFGInitializer : public CFGElement {
 public:
-  CFGInitializer(CXXCtorInitializer *initializer)
+  explicit CFGInitializer(CXXCtorInitializer *initializer)
       : CFGElement(Initializer, initializer) {}
 
   CXXCtorInitializer* getInitializer() const {
@@ -747,6 +784,11 @@ public:
     Elements.push_back(CFGStmt(statement), C);
   }
 
+  void appendConstructor(CXXConstructExpr *CE, const ConstructionContext *CC,
+                         BumpVectorContext &C) {
+    Elements.push_back(CFGConstructor(CE, CC), C);
+  }
+
   void appendInitializer(CXXCtorInitializer *initializer,
                         BumpVectorContext &C) {
     Elements.push_back(CFGInitializer(initializer), C);
@@ -855,6 +897,7 @@ public:
     bool AddStaticInitBranches = false;
     bool AddCXXNewAllocator = false;
     bool AddCXXDefaultInitExprInCtors = false;
+    bool AddRichCXXConstructors = false;
 
     BuildOptions() = default;
 

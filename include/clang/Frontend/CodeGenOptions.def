@@ -38,6 +38,7 @@ CODEGENOPT(AssumeSaneOperatorNew , 1, 1) ///< implicit __attribute__((malloc)) o
 CODEGENOPT(Autolink          , 1, 1) ///< -fno-autolink
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
 CODEGENOPT(Backchain         , 1, 0) ///< -mbackchain
+CODEGENOPT(ControlFlowGuard  , 1, 0) ///< -cfguard
 CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
 CODEGENOPT(CoverageNoFunctionNamesInData, 1, 0) ///< Do not include function names in GCDA files.
 CODEGENOPT(CoverageExitBlockBeforeBody, 1, 0) ///< Whether to emit the exit block before the body blocks in GCNO files.
@@ -61,6 +62,8 @@ CODEGENOPT(DebugPassManager, 1, 0) ///< Prints debug information for the new
                                    ///< pass manager.
 CODEGENOPT(DisableRedZone    , 1, 0) ///< Set when -mno-red-zone is enabled.
 CODEGENOPT(DisableTailCalls  , 1, 0) ///< Do not emit tail calls.
+CODEGENOPT(NoEscapingBlockTailCalls, 1, 0) ///< Do not emit tail calls from
+                                           ///< escaping blocks.
 CODEGENOPT(EmitDeclMetadata  , 1, 0) ///< Emit special metadata indicating what
                                      ///< Decl* various IR entities came from.
                                      ///< Only useful when running CodeGen as a
@@ -68,7 +71,8 @@ CODEGENOPT(EmitDeclMetadata  , 1, 0) ///< Emit special metadata indicating what
 CODEGENOPT(EmitGcovArcs      , 1, 0) ///< Emit coverage data files, aka. GCDA.
 CODEGENOPT(EmitGcovNotes     , 1, 0) ///< Emit coverage "notes" files, aka GCNO.
 CODEGENOPT(EmitOpenCLArgMetadata , 1, 0) ///< Emit OpenCL kernel arg metadata.
-CODEGENOPT(EmulatedTLS       , 1, 0) ///< Set when -femulated-tls is enabled.
+CODEGENOPT(EmulatedTLS       , 1, 0) ///< Set by default or -f[no-]emulated-tls.
+CODEGENOPT(ExplicitEmulatedTLS , 1, 0) ///< Set if -f[no-]emulated-tls is used.
 /// \brief Embed Bitcode mode (off/all/bitcode/marker).
 ENUM_CODEGENOPT(EmbedBitcode, EmbedBitcodeKind, 2, Embed_Off)
 CODEGENOPT(ForbidGuardVariables , 1, 0) ///< Issue errors if C++ guard variables
@@ -80,9 +84,13 @@ CODEGENOPT(InstrumentFunctionsAfterInlining , 1, 0) ///< Set when
                           ///< -finstrument-functions-after-inlining is enabled.
 CODEGENOPT(InstrumentFunctionEntryBare , 1, 0) ///< Set when
                                ///< -finstrument-function-entry-bare is enabled.
-
+CODEGENOPT(CFProtectionReturn , 1, 0) ///< if -fcf-protection is
+                                      ///< set to full or return.
+CODEGENOPT(CFProtectionBranch , 1, 0) ///< if -fcf-protection is
+                                      ///< set to full or branch.
 CODEGENOPT(XRayInstrumentFunctions , 1, 0) ///< Set when -fxray-instrument is
                                            ///< enabled.
+CODEGENOPT(StackSizeSection  , 1, 0) ///< Set when -fstack-size-section is enabled.
 
 ///< Set when -fxray-always-emit-customevents is enabled.
 CODEGENOPT(XRayAlwaysEmitCustomEvents , 1, 0)
@@ -123,6 +131,7 @@ CODEGENOPT(NoTrappingMath    , 1, 0) ///< Set when -fno-trapping-math is enabled
 CODEGENOPT(NoNaNsFPMath      , 1, 0) ///< Assume FP arguments, results not NaN.
 CODEGENOPT(FlushDenorm       , 1, 0) ///< Allow FP denorm numbers to be flushed to zero
 CODEGENOPT(CorrectlyRoundedDivSqrt, 1, 0) ///< -cl-fp32-correctly-rounded-divide-sqrt
+CODEGENOPT(UniformWGSize     , 1, 0) ///< -cl-uniform-work-group-size
 CODEGENOPT(NoZeroInitializedInBSS , 1, 0) ///< -fno-zero-initialized-in-bss.
 /// \brief Method of Objective-C dispatch to use.
 ENUM_CODEGENOPT(ObjCDispatchMethod, ObjCDispatchMethodKind, 2, Legacy)
@@ -154,6 +163,9 @@ CODEGENOPT(NewStructPathTBAA , 1, 0) ///< Whether or not to use enhanced struct-
 CODEGENOPT(SaveTempLabels    , 1, 0) ///< Save temporary labels.
 CODEGENOPT(SanitizeAddressUseAfterScope , 1, 0) ///< Enable use-after-scope detection
                                                 ///< in AddressSanitizer
+CODEGENOPT(SanitizeAddressPoisonClassMemberArrayNewCookie, 1,
+           0) ///< Enable poisoning operator new[] which is not a replaceable
+              ///< global allocation function in AddressSanitizer
 CODEGENOPT(SanitizeAddressGlobalsDeadStripping, 1, 0) ///< Enable linker dead stripping
                                                       ///< of globals in AddressSanitizer
 CODEGENOPT(SanitizeMemoryTrackOrigins, 2, 0) ///< Enable tracking origins in
@@ -218,6 +230,7 @@ VALUE_CODEGENOPT(StackAlignment    , 32, 0) ///< Overrides default stack
                                             ///< alignment, if not 0.
 VALUE_CODEGENOPT(StackProbeSize    , 32, 4096) ///< Overrides default stack
                                                ///< probe size, even if 0.
+CODEGENOPT(NoStackArgProbe, 1, 0) ///< Set when -mno-stack-arg-probe is used
 CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
                                   ///< in debug info.
 
@@ -307,6 +320,9 @@ CODEGENOPT(PreserveVec3Type, 1, 0)
 CODEGENOPT(GnuPubnames, 1, 0)
 
 CODEGENOPT(NoPLT, 1, 0)
+
+/// Whether to embed source in DWARF debug line section.
+CODEGENOPT(EmbedSource, 1, 0)
 
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT

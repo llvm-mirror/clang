@@ -21,9 +21,9 @@
 // SI+ only builtins.
 //===----------------------------------------------------------------------===//
 
-BUILTIN(__builtin_amdgcn_dispatch_ptr, "Uc*2", "nc")
-BUILTIN(__builtin_amdgcn_kernarg_segment_ptr, "Uc*2", "nc")
-BUILTIN(__builtin_amdgcn_implicitarg_ptr, "Uc*2", "nc")
+BUILTIN(__builtin_amdgcn_dispatch_ptr, "Uc*4", "nc")
+BUILTIN(__builtin_amdgcn_kernarg_segment_ptr, "Uc*4", "nc")
+BUILTIN(__builtin_amdgcn_implicitarg_ptr, "Uc*4", "nc")
 
 BUILTIN(__builtin_amdgcn_workgroup_id_x, "Ui", "nc")
 BUILTIN(__builtin_amdgcn_workgroup_id_y, "Ui", "nc")
@@ -93,6 +93,9 @@ BUILTIN(__builtin_amdgcn_ds_bpermute, "iii", "nc")
 BUILTIN(__builtin_amdgcn_readfirstlane, "ii", "nc")
 BUILTIN(__builtin_amdgcn_readlane, "iii", "nc")
 BUILTIN(__builtin_amdgcn_fmed3f, "ffff", "nc")
+BUILTIN(__builtin_amdgcn_ds_fadd, "ff*3fiib", "n")
+BUILTIN(__builtin_amdgcn_ds_fmin, "ff*3fiib", "n")
+BUILTIN(__builtin_amdgcn_ds_fmax, "ff*3fiib", "n")
 
 //===----------------------------------------------------------------------===//
 // VI+ only builtins.

@@ -21,8 +21,8 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/PTHManager.h"
 #include "clang/Lex/Preprocessor.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/DJB.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -128,7 +128,7 @@ public:
   typedef unsigned offset_type;
 
   static hash_value_type ComputeHash(PTHEntryKeyVariant V) {
-    return llvm::HashString(V.getString());
+    return llvm::djbHash(V.getString());
   }
 
   static std::pair<unsigned,unsigned>
@@ -625,7 +625,7 @@ public:
   typedef unsigned offset_type;
 
   static hash_value_type ComputeHash(PTHIdKey* key) {
-    return llvm::HashString(key->II->getName());
+    return llvm::djbHash(key->II->getName());
   }
 
   static std::pair<unsigned,unsigned>
@@ -662,7 +662,8 @@ std::pair<Offset,Offset> PTHWriter::EmitIdentifierTable() {
   //  (2) a map from (IdentifierInfo*, Offset)* -> persistent IDs
 
   // Note that we use 'calloc', so all the bytes are 0.
-  PTHIdKey *IIDMap = (PTHIdKey*)calloc(idcount, sizeof(PTHIdKey));
+  PTHIdKey *IIDMap = static_cast<PTHIdKey*>(
+      llvm::safe_calloc(idcount, sizeof(PTHIdKey)));
 
   // Create the hashtable.
   llvm::OnDiskChainedHashTableGenerator<PTHIdentifierTableTrait> IIOffMap;

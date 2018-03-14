@@ -324,6 +324,10 @@ private:
   /// is defined once we get to the end of the of the translation unit.
   std::vector<GlobalDecl> Aliases;
 
+  /// List of multiversion functions that have to be emitted.  Used to make sure
+  /// we properly emit the iFunc.
+  std::vector<GlobalDecl> MultiVersionFuncs;
+
   typedef llvm::StringMap<llvm::TrackingVH<llvm::Constant> > ReplacementsTy;
   ReplacementsTy Replacements;
 
@@ -685,6 +689,11 @@ public:
   TBAAAccessInfo mergeTBAAInfoForConditionalOperator(TBAAAccessInfo InfoA,
                                                      TBAAAccessInfo InfoB);
 
+  /// mergeTBAAInfoForMemoryTransfer - Get merged TBAA information for the
+  /// purposes of memory transfer calls.
+  TBAAAccessInfo mergeTBAAInfoForMemoryTransfer(TBAAAccessInfo DestInfo,
+                                                TBAAAccessInfo SrcInfo);
+
   /// getTBAAInfoForSubobject - Get TBAA information for an access with a given
   /// base lvalue.
   TBAAAccessInfo getTBAAInfoForSubobject(LValue Base, QualType AccessType) {
@@ -710,8 +719,19 @@ public:
   llvm::ConstantInt *getSize(CharUnits numChars);
 
   /// Set the visibility for the given LLVM GlobalValue.
-  void setGlobalVisibility(llvm::GlobalValue *GV, const NamedDecl *D,
-                           ForDefinition_t IsForDefinition) const;
+  void setGlobalVisibility(llvm::GlobalValue *GV, const NamedDecl *D) const;
+
+  void setGlobalVisibilityAndLocal(llvm::GlobalValue *GV,
+                                   const NamedDecl *D) const;
+
+  void setDSOLocal(llvm::GlobalValue *GV) const;
+
+  void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
+  void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
+  /// Set visibility, dllimport/dllexport and dso_local.
+  /// This must be called after dllimport/dllexport is set.
+  void setGVProperties(llvm::GlobalValue *GV, GlobalDecl GD) const;
+  void setGVProperties(llvm::GlobalValue *GV, const NamedDecl *D) const;
 
   /// Set the TLS mode for the given LLVM GlobalValue for the thread-local
   /// variable declaration D.
@@ -1002,7 +1022,7 @@ public:
   /// Set the attributes on the LLVM function for the given decl and function
   /// info. This applies attributes necessary for handling the ABI as well as
   /// user specified attributes like section.
-  void SetInternalFunctionAttributes(const Decl *D, llvm::Function *F,
+  void SetInternalFunctionAttributes(GlobalDecl GD, llvm::Function *F,
                                      const CGFunctionInfo &FI);
 
   /// Set the LLVM function attributes (sext, zext, etc).
@@ -1085,14 +1105,13 @@ public:
   /// value.
   void AddDependentLib(StringRef Lib);
 
+  void AddELFLibDirective(StringRef Lib);
+
   llvm::GlobalVariable::LinkageTypes getFunctionLinkage(GlobalDecl GD);
 
   void setFunctionLinkage(GlobalDecl GD, llvm::Function *F) {
     F->setLinkage(getFunctionLinkage(GD));
   }
-
-  /// Set the DLL storage class on F.
-  void setFunctionDLLStorageClass(GlobalDecl GD, llvm::Function *F);
 
   /// Return the appropriate linkage for the vtable, VTT, and type information
   /// of the given class.
@@ -1165,23 +1184,13 @@ public:
   bool TryEmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target);
   bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
 
-  /// Set attributes for a global definition.
-  void setFunctionDefinitionAttributes(const FunctionDecl *D,
-                                       llvm::Function *F);
-
   llvm::GlobalValue *GetGlobalValue(StringRef Ref);
 
   /// Set attributes which are common to any form of a global definition (alias,
   /// Objective-C method, function, global variable).
   ///
   /// NOTE: This should only be called for definitions.
-  void SetCommonAttributes(const Decl *D, llvm::GlobalValue *GV);
-
-  /// Set attributes which must be preserved by an alias. This includes common
-  /// attributes (i.e. it includes a call to SetCommonAttributes).
-  ///
-  /// NOTE: This should only be called for definitions.
-  void setAliasAttributes(const Decl *D, llvm::GlobalValue *GV);
+  void SetCommonAttributes(GlobalDecl GD, llvm::GlobalValue *GV);
 
   void addReplacement(StringRef Name, llvm::Constant *C);
 
@@ -1247,18 +1256,25 @@ private:
       llvm::AttributeList ExtraAttrs = llvm::AttributeList(),
       ForDefinition_t IsForDefinition = NotForDefinition);
 
+  llvm::Constant *GetOrCreateMultiVersionIFunc(GlobalDecl GD,
+                                               llvm::Type *DeclTy,
+                                               StringRef MangledName,
+                                               const FunctionDecl *FD);
+  void UpdateMultiVersionNames(GlobalDecl GD, const FunctionDecl *FD);
+
   llvm::Constant *GetOrCreateLLVMGlobal(StringRef MangledName,
                                         llvm::PointerType *PTy,
                                         const VarDecl *D,
                                         ForDefinition_t IsForDefinition
                                           = NotForDefinition);
 
-  void setNonAliasAttributes(const Decl *D, llvm::GlobalObject *GO);
+  bool GetCPUAndFeaturesAttributes(const Decl *D,
+                                   llvm::AttrBuilder &AttrBuilder);
+  void setNonAliasAttributes(GlobalDecl GD, llvm::GlobalObject *GO);
 
   /// Set function attributes for a function declaration.
   void SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
-                             bool IsIncompleteFunction, bool IsThunk,
-                             ForDefinition_t IsForDefinition);
+                             bool IsIncompleteFunction, bool IsThunk);
 
   void EmitGlobalDefinition(GlobalDecl D, llvm::GlobalValue *GV = nullptr);
 
@@ -1318,6 +1334,8 @@ private:
   void applyGlobalValReplacements();
 
   void checkAliases();
+
+  void emitMultiVersionFunctions();
 
   /// Emit any vtables which we deferred and still have a use for.
   void EmitDeferredVTables();

@@ -110,16 +110,7 @@ int main() {
     // LAMBDA: [[G_ADDR:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA: [[G1_ADDR:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA: [[SIVAR_ADDR:%.+]] = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: {{%.+}} = alloca i{{[0-9]+}},
-    // LAMBDA: [[G_PRIV_ADDR:%.+]] = alloca i{{[0-9]+}},
-    // LAMBDA: [[G1_PRIV_ADDR:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA: [[G1_TMP:%.+]] = alloca i32*,
-    // LAMBDA: [[SIVAR_PRIV_ADDR:%.+]] = alloca i{{[0-9]+}},
     // skip loop vars
     // LAMBDA-DAG: store {{.+}}, {{.+}} [[G_ADDR]],
     // LAMBDA-DAG: store {{.+}}, {{.+}} [[G1_ADDR]],
@@ -127,15 +118,15 @@ int main() {
     // LAMBDA-DAG: [[G_CONV:%.+]] = bitcast {{.+}} [[G_ADDR]] to
     // LAMBDA-DAG: [[G1_CONV:%.+]] = bitcast {{.+}} [[G1_ADDR]] to
     // LAMBDA-DAG: [[SIVAR_CONV:%.+]] = bitcast {{.+}} [[SIVAR_ADDR]] to
-    // LAMBDA-DAG: store{{.+}} [[G1_PRIV_ADDR]], {{.+}} [[G1_TMP]],
+    // LAMBDA-DAG: store{{.+}} [[G1_CONV]], {{.+}} [[G1_TMP]],
     g = 1;
     g1 = 1;
     sivar = 2;
     // LAMBDA: call void @__kmpc_for_static_init_4(
-    // LAMBDA-DAG: store{{.+}} 1, {{.+}} [[G_PRIV_ADDR]],
+    // LAMBDA-DAG: store{{.+}} 1, {{.+}} [[G_CONV]],
     // LAMBDA-DAG: [[G1:%.+]] = load{{.+}}, {{.+}}* [[G1_TMP]]
     // LAMBDA-DAG: store{{.+}} 1, {{.+}} [[G1]],
-    // LAMBDA-DAG: store{{.+}} 2, {{.+}} [[SIVAR_PRIV_ADDR]],
+    // LAMBDA-DAG: store{{.+}} 2, {{.+}} [[SIVAR_CONV]],
     // LAMBDA-DAG: [[G1_REF:%.+]] = load{{.+}}, {{.+}} [[G1_TMP]],
     // LAMBDA-DAG: store{{.+}} 1, {{.+}} [[G1_REF]],
     // LAMBDA: call void [[INNER_LAMBDA:@.+]](
@@ -236,7 +227,7 @@ int main() {
 // firstprivate vec(vec): copy from *_addr into priv1 and then from priv1 into priv2
 // CHECK-DAG: [[VEC_DEST_PRIV:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8* 
 // CHECK-DAG: [[VEC_SRC:%.+]] =  bitcast [2 x i{{[0-9]+}}]* [[VEC_ADDR_VAL]] to i8* 
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST_PRIV]], i8* [[VEC_SRC]], {{.+}})
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align {{[0-9]+}} [[VEC_DEST_PRIV]], i8* align {{[0-9]+}} [[VEC_SRC]], {{.+}})
 
 // firstprivate(s_arr)
 // CHECK-DAG: [[S_ARR_PRIV_BGN:%.+]] = getelementptr{{.*}} [2 x [[S_FLOAT_TY]]], [2 x [[S_FLOAT_TY]]]* [[S_ARR_PRIV]],
@@ -322,7 +313,7 @@ int main() {
 // firstprivate vec(vec): copy from *_addr into priv1 and then from priv1 into priv2
 // CHECK-DAG: [[VEC_DEST_PRIV:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8* 
 // CHECK-DAG: [[VEC_SRC:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_ADDR_VAL]] to i8* 
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST_PRIV]], i8* [[VEC_SRC]], {{.+}})
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align {{[0-9]+}} [[VEC_DEST_PRIV]], i8* align {{[0-9]+}} [[VEC_SRC]], {{.+}})
 
 // firstprivate(s_arr)
 // CHECK-DAG: [[S_ARR_PRIV_BGN:%.+]] = getelementptr{{.*}} [2 x [[S_INT_TY]]], [2 x [[S_INT_TY]]]* [[S_ARR_PRIV]],

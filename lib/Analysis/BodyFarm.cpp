@@ -149,7 +149,8 @@ DeclRefExpr *ASTMaker::makeDeclRefExpr(
 
 UnaryOperator *ASTMaker::makeDereference(const Expr *Arg, QualType Ty) {
   return new (C) UnaryOperator(const_cast<Expr*>(Arg), UO_Deref, Ty,
-                               VK_LValue, OK_Ordinary, SourceLocation());
+                               VK_LValue, OK_Ordinary, SourceLocation(),
+                              /*CanOverflow*/ false);
 }
 
 ImplicitCastExpr *ASTMaker::makeLvalueToRvalue(const Expr *Arg, QualType Ty) {
@@ -405,6 +406,16 @@ static Stmt *create_call_once(ASTContext &C, const FunctionDecl *D) {
   // reference.
   for (unsigned int ParamIdx = 2; ParamIdx < D->getNumParams(); ParamIdx++) {
     const ParmVarDecl *PDecl = D->getParamDecl(ParamIdx);
+    if (PDecl &&
+        CallbackFunctionType->getParamType(ParamIdx - 2)
+                .getNonReferenceType()
+                .getCanonicalType() !=
+            PDecl->getType().getNonReferenceType().getCanonicalType()) {
+      DEBUG(llvm::dbgs() << "Types of params of the callback do not match "
+                         << "params passed to std::call_once, "
+                         << "ignoring the call\n");
+      return nullptr;
+    }
     Expr *ParamExpr = M.makeDeclRefExpr(PDecl);
     if (!CallbackFunctionType->getParamType(ParamIdx - 2)->isReferenceType()) {
       QualType PTy = PDecl->getType().getNonReferenceType();
@@ -441,7 +452,8 @@ static Stmt *create_call_once(ASTContext &C, const FunctionDecl *D) {
       /* opc=*/ UO_LNot,
       /* QualType=*/ C.IntTy,
       /* ExprValueKind=*/ VK_RValue,
-      /* ExprObjectKind=*/ OK_Ordinary, SourceLocation());
+      /* ExprObjectKind=*/ OK_Ordinary, SourceLocation(),
+      /* CanOverflow*/ false);
 
   // Create assignment.
   BinaryOperator *FlagAssignment = M.makeAssignment(
@@ -505,7 +517,8 @@ static Stmt *create_dispatch_once(ASTContext &C, const FunctionDecl *D) {
   // (2) Create the assignment to the predicate.
   Expr *DoneValue =
       new (C) UnaryOperator(M.makeIntegerLiteral(0, C.LongTy), UO_Not, C.LongTy,
-                            VK_RValue, OK_Ordinary, SourceLocation());
+                            VK_RValue, OK_Ordinary, SourceLocation(),
+                            /*CanOverflow*/false);
 
   BinaryOperator *B =
     M.makeAssignment(
@@ -813,4 +826,3 @@ Stmt *BodyFarm::getBody(const ObjCMethodDecl *D) {
 
   return Val.getValue();
 }
-

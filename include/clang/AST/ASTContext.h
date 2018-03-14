@@ -784,7 +784,7 @@ public:
   void addComment(const RawComment &RC) {
     assert(LangOpts.RetainCommentsFromSystemHeaders ||
            !SourceMgr.isInSystemHeader(RC.getSourceRange().getBegin()));
-    Comments.addComment(RC, BumpAlloc);
+    Comments.addComment(RC, LangOpts.CommentOpts, BumpAlloc);
   }
 
   /// \brief Return the documentation comment attached to a given declaration.
@@ -1178,6 +1178,10 @@ public:
   void adjustExceptionSpec(FunctionDecl *FD,
                            const FunctionProtoType::ExceptionSpecInfo &ESI,
                            bool AsWritten = false);
+
+  /// Determine whether a type is a class that should be detructed in the
+  /// callee function.
+  bool isParamDestroyedInCallee(QualType T) const;
 
   /// \brief Return the uniqued reference to the type for a complex
   /// number with the specified element type.
@@ -2639,6 +2643,12 @@ public:
   /// \returns true if the function/var must be CodeGen'ed/deserialized even if
   /// it is not used.
   bool DeclMustBeEmitted(const Decl *D);
+
+  /// \brief Visits all versions of a multiversioned function with the passed
+  /// predicate.
+  void forEachMultiversionedFunctionVersion(
+      const FunctionDecl *FD,
+      llvm::function_ref<void(const FunctionDecl *)> Pred) const;
 
   const CXXConstructorDecl *
   getCopyConstructorForExceptionObject(CXXRecordDecl *RD);

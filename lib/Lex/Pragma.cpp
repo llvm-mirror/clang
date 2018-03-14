@@ -1053,6 +1053,20 @@ struct PragmaDebugHandler : public PragmaHandler {
         PP.Diag(Identifier, diag::warn_pragma_debug_missing_argument)
             << II->getName();
       }
+    } else if (II->isStr("diag_mapping")) {
+      Token DiagName;
+      PP.LexUnexpandedToken(DiagName);
+      if (DiagName.is(tok::eod))
+        PP.getDiagnostics().dump();
+      else if (DiagName.is(tok::string_literal) && !DiagName.hasUDSuffix()) {
+        StringLiteralParser Literal(DiagName, PP);
+        if (Literal.hadError)
+          return;
+        PP.getDiagnostics().dump(Literal.GetString());
+      } else {
+        PP.Diag(DiagName, diag::warn_pragma_debug_missing_argument)
+            << II->getName();
+      }
     } else if (II->isStr("llvm_fatal_error")) {
       llvm::report_fatal_error("#pragma clang __debug llvm_fatal_error");
     } else if (II->isStr("llvm_unreachable")) {
@@ -1776,13 +1790,15 @@ void Preprocessor::RegisterBuiltinPragmas() {
   ModuleHandler->AddPragma(new PragmaModuleEndHandler());
   ModuleHandler->AddPragma(new PragmaModuleBuildHandler());
   ModuleHandler->AddPragma(new PragmaModuleLoadHandler());
+    
+  // Add region pragmas.
+  AddPragmaHandler(new PragmaRegionHandler("region"));
+  AddPragmaHandler(new PragmaRegionHandler("endregion"));
 
   // MS extensions.
   if (LangOpts.MicrosoftExt) {
     AddPragmaHandler(new PragmaWarningHandler());
     AddPragmaHandler(new PragmaIncludeAliasHandler());
-    AddPragmaHandler(new PragmaRegionHandler("region"));
-    AddPragmaHandler(new PragmaRegionHandler("endregion"));
   }
 
   // Pragmas added by plugins

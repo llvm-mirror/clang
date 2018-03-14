@@ -170,8 +170,10 @@ llvm::MemoryBuffer *ContentCache::getBuffer(DiagnosticsEngine &Diag,
   const char *InvalidBOM = llvm::StringSwitch<const char *>(BufStr)
     .StartsWith("\xFE\xFF", "UTF-16 (BE)")
     .StartsWith("\xFF\xFE", "UTF-16 (LE)")
-    .StartsWith("\x00\x00\xFE\xFF", "UTF-32 (BE)")
-    .StartsWith("\xFF\xFE\x00\x00", "UTF-32 (LE)")
+    .StartsWith(llvm::StringLiteral::withInnerNUL("\x00\x00\xFE\xFF"),
+                                                  "UTF-32 (BE)")
+    .StartsWith(llvm::StringLiteral::withInnerNUL("\xFF\xFE\x00\x00"),
+                                                  "UTF-32 (LE)")
     .StartsWith("\x2B\x2F\x76", "UTF-7")
     .StartsWith("\xF7\x64\x4C", "UTF-1")
     .StartsWith("\xDD\x73\x66\x73", "UTF-EBCDIC")
@@ -953,6 +955,12 @@ SourceManager::getImmediateExpansionRange(SourceLocation Loc) const {
   assert(Loc.isMacroID() && "Not a macro expansion loc!");
   const ExpansionInfo &Expansion = getSLocEntry(getFileID(Loc)).getExpansion();
   return Expansion.getExpansionLocRange();
+}
+
+SourceLocation SourceManager::getTopMacroCallerLoc(SourceLocation Loc) const {
+  while (isMacroArgExpansion(Loc))
+    Loc = getImmediateSpellingLoc(Loc);
+  return Loc;
 }
 
 /// getExpansionRange - Given a SourceLocation object, return the range of

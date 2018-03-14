@@ -191,6 +191,8 @@ public:
   }
   /// Returns the base declaration of the reduction item.
   const VarDecl *getBaseDecl(unsigned N) const { return BaseDecls[N]; }
+  /// Returns the base declaration of the reduction item.
+  const Expr *getRefExpr(unsigned N) const { return ClausesData[N].Ref; }
   /// Returns true if the initialization of the reduction item uses initializer
   /// from declare reduction construct.
   bool usesReductionInitializer(unsigned N) const;
@@ -251,9 +253,8 @@ protected:
   virtual StringRef getOutlinedHelperName() const { return ".omp_outlined."; }
 
   /// Emits \p Callee function call with arguments \p Args with location \p Loc.
-  void emitCall(CodeGenFunction &CGF, llvm::Value *Callee,
-                ArrayRef<llvm::Value *> Args = llvm::None,
-                SourceLocation Loc = SourceLocation()) const;
+  void emitCall(CodeGenFunction &CGF, SourceLocation Loc, llvm::Value *Callee,
+                ArrayRef<llvm::Value *> Args = llvm::None) const;
 
 private:
   /// \brief Default const ident_t object used for initialization of all other
@@ -1207,13 +1208,11 @@ public:
   /// directive, or null if no if clause is used.
   /// \param Device Expression evaluated in device clause associated with the
   /// target directive, or null if no device clause is used.
-  /// \param CapturedVars Values captured in the current region.
   virtual void emitTargetCall(CodeGenFunction &CGF,
                               const OMPExecutableDirective &D,
                               llvm::Value *OutlinedFn,
                               llvm::Value *OutlinedFnID, const Expr *IfCond,
-                              const Expr *Device,
-                              ArrayRef<llvm::Value *> CapturedVars);
+                              const Expr *Device);
 
   /// \brief Emit the target regions enclosed in \a GD function definition or
   /// the function itself in case it is a valid device function. Returns true if
@@ -1833,11 +1832,9 @@ public:
   /// directive, or null if no if clause is used.
   /// \param Device Expression evaluated in device clause associated with the
   /// target directive, or null if no device clause is used.
-  /// \param CapturedVars Values captured in the current region.
   void emitTargetCall(CodeGenFunction &CGF, const OMPExecutableDirective &D,
                       llvm::Value *OutlinedFn, llvm::Value *OutlinedFnID,
-                      const Expr *IfCond, const Expr *Device,
-                      ArrayRef<llvm::Value *> CapturedVars) override;
+                      const Expr *IfCond, const Expr *Device) override;
 
   /// \brief Emit the target regions enclosed in \a GD function definition or
   /// the function itself in case it is a valid device function. Returns true if

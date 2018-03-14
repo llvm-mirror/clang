@@ -68,8 +68,8 @@ public:
     if (CGM.getCodeGenOpts().getClangABICompat() <=
             CodeGenOptions::ClangABI::Ver4 ||
         CGM.getTriple().getOS() == llvm::Triple::PS4)
-      return RD->hasNonTrivialDestructor() ||
-             RD->hasNonTrivialCopyConstructor();
+      return RD->hasNonTrivialDestructorForCall() ||
+             RD->hasNonTrivialCopyConstructorForCall();
     return !canCopyArgument(RD);
   }
 
@@ -300,15 +300,10 @@ public:
     // linkage together with vtables when needed.
     if (ForVTable && !Thunk->hasLocalLinkage())
       Thunk->setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-
-    // Propagate dllexport storage, to enable the linker to generate import
-    // thunks as necessary (e.g. when a parent class has a key function and a
-    // child class doesn't, and the construction vtable for the parent in the
-    // child needs to reference the parent's thunks).
-    const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
-    if (MD->hasAttr<DLLExportAttr>())
-      Thunk->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    CGM.setGVProperties(Thunk, GD);
   }
+
+  bool exportThunk() override { return true; }
 
   llvm::Value *performThisAdjustment(CodeGenFunction &CGF, Address This,
                                      const ThisAdjustment &TA) override;
@@ -1531,7 +1526,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
     VTable->setComdat(CGM.getModule().getOrInsertComdat(VTable->getName()));
 
   // Set the right visibility.
-  CGM.setGlobalVisibility(VTable, RD, ForDefinition);
+  CGM.setGVProperties(VTable, RD);
 
   // Use pointer alignment for the vtable. Otherwise we would align them based
   // on the size of the initializer which doesn't make sense as only single
@@ -1641,12 +1636,8 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   VTable = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, VTableType, llvm::GlobalValue::ExternalLinkage);
   VTable->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  CGM.setGlobalVisibility(VTable, RD, NotForDefinition);
 
-  if (RD->hasAttr<DLLImportAttr>())
-    VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
-  else if (RD->hasAttr<DLLExportAttr>())
-    VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+  CGM.setGVProperties(VTable, RD);
 
   return VTable;
 }
@@ -1702,10 +1693,9 @@ llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
 
   const CGFunctionInfo *FInfo = &CGM.getTypes().arrangeCXXStructorDeclaration(
       Dtor, getFromDtorType(DtorType));
-  llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
+  llvm::FunctionType *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   CGCallee Callee =
-      getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty,
-                                CE ? CE->getLocStart() : SourceLocation());
+      CGCallee::forVirtual(CE, GlobalDecl(Dtor, DtorType), This, Ty);
 
   CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(),
                                   This.getPointer(), /*ImplicitParam=*/nullptr,
@@ -1848,7 +1838,8 @@ Address ItaniumCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
 
   // Handle the array cookie specially in ASan.
   if (CGM.getLangOpts().Sanitize.has(SanitizerKind::Address) && AS == 0 &&
-      expr->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
+      (expr->getOperatorNew()->isReplaceableGlobalAllocationFunction() ||
+       CGM.getCodeGenOpts().SanitizeAddressPoisonClassMemberArrayNewCookie)) {
     // The store to the CookiePtr does not need to be instrumented.
     CGM.getSanitizerMetadata()->disableSanitizerForInstruction(SI);
     llvm::FunctionType *FTy =
@@ -2052,6 +2043,7 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
                                      false, var->getLinkage(),
                                      llvm::ConstantInt::get(guardTy, 0),
                                      guardName.str());
+    guard->setDSOLocal(var->isDSOLocal());
     guard->setVisibility(var->getVisibility());
     // If the variable is thread-local, so is its guard variable.
     guard->setThreadLocalMode(var->getThreadLocalMode());
@@ -2624,8 +2616,7 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
                                   Name);
     if (const RecordType *RecordTy = dyn_cast<RecordType>(Ty)) {
       const CXXRecordDecl *RD = cast<CXXRecordDecl>(RecordTy->getDecl());
-      if (RD->hasAttr<DLLImportAttr>())
-        GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+      CGM.setGVProperties(GV, RD);
     }
   }
 
@@ -2761,6 +2752,11 @@ static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
     // N.B. We must always emit the RTTI data ourselves if there exists a key
     // function.
     bool IsDLLImport = RD->hasAttr<DLLImportAttr>();
+
+    // Don't import the RTTI but emit it locally.
+    if (CGM.getTriple().isWindowsGNUEnvironment() && IsDLLImport)
+      return false;
+
     if (CGM.getVTables().isVTableExternal(RD))
       return IsDLLImport && !CGM.getTriple().isWindowsItaniumEnvironment()
                  ? false
@@ -3207,7 +3203,10 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force,
     llvmVisibility = CodeGenModule::GetLLVMVisibility(Ty->getVisibility());
 
   TypeName->setVisibility(llvmVisibility);
+  CGM.setDSOLocal(TypeName);
+
   GV->setVisibility(llvmVisibility);
+  CGM.setDSOLocal(GV);
 
   if (CGM.getTriple().isWindowsItaniumEnvironment()) {
     auto RD = Ty->getAsCXXRecordDecl();
@@ -3626,7 +3625,7 @@ static void emitConstructorDestructorAlias(CodeGenModule &CGM,
   }
 
   // Finally, set up the alias with its proper name and attributes.
-  CGM.setAliasAttributes(cast<NamedDecl>(AliasDecl.getDecl()), Alias);
+  CGM.SetCommonAttributes(AliasDecl, Alias);
 }
 
 void ItaniumCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
@@ -3902,7 +3901,9 @@ static void InitCatchParam(CodeGenFunction &CGF,
     llvm::Value *rawAdjustedExn = CallBeginCatch(CGF, Exn, true);
     Address adjustedExn(CGF.Builder.CreateBitCast(rawAdjustedExn, PtrTy),
                         caughtExnAlignment);
-    CGF.EmitAggregateCopy(ParamAddr, adjustedExn, CatchType);
+    LValue Dest = CGF.MakeAddrLValue(ParamAddr, CatchType);
+    LValue Src = CGF.MakeAddrLValue(adjustedExn, CatchType);
+    CGF.EmitAggregateCopy(Dest, Src, CatchType);
     return;
   }
 

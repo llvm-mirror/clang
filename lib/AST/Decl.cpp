@@ -312,12 +312,12 @@ LinkageComputer::getLVForTemplateArgumentList(ArrayRef<TemplateArgument> Args,
       LV.merge(getLVForType(*Arg.getAsType(), computation));
       continue;
 
-    case TemplateArgument::Declaration:
-      if (const auto *ND = dyn_cast<NamedDecl>(Arg.getAsDecl())) {
-        assert(!usesTypeVisibility(ND));
-        LV.merge(getLVForDecl(ND, computation));
-      }
+    case TemplateArgument::Declaration: {
+      const NamedDecl *ND = Arg.getAsDecl();
+      assert(!usesTypeVisibility(ND));
+      LV.merge(getLVForDecl(ND, computation));
       continue;
+    }
 
     case TemplateArgument::NullPtr:
       LV.merge(getTypeLinkageAndVisibility(Arg.getNullPtrType()));
@@ -1497,9 +1497,10 @@ void NamedDecl::printQualifiedName(raw_ostream &OS,
   using ContextsTy = SmallVector<const DeclContext *, 8>;
   ContextsTy Contexts;
 
-  // Collect contexts.
-  while (Ctx && isa<NamedDecl>(Ctx)) {
-    Contexts.push_back(Ctx);
+  // Collect named contexts.
+  while (Ctx) {
+    if (isa<NamedDecl>(Ctx))
+      Contexts.push_back(Ctx);
     Ctx = Ctx->getParent();
   }
 
@@ -2901,6 +2902,13 @@ unsigned FunctionDecl::getBuiltinID() const {
       Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID))
     return 0;
 
+  // CUDA does not have device-side standard library. printf and malloc are the
+  // only special cases that are supported by device-side runtime.
+  if (Context.getLangOpts().CUDA && hasAttr<CUDADeviceAttr>() &&
+      !hasAttr<CUDAHostAttr>() &&
+      !(BuiltinID == Builtin::BIprintf || BuiltinID == Builtin::BImalloc))
+    return 0;
+
   return BuiltinID;
 }
 
@@ -3617,6 +3625,12 @@ unsigned FunctionDecl::getODRHash() {
     }
   }
 
+  if (auto *FT = getInstantiatedFromMemberFunction()) {
+    HasODRHash = true;
+    ODRHash = FT->getODRHash();
+    return ODRHash;
+  }
+
   class ODRHash Hash;
   Hash.AddFunctionDecl(this);
   HasODRHash = true;
@@ -3915,7 +3929,9 @@ RecordDecl::RecordDecl(Kind DK, TagKind TK, const ASTContext &C,
     : TagDecl(DK, TK, C, DC, IdLoc, Id, PrevDecl, StartLoc),
       HasFlexibleArrayMember(false), AnonymousStructOrUnion(false),
       HasObjectMember(false), HasVolatileMember(false),
-      LoadedFieldsFromExternalStorage(false) {
+      LoadedFieldsFromExternalStorage(false),
+      NonTrivialToPrimitiveDefaultInitialize(false),
+      NonTrivialToPrimitiveCopy(false), NonTrivialToPrimitiveDestroy(false) {
   assert(classof(static_cast<Decl*>(this)) && "Invalid Kind!");
 }
 
@@ -4365,9 +4381,7 @@ bool TypedefNameDecl::isTransparentTagSlow() const {
   };
 
   bool isTransparent = determineIsTransparent();
-  CacheIsTransparentTag = 1;
-  if (isTransparent)
-    CacheIsTransparentTag |= 0x2;
+  MaybeModedTInfo.setInt((isTransparent << 1) | 1);
   return isTransparent;
 }
 

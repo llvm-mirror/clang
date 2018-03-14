@@ -414,8 +414,7 @@ public:
 
   /// Build a virtual function pointer in the ABI-specific way.
   virtual CGCallee getVirtualFunctionPointer(CodeGenFunction &CGF,
-                                             GlobalDecl GD,
-                                             Address This,
+                                             GlobalDecl GD, Address This,
                                              llvm::Type *Ty,
                                              SourceLocation Loc) = 0;
 
@@ -434,6 +433,7 @@ public:
   /// base tables.
   virtual void emitVirtualInheritanceTables(const CXXRecordDecl *RD) = 0;
 
+  virtual bool exportThunk() = 0;
   virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable,
                                GlobalDecl GD, bool ReturnAdjustment) = 0;
 

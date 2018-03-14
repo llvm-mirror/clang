@@ -1123,57 +1123,56 @@ QualType QualType::substObjCTypeArgs(
     // Replace an Objective-C type parameter reference with the corresponding
     // type argument.
     if (const auto *OTPTy = dyn_cast<ObjCTypeParamType>(splitType.Ty)) {
-      if (auto *typeParam = dyn_cast<ObjCTypeParamDecl>(OTPTy->getDecl())) {
-        // If we have type arguments, use them.
-        if (!typeArgs.empty()) {
-          QualType argType = typeArgs[typeParam->getIndex()];
-          if (OTPTy->qual_empty())
-            return ctx.getQualifiedType(argType, splitType.Quals);
+      ObjCTypeParamDecl *typeParam = OTPTy->getDecl();
+      // If we have type arguments, use them.
+      if (!typeArgs.empty()) {
+        QualType argType = typeArgs[typeParam->getIndex()];
+        if (OTPTy->qual_empty())
+          return ctx.getQualifiedType(argType, splitType.Quals);
 
-          // Apply protocol lists if exists.
-          bool hasError;
-          SmallVector<ObjCProtocolDecl*, 8> protocolsVec;
-          protocolsVec.append(OTPTy->qual_begin(),
-                              OTPTy->qual_end());
-          ArrayRef<ObjCProtocolDecl *> protocolsToApply = protocolsVec;
-          QualType resultTy = ctx.applyObjCProtocolQualifiers(argType,
-              protocolsToApply, hasError, true/*allowOnPointerType*/);
+        // Apply protocol lists if exists.
+        bool hasError;
+        SmallVector<ObjCProtocolDecl*, 8> protocolsVec;
+        protocolsVec.append(OTPTy->qual_begin(),
+                            OTPTy->qual_end());
+        ArrayRef<ObjCProtocolDecl *> protocolsToApply = protocolsVec;
+        QualType resultTy = ctx.applyObjCProtocolQualifiers(argType,
+            protocolsToApply, hasError, true/*allowOnPointerType*/);
 
-          return ctx.getQualifiedType(resultTy, splitType.Quals);
-        }
+        return ctx.getQualifiedType(resultTy, splitType.Quals);
+      }
 
-        switch (context) {
-        case ObjCSubstitutionContext::Ordinary:
-        case ObjCSubstitutionContext::Parameter:
-        case ObjCSubstitutionContext::Superclass:
-          // Substitute the bound.
+      switch (context) {
+      case ObjCSubstitutionContext::Ordinary:
+      case ObjCSubstitutionContext::Parameter:
+      case ObjCSubstitutionContext::Superclass:
+        // Substitute the bound.
+        return ctx.getQualifiedType(typeParam->getUnderlyingType(),
+                                    splitType.Quals);
+
+      case ObjCSubstitutionContext::Result:
+      case ObjCSubstitutionContext::Property: {
+        // Substitute the __kindof form of the underlying type.
+        const auto *objPtr = typeParam->getUnderlyingType()
+          ->castAs<ObjCObjectPointerType>();
+
+        // __kindof types, id, and Class don't need an additional
+        // __kindof.
+        if (objPtr->isKindOfType() || objPtr->isObjCIdOrClassType())
           return ctx.getQualifiedType(typeParam->getUnderlyingType(),
                                       splitType.Quals);
 
-        case ObjCSubstitutionContext::Result:
-        case ObjCSubstitutionContext::Property: {
-          // Substitute the __kindof form of the underlying type.
-          const auto *objPtr = typeParam->getUnderlyingType()
-            ->castAs<ObjCObjectPointerType>();
+        // Add __kindof.
+        const auto *obj = objPtr->getObjectType();
+        QualType resultTy = ctx.getObjCObjectType(obj->getBaseType(),
+                                                  obj->getTypeArgsAsWritten(),
+                                                  obj->getProtocols(),
+                                                  /*isKindOf=*/true);
 
-          // __kindof types, id, and Class don't need an additional
-          // __kindof.
-          if (objPtr->isKindOfType() || objPtr->isObjCIdOrClassType())
-            return ctx.getQualifiedType(typeParam->getUnderlyingType(),
-                                        splitType.Quals);
-
-          // Add __kindof.
-          const auto *obj = objPtr->getObjectType();
-          QualType resultTy = ctx.getObjCObjectType(obj->getBaseType(),
-                                                    obj->getTypeArgsAsWritten(),
-                                                    obj->getProtocols(),
-                                                    /*isKindOf=*/true);
-
-          // Rebuild object pointer type.
-          resultTy = ctx.getObjCObjectPointerType(resultTy);
-          return ctx.getQualifiedType(resultTy, splitType.Quals);
-        }
-        }
+        // Rebuild object pointer type.
+        resultTy = ctx.getObjCObjectPointerType(resultTy);
+        return ctx.getQualifiedType(resultTy, splitType.Quals);
+      }
       }
     }
 
@@ -1593,7 +1592,7 @@ CXXRecordDecl *Type::getAsCXXRecordDecl() const {
 
 TagDecl *Type::getAsTagDecl() const {
   if (const auto *TT = getAs<TagType>())
-    return cast<TagDecl>(TT->getDecl());
+    return TT->getDecl();
   if (const auto *Injected = getAs<InjectedClassNameType>())
     return Injected->getDecl();
 
@@ -1997,12 +1996,7 @@ bool Type::isIncompleteType(NamedDecl **Def) const {
     EnumDecl *EnumD = cast<EnumType>(CanonicalType)->getDecl();
     if (Def)
       *Def = EnumD;
-    
-    // An enumeration with fixed underlying type is complete (C++0x 7.2p3).
-    if (EnumD->isFixed())
-      return false;
-    
-    return !EnumD->isCompleteDefinition();
+    return !EnumD->isComplete();
   }
   case Record: {
     // A tagged type (struct/union/enum/class) is incomplete if the decl is a
@@ -2201,10 +2195,48 @@ bool QualType::isTriviallyCopyableType(const ASTContext &Context) const {
   return false;
 }
 
+bool QualType::hasTrivialABIOverride() const {
+  if (const auto *RD = getTypePtr()->getAsCXXRecordDecl())
+    return RD->hasTrivialABIOverride();
+  return false;
+}
+
 bool QualType::isNonWeakInMRRWithObjCWeak(const ASTContext &Context) const {
   return !Context.getLangOpts().ObjCAutoRefCount &&
          Context.getLangOpts().ObjCWeak &&
          getObjCLifetime() != Qualifiers::OCL_Weak;
+}
+
+QualType::PrimitiveDefaultInitializeKind
+QualType::isNonTrivialToPrimitiveDefaultInitialize() const {
+  if (const auto *RT =
+          getTypePtr()->getBaseElementTypeUnsafe()->getAs<RecordType>())
+    if (RT->getDecl()->isNonTrivialToPrimitiveDefaultInitialize())
+      return PDIK_Struct;
+
+  Qualifiers::ObjCLifetime Lifetime = getQualifiers().getObjCLifetime();
+  if (Lifetime == Qualifiers::OCL_Strong)
+    return PDIK_ARCStrong;
+
+  return PDIK_Trivial;
+}
+
+QualType::PrimitiveCopyKind QualType::isNonTrivialToPrimitiveCopy() const {
+  if (const auto *RT =
+          getTypePtr()->getBaseElementTypeUnsafe()->getAs<RecordType>())
+    if (RT->getDecl()->isNonTrivialToPrimitiveCopy())
+      return PCK_Struct;
+
+  Qualifiers Qs = getQualifiers();
+  if (Qs.getObjCLifetime() == Qualifiers::OCL_Strong)
+    return PCK_ARCStrong;
+
+  return Qs.hasVolatile() ? PCK_VolatileTrivial : PCK_Trivial;
+}
+
+QualType::PrimitiveCopyKind
+QualType::isNonTrivialToPrimitiveDestructiveMove() const {
+  return isNonTrivialToPrimitiveCopy();
 }
 
 bool Type::isLiteralType(const ASTContext &Ctx) const {
@@ -3895,12 +3927,20 @@ QualType::DestructionKind QualType::isDestructedTypeImpl(QualType type) {
     return DK_objc_weak_lifetime;
   }
 
-  /// Currently, the only destruction kind we recognize is C++ objects
-  /// with non-trivial destructors.
-  const CXXRecordDecl *record =
-    type->getBaseElementTypeUnsafe()->getAsCXXRecordDecl();
-  if (record && record->hasDefinition() && !record->hasTrivialDestructor())
-    return DK_cxx_destructor;
+  if (const auto *RT =
+          type->getBaseElementTypeUnsafe()->getAs<RecordType>()) {
+    const RecordDecl *RD = RT->getDecl();
+    if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
+      /// Check if this is a C++ object with a non-trivial destructor.
+      if (CXXRD->hasDefinition() && !CXXRD->hasTrivialDestructor())
+        return DK_cxx_destructor;
+    } else {
+      /// Check if this is a C struct that is non-trivial to destroy or an array
+      /// that contains such a struct.
+      if (RD->isNonTrivialToPrimitiveDestroy())
+        return DK_nontrivial_c_struct;
+    }
+  }
 
   return DK_none;
 }

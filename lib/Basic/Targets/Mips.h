@@ -54,6 +54,7 @@ class LLVM_LIBRARY_VISIBILITY MipsTargetInfo : public TargetInfo {
   enum DspRevEnum { NoDSP, DSP1, DSP2 } DspRev;
   bool HasMSA;
   bool DisableMadd4;
+  bool UseIndirectJumpHazard;
 
 protected:
   bool HasFP64;
@@ -64,7 +65,8 @@ public:
       : TargetInfo(Triple), IsMips16(false), IsMicromips(false),
         IsNan2008(false), IsAbs2008(false), IsSingleFloat(false),
         IsNoABICalls(false), CanUseBSDABICalls(false), FloatABI(HardFloat),
-        DspRev(NoDSP), HasMSA(false), DisableMadd4(false), HasFP64(false) {
+        DspRev(NoDSP), HasMSA(false), DisableMadd4(false),
+        UseIndirectJumpHazard(false), HasFP64(false) {
     TheCXXABI.set(TargetCXXABI::GenericMIPS);
 
     setABI((getTriple().getArch() == llvm::Triple::mips ||
@@ -161,6 +163,7 @@ public:
   }
 
   bool isValidCPUName(StringRef Name) const override;
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
   bool setCPU(const std::string &Name) override {
     CPU = Name;
@@ -338,6 +341,8 @@ public:
         IsAbs2008 = false;
       else if (Feature == "+noabicalls")
         IsNoABICalls = true;
+      else if (Feature == "+use-indirect-jump-hazard")
+        UseIndirectJumpHazard = true;
     }
 
     setDataLayout();
@@ -387,7 +392,9 @@ public:
     return llvm::makeArrayRef(NewABIRegAliases);
   }
 
-  bool hasInt128Type() const override { return ABI == "n32" || ABI == "n64"; }
+  bool hasInt128Type() const override {
+    return (ABI == "n32" || ABI == "n64") || getTargetOpts().ForceEnableInt128;
+  }
 
   bool validateTarget(DiagnosticsEngine &Diags) const override;
 };

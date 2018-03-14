@@ -533,6 +533,8 @@ def ast_dump : Flag<["-"], "ast-dump">,
   HelpText<"Build ASTs and then debug dump them">;
 def ast_dump_all : Flag<["-"], "ast-dump-all">,
   HelpText<"Build ASTs and then debug dump them, forcing deserialization">;
+def templight_dump : Flag<["-"], "templight-dump">,
+  HelpText<"Dump templight information to stdout">;
 def ast_dump_lookups : Flag<["-"], "ast-dump-lookups">,
   HelpText<"Build ASTs and then debug dump their name lookup tables">;
 def ast_view : Flag<["-"], "ast-view">,
@@ -705,8 +707,6 @@ def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-r
   HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
 def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,
   HelpText<"Control vtordisp placement on win32 targets">;
-def fno_rtti_data : Flag<["-"], "fno-rtti-data">,
-  HelpText<"Control emission of RTTI data">;
 def fnative_half_type: Flag<["-"], "fnative-half-type">,
   HelpText<"Use the native half type for __fp16 instead of promoting to float">;
 def fnative_half_arguments_and_returns : Flag<["-"], "fnative-half-arguments-and-returns">,

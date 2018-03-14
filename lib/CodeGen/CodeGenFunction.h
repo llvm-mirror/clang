@@ -434,7 +434,7 @@ public:
   };
 
   /// i32s containing the indexes of the cleanup destinations.
-  llvm::AllocaInst *NormalCleanupDest;
+  Address NormalCleanupDest;
 
   unsigned NextCleanupDestIndex;
 
@@ -1536,6 +1536,7 @@ public:
       return false;
     case QualType::DK_cxx_destructor:
     case QualType::DK_objc_weak_lifetime:
+    case QualType::DK_nontrivial_c_struct:
       return getLangOpts().Exceptions;
     case QualType::DK_objc_strong_lifetime:
       return getLangOpts().Exceptions &&
@@ -1583,10 +1584,7 @@ public:
   /// \return an LLVM value which is a pointer to a struct which contains
   /// information about the block, including the block invoke function, the
   /// captured variables, etc.
-  /// \param InvokeF will contain the block invoke function if it is not
-  /// nullptr.
-  llvm::Value *EmitBlockLiteral(const BlockExpr *,
-                                llvm::Function **InvokeF = nullptr);
+  llvm::Value *EmitBlockLiteral(const BlockExpr *);
   static void destroyBlockInfos(CGBlockInfo *info);
 
   llvm::Function *GenerateBlockFunction(GlobalDecl GD,
@@ -1849,11 +1847,7 @@ public:
   llvm::BasicBlock *createBasicBlock(const Twine &name = "",
                                      llvm::Function *parent = nullptr,
                                      llvm::BasicBlock *before = nullptr) {
-#ifdef NDEBUG
-    return llvm::BasicBlock::Create(getLLVMContext(), "", parent, before);
-#else
     return llvm::BasicBlock::Create(getLLVMContext(), name, parent, before);
-#endif
   }
 
   /// getBasicBlockForLabel - Return the LLVM basicblock that the specified
@@ -2101,16 +2095,14 @@ public:
   ///
   /// The difference to EmitAggregateCopy is that tail padding is not copied.
   /// This is required for correctness when assigning non-POD structures in C++.
-  void EmitAggregateAssign(Address DestPtr, Address SrcPtr,
-                           QualType EltTy) {
+  void EmitAggregateAssign(LValue Dest, LValue Src, QualType EltTy) {
     bool IsVolatile = hasVolatileMember(EltTy);
-    EmitAggregateCopy(DestPtr, SrcPtr, EltTy, IsVolatile, true);
+    EmitAggregateCopy(Dest, Src, EltTy, IsVolatile, /* isAssignment= */ true);
   }
 
-  void EmitAggregateCopyCtor(Address DestPtr, Address SrcPtr,
-                             QualType DestTy, QualType SrcTy) {
-    EmitAggregateCopy(DestPtr, SrcPtr, SrcTy, /*IsVolatile=*/false,
-                      /*IsAssignment=*/false);
+  void EmitAggregateCopyCtor(LValue Dest, LValue Src) {
+    EmitAggregateCopy(Dest, Src, Src.getType(),
+                      /* IsVolatile= */ false, /* IsAssignment= */ false);
   }
 
   /// EmitAggregateCopy - Emit an aggregate copy.
@@ -2119,9 +2111,8 @@ public:
   /// volatile.
   /// \param isAssignment - If false, allow padding to be copied.  This often
   /// yields more efficient.
-  void EmitAggregateCopy(Address DestPtr, Address SrcPtr,
-                         QualType EltTy, bool isVolatile=false,
-                         bool isAssignment = false);
+  void EmitAggregateCopy(LValue Dest, LValue Src, QualType EltTy,
+                         bool isVolatile = false, bool isAssignment = false);
 
   /// GetAddrOfLocalVar - Return the address of a local variable.
   Address GetAddrOfLocalVar(const VarDecl *VD) {
@@ -2201,12 +2192,24 @@ public:
   /// This function can be called with a null (unreachable) insert point.
   void EmitVariablyModifiedType(QualType Ty);
 
-  /// getVLASize - Returns an LLVM value that corresponds to the size,
+  struct VlaSizePair {
+    llvm::Value *NumElts;
+    QualType Type;
+
+    VlaSizePair(llvm::Value *NE, QualType T) : NumElts(NE), Type(T) {}
+  };
+
+  /// Return the number of elements for a single dimension
+  /// for the given array type.
+  VlaSizePair getVLAElements1D(const VariableArrayType *vla);
+  VlaSizePair getVLAElements1D(QualType vla);
+
+  /// Returns an LLVM value that corresponds to the size,
   /// in non-variably-sized elements, of a variable length array type,
   /// plus that largest non-variably-sized element type.  Assumes that
   /// the type has already been emitted with EmitVariablyModifiedType.
-  std::pair<llvm::Value*,QualType> getVLASize(const VariableArrayType *vla);
-  std::pair<llvm::Value*,QualType> getVLASize(QualType vla);
+  VlaSizePair getVLASize(const VariableArrayType *vla);
+  VlaSizePair getVLASize(QualType vla);
 
   /// LoadCXXThis - Load the value of 'this'. This function is only valid while
   /// generating code for an C++ member function.
@@ -2513,6 +2516,15 @@ public:
   void EmitAutoVarCleanups(const AutoVarEmission &emission);
   void emitAutoVarTypeCleanup(const AutoVarEmission &emission,
                               QualType::DestructionKind dtorKind);
+
+  /// Emits the alloca and debug information for the size expressions for each
+  /// dimension of an array. It registers the association of its (1-dimensional)
+  /// QualTypes and size expression's debug node, so that CGDebugInfo can
+  /// reference this node when creating the DISubrange object to describe the
+  /// array types.
+  void EmitAndRegisterVariableArrayDimensions(CGDebugInfo *DI,
+                                              const VarDecl &D,
+                                              bool EmitDebugInfo);
 
   void EmitStaticVarDecl(const VarDecl &D,
                          llvm::GlobalValue::LinkageTypes Linkage);
@@ -2832,6 +2844,7 @@ public:
                                         const OMPTaskDataTy & /*Data*/)>
       TaskGenTy;
   void EmitOMPTaskBasedDirective(const OMPExecutableDirective &S,
+                                 const OpenMPDirectiveKind CapturedRegion,
                                  const RegionCodeGenTy &BodyGen,
                                  const TaskGenTy &TaskGen, OMPTaskDataTy &Data);
   struct OMPTargetDataInfo {
@@ -2941,6 +2954,11 @@ public:
   static void EmitOMPTargetSimdDeviceFunction(CodeGenModule &CGM,
                                               StringRef ParentName,
                                               const OMPTargetSimdDirective &S);
+  /// Emit device code for the target teams distribute parallel for simd
+  /// directive.
+  static void EmitOMPTargetTeamsDistributeParallelForSimdDeviceFunction(
+      CodeGenModule &CGM, StringRef ParentName,
+      const OMPTargetTeamsDistributeParallelForSimdDirective &S);
 
   static void EmitOMPTargetTeamsDistributeParallelForDeviceFunction(
       CodeGenModule &CGM, StringRef ParentName,
@@ -2990,11 +3008,8 @@ public:
   LValue EmitOMPSharedLValue(const Expr *E);
 
 private:
-  /// Helpers for blocks. Returns invoke function by \p InvokeF if it is not
-  /// nullptr. It should be called without \p InvokeF if the caller does not
-  /// need invoke function to be returned.
-  llvm::Value *EmitBlockLiteral(const CGBlockInfo &Info,
-                                llvm::Function **InvokeF = nullptr);
+  /// Helpers for blocks.
+  llvm::Value *EmitBlockLiteral(const CGBlockInfo &Info);
 
   /// struct with the values to be passed to the OpenMP loop-related functions
   struct OMPLoopArguments {
@@ -3347,6 +3362,9 @@ public:
                                           ArrayRef<llvm::Value*> args,
                                           const Twine &name = "");
 
+  SmallVector<llvm::OperandBundleDef, 1>
+  getBundlesForFunclet(llvm::Value *Callee);
+
   llvm::CallSite EmitCallOrInvoke(llvm::Value *Callee,
                                   ArrayRef<llvm::Value *> Args,
                                   const Twine &Name = "");
@@ -3365,6 +3383,16 @@ public:
   CGCallee BuildAppleKextVirtualDestructorCall(const CXXDestructorDecl *DD,
                                                CXXDtorType Type,
                                                const CXXRecordDecl *RD);
+
+  // These functions emit calls to the special functions of non-trivial C
+  // structs.
+  void defaultInitNonTrivialCStructVar(LValue Dst);
+  void callCStructDefaultConstructor(LValue Dst);
+  void callCStructDestructor(LValue Dst);
+  void callCStructCopyConstructor(LValue Dst, LValue Src);
+  void callCStructMoveConstructor(LValue Dst, LValue Src);
+  void callCStructCopyAssignmentOperator(LValue Dst, LValue Src);
+  void callCStructMoveAssignmentOperator(LValue Dst, LValue Src);
 
   RValue
   EmitCXXMemberOrOperatorCall(const CXXMethodDecl *Method,
@@ -3540,6 +3568,7 @@ public:
   static Destroyer destroyARCStrongPrecise;
   static Destroyer destroyARCWeak;
   static Destroyer emitARCIntrinsicUse;
+  static Destroyer destroyNonTrivialCStruct;
 
   void EmitObjCAutoreleasePoolPop(llvm::Value *Ptr);
   llvm::Value *EmitObjCAutoreleasePoolPush();
@@ -3988,6 +4017,29 @@ public:
 
   void EmitSanitizerStatReport(llvm::SanitizerStatKind SSK);
 
+  struct MultiVersionResolverOption {
+    llvm::Function *Function;
+    TargetAttr::ParsedTargetAttr ParsedAttribute;
+    unsigned Priority;
+    MultiVersionResolverOption(const TargetInfo &TargInfo, llvm::Function *F,
+                               const clang::TargetAttr::ParsedTargetAttr &PT)
+        : Function(F), ParsedAttribute(PT), Priority(0u) {
+      for (StringRef Feat : PT.Features)
+        Priority = std::max(Priority,
+                            TargInfo.multiVersionSortPriority(Feat.substr(1)));
+
+      if (!PT.Architecture.empty())
+        Priority = std::max(Priority,
+                            TargInfo.multiVersionSortPriority(PT.Architecture));
+    }
+
+    bool operator>(const MultiVersionResolverOption &Other) const {
+      return Priority > Other.Priority;
+    }
+  };
+  void EmitMultiVersionResolver(llvm::Function *Resolver,
+                                ArrayRef<MultiVersionResolverOption> Options);
+
 private:
   QualType getVarArgType(const Expr *Arg);
 
@@ -4004,6 +4056,7 @@ private:
   llvm::Value *EmitX86CpuSupports(const CallExpr *E);
   llvm::Value *EmitX86CpuSupports(ArrayRef<StringRef> FeatureStrs);
   llvm::Value *EmitX86CpuInit();
+  llvm::Value *FormResolverCondition(const MultiVersionResolverOption &RO);
 };
 
 /// Helper class with most of the code for saving a value for a

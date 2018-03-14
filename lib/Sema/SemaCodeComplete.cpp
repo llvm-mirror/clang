@@ -318,6 +318,11 @@ namespace {
     /// \brief Ignore this declaration, if it is seen again.
     void Ignore(const Decl *D) { AllDeclsFound.insert(D->getCanonicalDecl()); }
 
+    /// \brief Add a visited context.
+    void addVisitedContext(DeclContext *Ctx) {
+      CompletionContext.addVisitedContext(Ctx);
+    }
+
     /// \name Name lookup predicates
     ///
     /// These predicates can be passed to the name lookup functions to filter the
@@ -670,7 +675,7 @@ SimplifiedTypeClass clang::getSimplifiedTypeClass(CanQualType T) {
 /// \brief Get the type that a given expression will have if this declaration
 /// is used as an expression in its "typical" code-completion form.
 QualType clang::getDeclUsageType(ASTContext &C, const NamedDecl *ND) {
-  ND = cast<NamedDecl>(ND->getUnderlyingDecl());
+  ND = ND->getUnderlyingDecl();
   
   if (const TypeDecl *Type = dyn_cast<TypeDecl>(ND))
     return C.getTypeDeclType(Type);
@@ -838,6 +843,12 @@ void ResultBuilder::MaybeAddConstructorResults(Result R) {
   }
 }
 
+static bool isConstructor(const Decl *ND) {
+  if (const auto *Tmpl = dyn_cast<FunctionTemplateDecl>(ND))
+    ND = Tmpl->getTemplatedDecl();
+  return isa<CXXConstructorDecl>(ND);
+}
+
 void ResultBuilder::MaybeAddResult(Result R, DeclContext *CurContext) {
   assert(!ShadowMaps.empty() && "Must enter into a results scope");
   
@@ -865,7 +876,7 @@ void ResultBuilder::MaybeAddResult(Result R, DeclContext *CurContext) {
     return;
       
   // C++ constructors are never found by name lookup.
-  if (isa<CXXConstructorDecl>(R.Declaration))
+  if (isConstructor(R.Declaration))
     return;
 
   ShadowMap &SMap = ShadowMaps.back();
@@ -978,7 +989,7 @@ void ResultBuilder::AddResult(Result R, DeclContext *CurContext,
     return;
   
   // C++ constructors are never found by name lookup.
-  if (isa<CXXConstructorDecl>(R.Declaration))
+  if (isConstructor(R.Declaration))
     return;
 
   if (Hiding && CheckHiddenResult(R, CurContext, Hiding))
@@ -1063,7 +1074,7 @@ void ResultBuilder::ExitScope() {
 /// \brief Determines whether this given declaration will be found by
 /// ordinary name lookup.
 bool ResultBuilder::IsOrdinaryName(const NamedDecl *ND) const {
-  ND = cast<NamedDecl>(ND->getUnderlyingDecl());
+  ND = ND->getUnderlyingDecl();
 
   // If name lookup finds a local extern declaration, then we are in a
   // context where it behaves like an ordinary name.
@@ -1081,7 +1092,7 @@ bool ResultBuilder::IsOrdinaryName(const NamedDecl *ND) const {
 /// \brief Determines whether this given declaration will be found by
 /// ordinary name lookup but is not a type name.
 bool ResultBuilder::IsOrdinaryNonTypeName(const NamedDecl *ND) const {
-  ND = cast<NamedDecl>(ND->getUnderlyingDecl());
+  ND = ND->getUnderlyingDecl();
   if (isa<TypeDecl>(ND))
     return false;
   // Objective-C interfaces names are not filtered by this method because they
@@ -1117,7 +1128,7 @@ bool ResultBuilder::IsIntegralConstantValue(const NamedDecl *ND) const {
 /// \brief Determines whether this given declaration will be found by
 /// ordinary name lookup.
 bool ResultBuilder::IsOrdinaryNonValueName(const NamedDecl *ND) const {
-  ND = cast<NamedDecl>(ND->getUnderlyingDecl());
+  ND = ND->getUnderlyingDecl();
 
   unsigned IDNS = Decl::IDNS_Ordinary | Decl::IDNS_LocalExtern;
   if (SemaRef.getLangOpts().CPlusPlus)
@@ -1280,7 +1291,7 @@ namespace {
   class CodeCompletionDeclConsumer : public VisibleDeclConsumer {
     ResultBuilder &Results;
     DeclContext *CurContext;
-    
+
   public:
     CodeCompletionDeclConsumer(ResultBuilder &Results, DeclContext *CurContext)
       : Results(Results), CurContext(CurContext) { }
@@ -1294,6 +1305,10 @@ namespace {
       ResultBuilder::Result Result(ND, Results.getBasePriority(ND), nullptr,
                                    false, Accessible);
       Results.AddResult(Result, CurContext, Hiding, InBaseClass);
+    }
+
+    void EnteredContext(DeclContext* Ctx) override {
+      Results.addVisitedContext(Ctx);
     }
   };
 }
@@ -2136,7 +2151,7 @@ static void AddResultTypeChunk(ASTContext &Context,
 
   // Skip constructors and conversion functions, which have their return types
   // built into their names.
-  if (isa<CXXConstructorDecl>(ND) || isa<CXXConversionDecl>(ND))
+  if (isConstructor(ND) || isa<CXXConversionDecl>(ND))
     return;
 
   // Determine the type of the declaration (if it has a type).
@@ -3524,7 +3539,8 @@ void Sema::CodeCompleteOrdinaryName(Scope *S,
   
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
 
   AddOrdinaryNameResults(CompletionContext, S, *this, Results);
   Results.ExitScope();
@@ -3599,7 +3615,8 @@ void Sema::CodeCompleteDeclSpec(Scope *S, DeclSpec &DS,
       Results.setFilter(&ResultBuilder::IsImpossibleToSatisfy);
       CodeCompletionDeclConsumer Consumer(Results, CurContext);
       LookupVisibleDecls(S, LookupNestedNameSpecifierName, Consumer,
-                         CodeCompleter->includeGlobals());
+                         CodeCompleter->includeGlobals(),
+                         CodeCompleter->loadExternal());
       Results.setFilter(nullptr);
     }
   }
@@ -3669,8 +3686,9 @@ void Sema::CodeCompleteExpression(Scope *S,
   
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
-  
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
+
   Results.EnterNewScope();
   AddOrdinaryNameResults(PCC_Expression, S, *this, Results);
   Results.ExitScope();
@@ -3939,7 +3957,8 @@ static void AddRecordMembersCompletionResults(Sema &SemaRef,
   CodeCompletionDeclConsumer Consumer(Results, SemaRef.CurContext);
   SemaRef.LookupVisibleDecls(RD, Sema::LookupMemberName, Consumer,
                              SemaRef.CodeCompleter->includeGlobals(),
-                             /*IncludeDependentBases=*/true);
+                             /*IncludeDependentBases=*/true,
+                             SemaRef.CodeCompleter->loadExternal());
 
   if (SemaRef.getLangOpts().CPlusPlus) {
     if (!Results.empty()) {
@@ -4049,8 +4068,9 @@ void Sema::CodeCompleteMemberReferenceExpr(Scope *S, Expr *Base,
     if (Class) {
       CodeCompletionDeclConsumer Consumer(Results, CurContext);
       Results.setFilter(&ResultBuilder::IsObjCIvar);
-      LookupVisibleDecls(Class, LookupMemberName, Consumer,
-                         CodeCompleter->includeGlobals());
+      LookupVisibleDecls(
+          Class, LookupMemberName, Consumer, CodeCompleter->includeGlobals(),
+          /*IncludeDependentBases=*/false, CodeCompleter->loadExternal());
     }
   }
   
@@ -4124,12 +4144,15 @@ void Sema::CodeCompleteTag(Scope *S, unsigned TagSpec) {
   // First pass: look for tags.
   Results.setFilter(Filter);
   LookupVisibleDecls(S, LookupTagName, Consumer,
-                     CodeCompleter->includeGlobals());
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
 
   if (CodeCompleter->includeGlobals()) {
     // Second pass: look for nested name specifiers.
     Results.setFilter(&ResultBuilder::IsNestedNameSpecifier);
-    LookupVisibleDecls(S, LookupNestedNameSpecifierName, Consumer);
+    LookupVisibleDecls(S, LookupNestedNameSpecifierName, Consumer,
+                       CodeCompleter->includeGlobals(),
+                       CodeCompleter->loadExternal());
   }
   
   HandleCodeCompleteResults(this, CodeCompleter, Results.getCompletionContext(),
@@ -4540,8 +4563,9 @@ void Sema::CodeCompleteAfterIf(Scope *S) {
   
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
-  
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
+
   AddOrdinaryNameResults(PCC_Statement, S, *this, Results);
   
   // "else" block
@@ -4649,7 +4673,8 @@ void Sema::CodeCompleteQualifiedId(Scope *S, CXXScopeSpec &SS,
     CodeCompletionDeclConsumer Consumer(Results, CurContext);
     LookupVisibleDecls(Ctx, LookupOrdinaryName, Consumer,
                        /*IncludeGlobalScope=*/true,
-                       /*IncludeDependentBases=*/true);
+                       /*IncludeDependentBases=*/true,
+                       CodeCompleter->loadExternal());
   }
 
   auto CC = Results.getCompletionContext();
@@ -4677,7 +4702,8 @@ void Sema::CodeCompleteUsing(Scope *S) {
   // nested-name-specifier.
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
   Results.ExitScope();
   
   HandleCodeCompleteResults(this, CodeCompleter, 
@@ -4698,7 +4724,8 @@ void Sema::CodeCompleteUsingDirective(Scope *S) {
   Results.EnterNewScope();
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
   Results.ExitScope();
   HandleCodeCompleteResults(this, CodeCompleter, 
                             CodeCompletionContext::CCC_Namespace,
@@ -4764,7 +4791,8 @@ void Sema::CodeCompleteNamespaceAliasDecl(Scope *S)  {
                         &ResultBuilder::IsNamespaceOrAlias);
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
   HandleCodeCompleteResults(this, CodeCompleter, 
                             Results.getCompletionContext(),
                             Results.data(),Results.size());
@@ -4791,8 +4819,9 @@ void Sema::CodeCompleteOperatorName(Scope *S) {
   Results.allowNestedNameSpecifiers();
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
-  
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
+
   // Add any type specifiers
   AddTypeSpecifierResults(getLangOpts(), Results);
   Results.ExitScope();
@@ -5620,8 +5649,9 @@ void Sema::CodeCompleteObjCPassingType(Scope *S, ObjCDeclSpec &DS,
   Results.setFilter(&ResultBuilder::IsOrdinaryNonValueName);
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
-  
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
+
   if (CodeCompleter->includeMacros())
     AddMacroResults(PP, Results, false);
 
@@ -5834,8 +5864,9 @@ void Sema::CodeCompleteObjCMessageReceiver(Scope *S) {
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   Results.EnterNewScope();
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,
-                     CodeCompleter->includeGlobals());
-  
+                     CodeCompleter->includeGlobals(),
+                     CodeCompleter->loadExternal());
+
   // If we are in an Objective-C method inside a class that has a superclass,
   // add "super" as an option.
   if (ObjCMethodDecl *Method = getCurMethodDecl())
@@ -7422,7 +7453,7 @@ void Sema::CodeCompleteObjCMethodDecl(Scope *S, Optional<bool> IsInstanceMethod,
   Decl *IDecl = nullptr;
   if (CurContext->isObjCContainer()) {
       ObjCContainerDecl *OCD = dyn_cast<ObjCContainerDecl>(CurContext);
-      IDecl = cast<Decl>(OCD);
+      IDecl = OCD;
   }
   // Determine where we should start searching for methods.
   ObjCContainerDecl *SearchDecl = nullptr;
@@ -7942,8 +7973,9 @@ void Sema::GatherGlobalCodeCompletions(CodeCompletionAllocator &Allocator,
   if (!CodeCompleter || CodeCompleter->includeGlobals()) {
     CodeCompletionDeclConsumer Consumer(Builder, 
                                         Context.getTranslationUnitDecl());
-    LookupVisibleDecls(Context.getTranslationUnitDecl(), LookupAnyName, 
-                       Consumer);
+    LookupVisibleDecls(Context.getTranslationUnitDecl(), LookupAnyName,
+                       Consumer,
+                       !CodeCompleter || CodeCompleter->loadExternal());
   }
   
   if (!CodeCompleter || CodeCompleter->includeMacros())

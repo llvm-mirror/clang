@@ -443,14 +443,18 @@ CGRecordLowering::accumulateBitFields(RecordDecl::field_iterator Field,
 
     // If the start field of a new run is better as a single run, or
     // if current field is better as a single run, or
-    // if current field has zero width bitfield, or
+    // if current field has zero width bitfield and either
+    // UseZeroLengthBitfieldAlignment or UseBitFieldTypeAlignment is set to
+    // true, or
     // if the offset of current field is inconsistent with the offset of
     // previous field plus its offset,
     // skip the block below and go ahead to emit the storage.
     // Otherwise, try to add bitfields to the run.
     if (!StartFieldAsSingleRun && Field != FieldEnd &&
         !IsBetterAsSingleFieldRun(Field) &&
-        Field->getBitWidthValue(Context) != 0 &&
+        (Field->getBitWidthValue(Context) != 0 ||
+         (!Context.getTargetInfo().useZeroLengthBitfieldAlignment() &&
+          !Context.getTargetInfo().useBitFieldTypeAlignment())) &&
         Tail == getFieldBitOffset(*Field)) {
       Tail += Field->getBitWidthValue(Context);
       ++Field;
@@ -785,8 +789,7 @@ CGRecordLayout *CodeGenTypes::ComputeRecordLayout(const RecordDecl *D,
   }
                                      
   // Verify that the LLVM and AST field offsets agree.
-  llvm::StructType *ST =
-    dyn_cast<llvm::StructType>(RL->getLLVMType());
+  llvm::StructType *ST = RL->getLLVMType();
   const llvm::StructLayout *SL = getDataLayout().getStructLayout(ST);
 
   const ASTRecordLayout &AST_RL = getContext().getASTRecordLayout(D);

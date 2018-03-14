@@ -296,10 +296,14 @@ class ClangTool {
   ///        not found in Compilations, it is skipped.
   /// \param PCHContainerOps The PCHContainerOperations for loading and creating
   /// clang modules.
+  /// \param BaseFS VFS used for all underlying file accesses when running the
+  /// tool.
   ClangTool(const CompilationDatabase &Compilations,
             ArrayRef<std::string> SourcePaths,
             std::shared_ptr<PCHContainerOperations> PCHContainerOps =
-                std::make_shared<PCHContainerOperations>());
+                std::make_shared<PCHContainerOperations>(),
+            IntrusiveRefCntPtr<vfs::FileSystem> BaseFS =
+                vfs::getRealFileSystem());
 
   ~ClangTool();
 
@@ -326,6 +330,9 @@ class ClangTool {
   /// Runs an action over all files specified in the command line.
   ///
   /// \param Action Tool action.
+  ///
+  /// \returns 0 on success; 1 if any error occured; 2 if there is no error but
+  /// some files are skipped due to missing compile commands.
   int run(ToolAction *Action);
 
   /// \brief Create an AST for each file specified in the command line and

@@ -157,6 +157,8 @@ void NVPTXTargetInfo::getTargetDefines(const LangOptions &Opts,
     // Set __CUDA_ARCH__ for the GPU specified.
     std::string CUDAArchCode = [this] {
       switch (GPU) {
+      case CudaArch::LAST:
+        break;
       case CudaArch::UNKNOWN:
         assert(false && "No GPU arch when compiling CUDA device code.");
         return "";
@@ -186,6 +188,8 @@ void NVPTXTargetInfo::getTargetDefines(const LangOptions &Opts,
         return "620";
       case CudaArch::SM_70:
         return "700";
+      case CudaArch::SM_72:
+        return "720";
       }
       llvm_unreachable("unhandled CudaArch");
     }();

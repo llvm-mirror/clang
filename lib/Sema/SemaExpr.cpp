@@ -776,6 +776,9 @@ Sema::VarArgKind Sema::isValidVarArgType(const QualType &Ty) {
     return VAK_Valid;
   }
 
+  if (Ty.isDestructedType() == QualType::DK_nontrivial_c_struct)
+    return VAK_Invalid;
+
   if (Ty.isCXX98PODType(Context))
     return VAK_Valid;
 
@@ -837,7 +840,10 @@ void Sema::checkVariadicArgument(const Expr *E, VariadicCallType CT) {
     break;
 
   case VAK_Invalid:
-    if (Ty->isObjCObjectType())
+    if (Ty.isDestructedType() == QualType::DK_nontrivial_c_struct)
+      Diag(E->getLocStart(),
+           diag::err_cannot_pass_non_trivial_c_struct_to_vararg) << Ty << CT;
+    else if (Ty->isObjCObjectType())
       DiagRuntimeBehavior(
           E->getLocStart(), nullptr,
           PDiag(diag::err_cannot_pass_objc_interface_to_vararg)
@@ -1092,13 +1098,12 @@ static bool unsupportedTypeConversion(const Sema &S, QualType LHSType,
   Float128AndLongDouble |= (LHSElemType == S.Context.LongDoubleTy &&
                             RHSElemType == S.Context.Float128Ty);
 
-  /* We've handled the situation where __float128 and long double have the same
-     representation. The only other allowable conversion is if long double is
-     really just double.
-  */
+  // We've handled the situation where __float128 and long double have the same
+  // representation. We allow all conversions for all possible long double types
+  // except PPC's double double.
   return Float128AndLongDouble &&
-    (&S.Context.getFloatTypeSemantics(S.Context.LongDoubleTy) !=
-     &llvm::APFloat::IEEEdouble());
+    (&S.Context.getFloatTypeSemantics(S.Context.LongDoubleTy) ==
+     &llvm::APFloat::PPCDoubleDouble());
 }
 
 typedef ExprResult PerformCastFn(Sema &S, Expr *operand, QualType toType);
@@ -4396,8 +4401,13 @@ Sema::CreateBuiltinArraySubscriptExpr(Expr *Base, SourceLocation LLoc,
     if (VK != VK_RValue)
       OK = OK_VectorComponent;
 
-    // FIXME: need to deal with const...
     ResultType = VTy->getElementType();
+    QualType BaseType = BaseExpr->getType();
+    Qualifiers BaseQuals = BaseType.getQualifiers();
+    Qualifiers MemberQuals = ResultType.getQualifiers();
+    Qualifiers Combined = BaseQuals + MemberQuals;
+    if (Combined != MemberQuals)
+      ResultType = Context.getQualifiedType(ResultType, Combined);
   } else if (LHSTy->isArrayType()) {
     // If we see an array that wasn't promoted by
     // DefaultFunctionArrayLvalueConversion, it must be an array that
@@ -4830,6 +4840,10 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
                FDecl && FDecl->hasAttr<CFAuditedTransferAttr>() &&
                (!Param || !Param->hasAttr<CFConsumedAttr>()))
         CFAudited = true;
+
+      if (Proto->getExtParameterInfo(i).isNoEscape())
+        if (auto *BE = dyn_cast<BlockExpr>(Arg->IgnoreParenNoopCasts(Context)))
+          BE->getBlockDecl()->setDoesNotEscape();
 
       InitializedEntity Entity =
           Param ? InitializedEntity::InitializeParameter(Context, Param,
@@ -9300,16 +9314,6 @@ QualType Sema::CheckShiftOperands(ExprResult &LHS, ExprResult &RHS,
   return LHSType;
 }
 
-static bool IsWithinTemplateSpecialization(Decl *D) {
-  if (DeclContext *DC = D->getDeclContext()) {
-    if (isa<ClassTemplateSpecializationDecl>(DC))
-      return true;
-    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(DC))
-      return FD->isFunctionTemplateSpecialization();
-  }
-  return false;
-}
-
 /// If two different enums are compared, raise a warning.
 static void checkEnumComparison(Sema &S, SourceLocation Loc, Expr *LHS,
                                 Expr *RHS) {
@@ -9587,136 +9591,180 @@ static void diagnoseLogicalNotOnLHSofCheck(Sema &S, ExprResult &LHS,
 // Get the decl for a simple expression: a reference to a variable,
 // an implicit C++ field reference, or an implicit ObjC ivar reference.
 static ValueDecl *getCompareDecl(Expr *E) {
-  if (DeclRefExpr* DR = dyn_cast<DeclRefExpr>(E))
+  if (DeclRefExpr *DR = dyn_cast<DeclRefExpr>(E))
     return DR->getDecl();
-  if (ObjCIvarRefExpr* Ivar = dyn_cast<ObjCIvarRefExpr>(E)) {
+  if (ObjCIvarRefExpr *Ivar = dyn_cast<ObjCIvarRefExpr>(E)) {
     if (Ivar->isFreeIvar())
       return Ivar->getDecl();
   }
-  if (MemberExpr* Mem = dyn_cast<MemberExpr>(E)) {
+  if (MemberExpr *Mem = dyn_cast<MemberExpr>(E)) {
     if (Mem->isImplicitAccess())
       return Mem->getMemberDecl();
   }
   return nullptr;
 }
 
+/// Diagnose some forms of syntactically-obvious tautological comparison.
+static void diagnoseTautologicalComparison(Sema &S, SourceLocation Loc,
+                                           Expr *LHS, Expr *RHS,
+                                           BinaryOperatorKind Opc) {
+  Expr *LHSStripped = LHS->IgnoreParenImpCasts();
+  Expr *RHSStripped = RHS->IgnoreParenImpCasts();
+
+  QualType LHSType = LHS->getType();
+  if (LHSType->hasFloatingRepresentation() ||
+      (LHSType->isBlockPointerType() && !BinaryOperator::isEqualityOp(Opc)) ||
+      LHS->getLocStart().isMacroID() || RHS->getLocStart().isMacroID() ||
+      S.inTemplateInstantiation())
+    return;
+
+  // For non-floating point types, check for self-comparisons of the form
+  // x == x, x != x, x < x, etc.  These always evaluate to a constant, and
+  // often indicate logic errors in the program.
+  //
+  // NOTE: Don't warn about comparison expressions resulting from macro
+  // expansion. Also don't warn about comparisons which are only self
+  // comparisons within a template instantiation. The warnings should catch
+  // obvious cases in the definition of the template anyways. The idea is to
+  // warn when the typed comparison operator will always evaluate to the same
+  // result.
+  ValueDecl *DL = getCompareDecl(LHSStripped);
+  ValueDecl *DR = getCompareDecl(RHSStripped);
+  if (DL && DR && declaresSameEntity(DL, DR)) {
+    StringRef Result;
+    switch (Opc) {
+    case BO_EQ: case BO_LE: case BO_GE:
+      Result = "true";
+      break;
+    case BO_NE: case BO_LT: case BO_GT:
+      Result = "false";
+      break;
+    case BO_Cmp:
+      Result = "'std::strong_ordering::equal'";
+      break;
+    default:
+      break;
+    }
+    S.DiagRuntimeBehavior(Loc, nullptr,
+                          S.PDiag(diag::warn_comparison_always)
+                              << 0 /*self-comparison*/ << !Result.empty()
+                              << Result);
+  } else if (DL && DR &&
+             DL->getType()->isArrayType() && DR->getType()->isArrayType() &&
+             !DL->isWeak() && !DR->isWeak()) {
+    // What is it always going to evaluate to?
+    StringRef Result;
+    switch(Opc) {
+    case BO_EQ: // e.g. array1 == array2
+      Result = "false";
+      break;
+    case BO_NE: // e.g. array1 != array2
+      Result = "true";
+      break;
+    default: // e.g. array1 <= array2
+      // The best we can say is 'a constant'
+      break;
+    }
+    S.DiagRuntimeBehavior(Loc, nullptr,
+                          S.PDiag(diag::warn_comparison_always)
+                              << 1 /*array comparison*/
+                              << !Result.empty() << Result);
+  }
+
+  if (isa<CastExpr>(LHSStripped))
+    LHSStripped = LHSStripped->IgnoreParenCasts();
+  if (isa<CastExpr>(RHSStripped))
+    RHSStripped = RHSStripped->IgnoreParenCasts();
+
+  // Warn about comparisons against a string constant (unless the other
+  // operand is null); the user probably wants strcmp.
+  Expr *LiteralString = nullptr;
+  Expr *LiteralStringStripped = nullptr;
+  if ((isa<StringLiteral>(LHSStripped) || isa<ObjCEncodeExpr>(LHSStripped)) &&
+      !RHSStripped->isNullPointerConstant(S.Context,
+                                          Expr::NPC_ValueDependentIsNull)) {
+    LiteralString = LHS;
+    LiteralStringStripped = LHSStripped;
+  } else if ((isa<StringLiteral>(RHSStripped) ||
+              isa<ObjCEncodeExpr>(RHSStripped)) &&
+             !LHSStripped->isNullPointerConstant(S.Context,
+                                          Expr::NPC_ValueDependentIsNull)) {
+    LiteralString = RHS;
+    LiteralStringStripped = RHSStripped;
+  }
+
+  if (LiteralString) {
+    S.DiagRuntimeBehavior(Loc, nullptr,
+                          S.PDiag(diag::warn_stringcompare)
+                              << isa<ObjCEncodeExpr>(LiteralStringStripped)
+                              << LiteralString->getSourceRange());
+  }
+}
+
+static QualType checkArithmeticOrEnumeralCompare(Sema &S, ExprResult &LHS,
+                                                 ExprResult &RHS,
+                                                 SourceLocation Loc,
+                                                 BinaryOperatorKind Opc) {
+  // C99 6.5.8p3 / C99 6.5.9p4
+  QualType Type = S.UsualArithmeticConversions(LHS, RHS);
+  if (LHS.isInvalid() || RHS.isInvalid())
+    return QualType();
+  if (Type.isNull())
+    return S.InvalidOperands(Loc, LHS, RHS);
+  assert(Type->isArithmeticType() || Type->isEnumeralType());
+
+  checkEnumComparison(S, Loc, LHS.get(), RHS.get());
+
+  enum { StrongEquality, PartialOrdering, StrongOrdering } Ordering;
+  if (Type->isAnyComplexType())
+    Ordering = StrongEquality;
+  else if (Type->isFloatingType())
+    Ordering = PartialOrdering;
+  else
+    Ordering = StrongOrdering;
+
+  if (Ordering == StrongEquality && BinaryOperator::isRelationalOp(Opc))
+    return S.InvalidOperands(Loc, LHS, RHS);
+
+  // Check for comparisons of floating point operands using != and ==.
+  if (Type->hasFloatingRepresentation() && BinaryOperator::isEqualityOp(Opc))
+    S.CheckFloatComparison(Loc, LHS.get(), RHS.get());
+
+  // The result of comparisons is 'bool' in C++, 'int' in C.
+  // FIXME: For BO_Cmp, return the relevant comparison category type.
+  return S.Context.getLogicalOperationType();
+}
+
 // C99 6.5.8, C++ [expr.rel]
 QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
                                     SourceLocation Loc, BinaryOperatorKind Opc,
                                     bool IsRelational) {
+  // Comparisons expect an rvalue, so convert to rvalue before any
+  // type-related checks.
+  LHS = DefaultFunctionArrayLvalueConversion(LHS.get());
+  if (LHS.isInvalid())
+    return QualType();
+  RHS = DefaultFunctionArrayLvalueConversion(RHS.get());
+  if (RHS.isInvalid())
+    return QualType();
+
   checkArithmeticNull(*this, LHS, RHS, Loc, /*isCompare=*/true);
 
   // Handle vector comparisons separately.
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType())
-    return CheckVectorCompareOperands(LHS, RHS, Loc, IsRelational);
+    return CheckVectorCompareOperands(LHS, RHS, Loc, Opc);
+
+  diagnoseLogicalNotOnLHSofCheck(*this, LHS, RHS, Loc, Opc);
+  diagnoseTautologicalComparison(*this, Loc, LHS.get(), RHS.get(), Opc);
 
   QualType LHSType = LHS.get()->getType();
   QualType RHSType = RHS.get()->getType();
+  if ((LHSType->isArithmeticType() || LHSType->isEnumeralType()) &&
+      (RHSType->isArithmeticType() || RHSType->isEnumeralType()))
+    return checkArithmeticOrEnumeralCompare(*this, LHS, RHS, Loc, Opc);
 
-  Expr *LHSStripped = LHS.get()->IgnoreParenImpCasts();
-  Expr *RHSStripped = RHS.get()->IgnoreParenImpCasts();
-
-  checkEnumComparison(*this, Loc, LHS.get(), RHS.get());
-  diagnoseLogicalNotOnLHSofCheck(*this, LHS, RHS, Loc, Opc);
-
-  if (!LHSType->hasFloatingRepresentation() &&
-      !(LHSType->isBlockPointerType() && IsRelational) &&
-      !LHS.get()->getLocStart().isMacroID() &&
-      !RHS.get()->getLocStart().isMacroID() &&
-      !inTemplateInstantiation()) {
-    // For non-floating point types, check for self-comparisons of the form
-    // x == x, x != x, x < x, etc.  These always evaluate to a constant, and
-    // often indicate logic errors in the program.
-    //
-    // NOTE: Don't warn about comparison expressions resulting from macro
-    // expansion. Also don't warn about comparisons which are only self
-    // comparisons within a template specialization. The warnings should catch
-    // obvious cases in the definition of the template anyways. The idea is to
-    // warn when the typed comparison operator will always evaluate to the same
-    // result.
-    ValueDecl *DL = getCompareDecl(LHSStripped);
-    ValueDecl *DR = getCompareDecl(RHSStripped);
-    if (DL && DR && DL == DR && !IsWithinTemplateSpecialization(DL)) {
-      DiagRuntimeBehavior(Loc, nullptr, PDiag(diag::warn_comparison_always)
-                          << 0 // self-
-                          << (Opc == BO_EQ
-                              || Opc == BO_LE
-                              || Opc == BO_GE));
-    } else if (DL && DR && LHSType->isArrayType() && RHSType->isArrayType() &&
-               !DL->getType()->isReferenceType() &&
-               !DR->getType()->isReferenceType()) {
-        // what is it always going to eval to?
-        char always_evals_to;
-        switch(Opc) {
-        case BO_EQ: // e.g. array1 == array2
-          always_evals_to = 0; // false
-          break;
-        case BO_NE: // e.g. array1 != array2
-          always_evals_to = 1; // true
-          break;
-        default:
-          // best we can say is 'a constant'
-          always_evals_to = 2; // e.g. array1 <= array2
-          break;
-        }
-        DiagRuntimeBehavior(Loc, nullptr, PDiag(diag::warn_comparison_always)
-                            << 1 // array
-                            << always_evals_to);
-    }
-
-    if (isa<CastExpr>(LHSStripped))
-      LHSStripped = LHSStripped->IgnoreParenCasts();
-    if (isa<CastExpr>(RHSStripped))
-      RHSStripped = RHSStripped->IgnoreParenCasts();
-
-    // Warn about comparisons against a string constant (unless the other
-    // operand is null), the user probably wants strcmp.
-    Expr *literalString = nullptr;
-    Expr *literalStringStripped = nullptr;
-    if ((isa<StringLiteral>(LHSStripped) || isa<ObjCEncodeExpr>(LHSStripped)) &&
-        !RHSStripped->isNullPointerConstant(Context,
-                                            Expr::NPC_ValueDependentIsNull)) {
-      literalString = LHS.get();
-      literalStringStripped = LHSStripped;
-    } else if ((isa<StringLiteral>(RHSStripped) ||
-                isa<ObjCEncodeExpr>(RHSStripped)) &&
-               !LHSStripped->isNullPointerConstant(Context,
-                                            Expr::NPC_ValueDependentIsNull)) {
-      literalString = RHS.get();
-      literalStringStripped = RHSStripped;
-    }
-
-    if (literalString) {
-      DiagRuntimeBehavior(Loc, nullptr,
-        PDiag(diag::warn_stringcompare)
-          << isa<ObjCEncodeExpr>(literalStringStripped)
-          << literalString->getSourceRange());
-    }
-  }
-
-  // C99 6.5.8p3 / C99 6.5.9p4
-  UsualArithmeticConversions(LHS, RHS);
-  if (LHS.isInvalid() || RHS.isInvalid())
-    return QualType();
-
-  LHSType = LHS.get()->getType();
-  RHSType = RHS.get()->getType();
-
-  // The result of comparisons is 'bool' in C++, 'int' in C.
   QualType ResultTy = Context.getLogicalOperationType();
-
-  if (IsRelational) {
-    if (LHSType->isRealType() && RHSType->isRealType())
-      return ResultTy;
-  } else {
-    // Check for comparisons of floating point operands using != and ==.
-    if (LHSType->hasFloatingRepresentation())
-      CheckFloatComparison(Loc, LHS.get(), RHS.get());
-
-    if (LHSType->isArithmeticType() && RHSType->isArithmeticType())
-      return ResultTy;
-  }
 
   const Expr::NullPointerConstantKind LHSNullKind =
       LHS.get()->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull);
@@ -9891,13 +9939,6 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
       else
         return ResultTy;
     }
-
-    // Handle scoped enumeration types specifically, since they don't promote
-    // to integers.
-    if (LHS.get()->getType()->isEnumeralType() &&
-        Context.hasSameUnqualifiedType(LHS.get()->getType(),
-                                       RHS.get()->getType()))
-      return ResultTy;
   }
 
   // Handle block pointer types.
@@ -10101,7 +10142,7 @@ QualType Sema::GetSignedVectorType(QualType V) {
 /// types.
 QualType Sema::CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
                                           SourceLocation Loc,
-                                          bool IsRelational) {
+                                          BinaryOperatorKind Opc) {
   // Check to make sure we're operating on vectors of the same type and width,
   // Allowing one side to be a scalar of element type.
   QualType vType = CheckVectorOperands(LHS, RHS, Loc, /*isCompAssign*/false,
@@ -10121,22 +10162,12 @@ QualType Sema::CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
   // For non-floating point types, check for self-comparisons of the form
   // x == x, x != x, x < x, etc.  These always evaluate to a constant, and
   // often indicate logic errors in the program.
-  if (!LHSType->hasFloatingRepresentation() && !inTemplateInstantiation()) {
-    if (DeclRefExpr* DRL
-          = dyn_cast<DeclRefExpr>(LHS.get()->IgnoreParenImpCasts()))
-      if (DeclRefExpr* DRR
-            = dyn_cast<DeclRefExpr>(RHS.get()->IgnoreParenImpCasts()))
-        if (DRL->getDecl() == DRR->getDecl())
-          DiagRuntimeBehavior(Loc, nullptr,
-                              PDiag(diag::warn_comparison_always)
-                                << 0 // self-
-                                << 2 // "a constant"
-                              );
-  }
+  diagnoseTautologicalComparison(*this, Loc, LHS.get(), RHS.get(), Opc);
 
   // Check for comparisons of floating point operands using != and ==.
-  if (!IsRelational && LHSType->hasFloatingRepresentation()) {
-    assert (RHS.get()->getType()->hasFloatingRepresentation());
+  if (BinaryOperator::isEqualityOp(Opc) &&
+      LHSType->hasFloatingRepresentation()) {
+    assert(RHS.get()->getType()->hasFloatingRepresentation());
     CheckFloatComparison(Loc, LHS.get(), RHS.get());
   }
 
@@ -10418,8 +10449,16 @@ static void DiagnoseConstAssignment(Sema &S, const Expr *E,
         // Static fields do not inherit constness from parents.
         break;
       }
-      break;
-    } // End MemberExpr
+      break; // End MemberExpr
+    } else if (const ArraySubscriptExpr *ASE =
+                   dyn_cast<ArraySubscriptExpr>(E)) {
+      E = ASE->getBase()->IgnoreParenImpCasts();
+      continue;
+    } else if (const ExtVectorElementExpr *EVE =
+                   dyn_cast<ExtVectorElementExpr>(E)) {
+      E = EVE->getBase()->IgnoreParenImpCasts();
+      continue;
+    }
     break;
   }
 
@@ -11584,8 +11623,8 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     // C++11 5.17p9:
     //   The meaning of x = {v} [...] is that of x = T(v) [...]. The meaning
     //   of x = {} is x = T().
-    InitializationKind Kind =
-        InitializationKind::CreateDirectList(RHSExpr->getLocStart());
+    InitializationKind Kind = InitializationKind::CreateDirectList(
+        RHSExpr->getLocStart(), RHSExpr->getLocStart(), RHSExpr->getLocEnd());
     InitializedEntity Entity =
         InitializedEntity::InitializeTemporary(LHSExpr->getType());
     InitializationSequence InitSeq(*this, Entity, Kind, RHSExpr);
@@ -12161,6 +12200,16 @@ ExprResult Sema::BuildBinOp(Scope *S, SourceLocation OpLoc,
   return CreateBuiltinBinOp(OpLoc, Opc, LHSExpr, RHSExpr);
 }
 
+static bool isOverflowingIntegerType(ASTContext &Ctx, QualType T) {
+  if (T.isNull() || T->isDependentType())
+    return false;
+
+  if (!T->isPromotableIntegerType())
+    return true;
+
+  return Ctx.getIntWidth(T) >= Ctx.getIntWidth(Ctx.IntTy);
+}
+
 ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
                                       UnaryOperatorKind Opc,
                                       Expr *InputExpr) {
@@ -12168,6 +12217,8 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
   ExprValueKind VK = VK_RValue;
   ExprObjectKind OK = OK_Ordinary;
   QualType resultType;
+  bool CanOverflow = false;
+
   bool ConvertHalfVec = false;
   if (getLangOpts().OpenCL) {
     QualType Ty = InputExpr->getType();
@@ -12193,6 +12244,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
                                                 Opc == UO_PostInc,
                                                 Opc == UO_PreInc ||
                                                 Opc == UO_PreDec);
+    CanOverflow = isOverflowingIntegerType(Context, resultType);
     break;
   case UO_AddrOf:
     resultType = CheckAddressOfOperand(Input, OpLoc);
@@ -12206,6 +12258,8 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
   }
   case UO_Plus:
   case UO_Minus:
+    CanOverflow = Opc == UO_Minus &&
+                  isOverflowingIntegerType(Context, Input.get()->getType());
     Input = UsualUnaryConversions(Input.get());
     if (Input.isInvalid()) return ExprError();
     // Unary plus and minus require promoting an operand of half vector to a
@@ -12242,6 +12296,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
     if (Input.isInvalid())
       return ExprError();
     resultType = Input.get()->getType();
+
     if (resultType->isDependentType())
       break;
     // C99 6.5.3.3p1. We allow complex int and float as a GCC extension.
@@ -12356,7 +12411,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
     CheckArrayAccess(Input.get());
 
   auto *UO = new (Context)
-      UnaryOperator(Input.get(), Opc, resultType, VK, OK, OpLoc);
+      UnaryOperator(Input.get(), Opc, resultType, VK, OK, OpLoc, CanOverflow);
   // Convert the result back to a half vector.
   if (ConvertHalfVec)
     return convertVector(UO, Context.HalfTy, *this);
@@ -14926,7 +14981,8 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
     if (RefersToEnclosingScope) {
       LambdaScopeInfo *const LSI =
           SemaRef.getCurLambda(/*IgnoreNonLambdaCapturingScope=*/true);
-      if (LSI && !LSI->CallOperator->Encloses(Var->getDeclContext())) {
+      if (LSI && (!LSI->CallOperator ||
+                  !LSI->CallOperator->Encloses(Var->getDeclContext()))) {
         // If a variable could potentially be odr-used, defer marking it so
         // until we finish analyzing the full expression for any
         // lvalue-to-rvalue

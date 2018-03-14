@@ -2917,6 +2917,18 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
   return false;
 }
 
+bool CallExpr::isBuiltinAssumeFalse(const ASTContext &Ctx) const {
+  const FunctionDecl* FD = getDirectCallee();
+  if (!FD || (FD->getBuiltinID() != Builtin::BI__assume &&
+              FD->getBuiltinID() != Builtin::BI__builtin_assume))
+    return false;
+  
+  const Expr* Arg = getArg(0);
+  bool ArgVal;
+  return !Arg->isValueDependent() &&
+         Arg->EvaluateAsBooleanCondition(ArgVal, Ctx) && !ArgVal;
+}
+
 namespace {
   /// \brief Look for any side effects within a Stmt.
   class SideEffectFinder : public ConstEvaluatedExprVisitor<SideEffectFinder> {
@@ -3446,10 +3458,11 @@ FieldDecl *Expr::getSourceBitField() {
       if (Field->isBitField())
         return Field;
 
-  if (ObjCIvarRefExpr *IvarRef = dyn_cast<ObjCIvarRefExpr>(E))
-    if (FieldDecl *Ivar = dyn_cast<FieldDecl>(IvarRef->getDecl()))
-      if (Ivar->isBitField())
-        return Ivar;
+  if (ObjCIvarRefExpr *IvarRef = dyn_cast<ObjCIvarRefExpr>(E)) {
+    FieldDecl *Ivar = IvarRef->getDecl();
+    if (Ivar->isBitField())
+      return Ivar;
+  }
 
   if (DeclRefExpr *DeclRef = dyn_cast<DeclRefExpr>(E)) {
     if (FieldDecl *Field = dyn_cast<FieldDecl>(DeclRef->getDecl()))

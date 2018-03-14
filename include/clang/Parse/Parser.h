@@ -379,15 +379,15 @@ private:
 
   /// isTokenParen - Return true if the cur token is '(' or ')'.
   bool isTokenParen() const {
-    return Tok.getKind() == tok::l_paren || Tok.getKind() == tok::r_paren;
+    return Tok.isOneOf(tok::l_paren, tok::r_paren);
   }
   /// isTokenBracket - Return true if the cur token is '[' or ']'.
   bool isTokenBracket() const {
-    return Tok.getKind() == tok::l_square || Tok.getKind() == tok::r_square;
+    return Tok.isOneOf(tok::l_square, tok::r_square);
   }
   /// isTokenBrace - Return true if the cur token is '{' or '}'.
   bool isTokenBrace() const {
-    return Tok.getKind() == tok::l_brace || Tok.getKind() == tok::r_brace;
+    return Tok.isOneOf(tok::l_brace, tok::r_brace);
   }
   /// isTokenStringLiteral - True if this token is a string-literal.
   bool isTokenStringLiteral() const {
@@ -1340,7 +1340,7 @@ private:
 
   // Objective-C External Declarations
   void MaybeSkipAttributes(tok::ObjCKeywordKind Kind);
-  DeclGroupPtrTy ParseObjCAtDirectives();
+  DeclGroupPtrTy ParseObjCAtDirectives(ParsedAttributesWithRange &Attrs);
   DeclGroupPtrTy ParseObjCAtClassDeclaration(SourceLocation atLoc);
   Decl *ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
                                         ParsedAttributes &prefixAttrs);
@@ -1644,7 +1644,8 @@ private:
 
   //===--------------------------------------------------------------------===//
   // C++0x 8: Function declaration trailing-return-type
-  TypeResult ParseTrailingReturnType(SourceRange &Range);
+  TypeResult ParseTrailingReturnType(SourceRange &Range,
+                                     bool MayBeFollowedByDirectInit);
 
   //===--------------------------------------------------------------------===//
   // C++ 2.13.5: C++ Boolean Literals
@@ -2158,7 +2159,8 @@ private:
   TPResult TryParsePtrOperatorSeq();
   TPResult TryParseOperatorId();
   TPResult TryParseInitDeclaratorList();
-  TPResult TryParseDeclarator(bool mayBeAbstract, bool mayHaveIdentifier=true);
+  TPResult TryParseDeclarator(bool mayBeAbstract, bool mayHaveIdentifier = true,
+                              bool mayHaveDirectInit = false);
   TPResult
   TryParseParameterDeclarationClause(bool *InvalidAsDeclaration = nullptr,
                                      bool VersusTemplateArg = false);
@@ -2675,30 +2677,42 @@ private:
   /// \brief Parses clause with a single expression of a kind \a Kind.
   ///
   /// \param Kind Kind of current clause.
+  /// \param ParseOnly true to skip the clause's semantic actions and return
+  /// nullptr.
   ///
-  OMPClause *ParseOpenMPSingleExprClause(OpenMPClauseKind Kind);
+  OMPClause *ParseOpenMPSingleExprClause(OpenMPClauseKind Kind,
+                                         bool ParseOnly);
   /// \brief Parses simple clause of a kind \a Kind.
   ///
   /// \param Kind Kind of current clause.
+  /// \param ParseOnly true to skip the clause's semantic actions and return
+  /// nullptr.
   ///
-  OMPClause *ParseOpenMPSimpleClause(OpenMPClauseKind Kind);
+  OMPClause *ParseOpenMPSimpleClause(OpenMPClauseKind Kind, bool ParseOnly);
   /// \brief Parses clause with a single expression and an additional argument
   /// of a kind \a Kind.
   ///
   /// \param Kind Kind of current clause.
+  /// \param ParseOnly true to skip the clause's semantic actions and return
+  /// nullptr.
   ///
-  OMPClause *ParseOpenMPSingleExprWithArgClause(OpenMPClauseKind Kind);
+  OMPClause *ParseOpenMPSingleExprWithArgClause(OpenMPClauseKind Kind,
+                                                bool ParseOnly);
   /// \brief Parses clause without any additional arguments.
   ///
   /// \param Kind Kind of current clause.
+  /// \param ParseOnly true to skip the clause's semantic actions and return
+  /// nullptr.
   ///
-  OMPClause *ParseOpenMPClause(OpenMPClauseKind Kind);
+  OMPClause *ParseOpenMPClause(OpenMPClauseKind Kind, bool ParseOnly = false);
   /// \brief Parses clause with the list of variables of a kind \a Kind.
   ///
   /// \param Kind Kind of current clause.
+  /// \param ParseOnly true to skip the clause's semantic actions and return
+  /// nullptr.
   ///
   OMPClause *ParseOpenMPVarListClause(OpenMPDirectiveKind DKind,
-                                      OpenMPClauseKind Kind);
+                                      OpenMPClauseKind Kind, bool ParseOnly);
 
 public:
   /// Parses simple expression in parens for single-expression clauses of OpenMP

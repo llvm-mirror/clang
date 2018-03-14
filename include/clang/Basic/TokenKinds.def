@@ -398,7 +398,6 @@ TYPE_TRAIT_2(__builtin_types_compatible_p, TypeCompatible, KEYNOCXX)
 KEYWORD(__builtin_va_arg            , KEYALL)
 KEYWORD(__extension__               , KEYALL)
 KEYWORD(__float128                  , KEYALL)
-ALIAS("_Float128", __float128       , KEYNOCXX)
 KEYWORD(__imag                      , KEYALL)
 KEYWORD(__int128                    , KEYALL)
 KEYWORD(__label__                   , KEYALL)
@@ -464,6 +463,7 @@ TYPE_TRAIT_1(__has_unique_object_representations,
 TYPE_TRAIT_N(__is_trivially_constructible, IsTriviallyConstructible, KEYCXX)
 TYPE_TRAIT_1(__is_trivially_copyable, IsTriviallyCopyable, KEYCXX)
 TYPE_TRAIT_2(__is_trivially_assignable, IsTriviallyAssignable, KEYCXX)
+TYPE_TRAIT_2(__reference_binds_to_temporary, ReferenceBindsToTemporary, KEYCXX)
 KEYWORD(__underlying_type           , KEYCXX)
 
 // Embarcadero Expression Traits

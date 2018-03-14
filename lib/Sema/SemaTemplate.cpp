@@ -783,6 +783,56 @@ static void maybeDiagnoseTemplateParameterShadow(Sema &SemaRef, Scope *S,
     SemaRef.DiagnoseTemplateParameterShadow(Loc, PrevDecl);
 }
 
+/// Convert a parsed type into a parsed template argument. This is mostly
+/// trivial, except that we may have parsed a C++17 deduced class template
+/// specialization type, in which case we should form a template template
+/// argument instead of a type template argument.
+ParsedTemplateArgument Sema::ActOnTemplateTypeArgument(TypeResult ParsedType) {
+  TypeSourceInfo *TInfo;
+  QualType T = GetTypeFromParser(ParsedType.get(), &TInfo);
+  if (T.isNull())
+    return ParsedTemplateArgument();
+  assert(TInfo && "template argument with no location");
+
+  // If we might have formed a deduced template specialization type, convert
+  // it to a template template argument.
+  if (getLangOpts().CPlusPlus17) {
+    TypeLoc TL = TInfo->getTypeLoc();
+    SourceLocation EllipsisLoc;
+    if (auto PET = TL.getAs<PackExpansionTypeLoc>()) {
+      EllipsisLoc = PET.getEllipsisLoc();
+      TL = PET.getPatternLoc();
+    }
+
+    CXXScopeSpec SS;
+    if (auto ET = TL.getAs<ElaboratedTypeLoc>()) {
+      SS.Adopt(ET.getQualifierLoc());
+      TL = ET.getNamedTypeLoc();
+    }
+
+    if (auto DTST = TL.getAs<DeducedTemplateSpecializationTypeLoc>()) {
+      TemplateName Name = DTST.getTypePtr()->getTemplateName();
+      if (SS.isSet())
+        Name = Context.getQualifiedTemplateName(SS.getScopeRep(),
+                                                /*HasTemplateKeyword*/ false,
+                                                Name.getAsTemplateDecl());
+      ParsedTemplateArgument Result(SS, TemplateTy::make(Name),
+                                    DTST.getTemplateNameLoc());
+      if (EllipsisLoc.isValid())
+        Result = Result.getTemplatePackExpansion(EllipsisLoc);
+      return Result;
+    }
+  }
+
+  // This is a normal type template argument. Note, if the type template
+  // argument is an injected-class-name for a template, it has a dual nature
+  // and can be used as either a type or a template. We handle that in 
+  // convertTypeTemplateArgumentToTemplate.
+  return ParsedTemplateArgument(ParsedTemplateArgument::Type,
+                                ParsedType.get().getAsOpaquePtr(),
+                                TInfo->getTypeLoc().getLocStart());
+}
+
 /// ActOnTypeParameter - Called when a C++ template type parameter
 /// (e.g., "typename T") has been parsed. Typename specifies whether
 /// the keyword "typename" was used to declare the type parameter
@@ -3476,7 +3526,7 @@ noteNonDeducibleParameters(Sema &S, TemplateParameterList *TemplateParams,
                            const llvm::SmallBitVector &DeducibleParams) {
   for (unsigned I = 0, N = DeducibleParams.size(); I != N; ++I) {
     if (!DeducibleParams[I]) {
-      NamedDecl *Param = cast<NamedDecl>(TemplateParams->getParam(I));
+      NamedDecl *Param = TemplateParams->getParam(I);
       if (Param->getDeclName())
         S.Diag(Param->getLocation(), diag::note_non_deducible_parameter)
             << Param->getDeclName();
@@ -4148,11 +4198,12 @@ bool Sema::CheckTemplateTypeArgument(TemplateTypeParmDecl *Param,
     ArgType = Arg.getAsType();
     TSI = AL.getTypeSourceInfo();
     break;
-  case TemplateArgument::Template: {
+  case TemplateArgument::Template:
+  case TemplateArgument::TemplateExpansion: {
     // We have a template type parameter but the template argument
     // is a template without any arguments.
     SourceRange SR = AL.getSourceRange();
-    TemplateName Name = Arg.getAsTemplate();
+    TemplateName Name = Arg.getAsTemplateOrTemplatePattern();
     Diag(SR.getBegin(), diag::err_template_missing_args)
       << (int)getTemplateNameKindForDiagnostics(Name) << Name << SR;
     if (TemplateDecl *Decl = Name.getAsTemplateDecl())
@@ -5883,17 +5934,16 @@ static bool CheckTemplateArgumentPointerToMember(Sema &S,
   }
   // A constant of pointer-to-member type.
   else if ((DRE = dyn_cast<DeclRefExpr>(Arg))) {
-    if (ValueDecl *VD = dyn_cast<ValueDecl>(DRE->getDecl())) {
-      if (VD->getType()->isMemberPointerType()) {
-        if (isa<NonTypeTemplateParmDecl>(VD)) {
-          if (Arg->isTypeDependent() || Arg->isValueDependent()) {
-            Converted = TemplateArgument(Arg);
-          } else {
-            VD = cast<ValueDecl>(VD->getCanonicalDecl());
-            Converted = TemplateArgument(VD, ParamType);
-          }
-          return Invalid;
+    ValueDecl *VD = DRE->getDecl();
+    if (VD->getType()->isMemberPointerType()) {
+      if (isa<NonTypeTemplateParmDecl>(VD)) {
+        if (Arg->isTypeDependent() || Arg->isValueDependent()) {
+          Converted = TemplateArgument(Arg);
+        } else {
+          VD = cast<ValueDecl>(VD->getCanonicalDecl());
+          Converted = TemplateArgument(VD, ParamType);
         }
+        return Invalid;
       }
     }
 
@@ -6584,7 +6634,7 @@ Sema::BuildExpressionFromDeclTemplateArgument(const TemplateArgument &Arg,
   assert(Arg.getKind() == TemplateArgument::Declaration &&
          "Only declaration template arguments permitted here");
 
-  ValueDecl *VD = cast<ValueDecl>(Arg.getAsDecl());
+  ValueDecl *VD = Arg.getAsDecl();
 
   if (VD->getDeclContext()->isRecord() &&
       (isa<CXXMethodDecl>(VD) || isa<FieldDecl>(VD) ||
@@ -9478,8 +9528,7 @@ static bool isEnableIf(NestedNameSpecifierLoc NNS, const IdentifierInfo &II,
       EnableIfTy.getAs<TemplateSpecializationTypeLoc>();
   if (!EnableIfTSTLoc || EnableIfTSTLoc.getNumArgs() == 0)
     return false;
-  const TemplateSpecializationType *EnableIfTST =
-    cast<TemplateSpecializationType>(EnableIfTSTLoc.getTypePtr());
+  const TemplateSpecializationType *EnableIfTST = EnableIfTSTLoc.getTypePtr();
 
   // ... which names a complete class template declaration...
   const TemplateDecl *EnableIfDecl =

@@ -1613,6 +1613,11 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
     ParmVarDecl *param = Method->parameters()[i];
     assert(argExpr && "CheckMessageArgumentTypes(): missing expression");
 
+    if (param->hasAttr<NoEscapeAttr>())
+      if (auto *BE = dyn_cast<BlockExpr>(
+              argExpr->IgnoreParenNoopCasts(Context)))
+        BE->getBlockDecl()->setDoesNotEscape();
+
     // Strip the unbridged-cast placeholder expression off unless it's
     // a consumed argument.
     if (argExpr->hasPlaceholderType(BuiltinType::ARCUnbridgedCast) &&
@@ -4276,9 +4281,9 @@ Expr *Sema::stripARCUnbridgedCast(Expr *e) {
   } else if (UnaryOperator *uo = dyn_cast<UnaryOperator>(e)) {
     assert(uo->getOpcode() == UO_Extension);
     Expr *sub = stripARCUnbridgedCast(uo->getSubExpr());
-    return new (Context) UnaryOperator(sub, UO_Extension, sub->getType(),
-                                   sub->getValueKind(), sub->getObjectKind(),
-                                       uo->getOperatorLoc());
+    return new (Context)
+        UnaryOperator(sub, UO_Extension, sub->getType(), sub->getValueKind(),
+                      sub->getObjectKind(), uo->getOperatorLoc(), false);
   } else if (GenericSelectionExpr *gse = dyn_cast<GenericSelectionExpr>(e)) {
     assert(!gse->isResultDependent());
 

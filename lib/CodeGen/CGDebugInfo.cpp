@@ -361,18 +361,19 @@ StringRef CGDebugInfo::getClassName(const RecordDecl *RD) {
   return StringRef();
 }
 
-llvm::DIFile::ChecksumKind
+Optional<llvm::DIFile::ChecksumKind>
 CGDebugInfo::computeChecksum(FileID FID, SmallString<32> &Checksum) const {
   Checksum.clear();
 
-  if (!CGM.getCodeGenOpts().EmitCodeView)
-    return llvm::DIFile::CSK_None;
+  if (!CGM.getCodeGenOpts().EmitCodeView &&
+      CGM.getCodeGenOpts().DwarfVersion < 5)
+    return None;
 
   SourceManager &SM = CGM.getContext().getSourceManager();
   bool Invalid;
   llvm::MemoryBuffer *MemBuffer = SM.getBuffer(FID, &Invalid);
   if (Invalid)
-    return llvm::DIFile::CSK_None;
+    return None;
 
   llvm::MD5 Hash;
   llvm::MD5::MD5Result Result;
@@ -384,23 +385,30 @@ CGDebugInfo::computeChecksum(FileID FID, SmallString<32> &Checksum) const {
   return llvm::DIFile::CSK_MD5;
 }
 
+Optional<StringRef> CGDebugInfo::getSource(const SourceManager &SM, FileID FID) {
+  if (!CGM.getCodeGenOpts().EmbedSource)
+    return None;
+
+  bool SourceInvalid = false;
+  StringRef Source = SM.getBufferData(FID, &SourceInvalid);
+
+  if (SourceInvalid)
+    return None;
+
+  return Source;
+}
+
 llvm::DIFile *CGDebugInfo::getOrCreateFile(SourceLocation Loc) {
   if (!Loc.isValid())
     // If Location is not valid then use main input file.
-    return DBuilder.createFile(remapDIPath(TheCU->getFilename()),
-                               remapDIPath(TheCU->getDirectory()),
-                               TheCU->getFile()->getChecksumKind(),
-                               TheCU->getFile()->getChecksum());
+    return getOrCreateMainFile();
 
   SourceManager &SM = CGM.getContext().getSourceManager();
   PresumedLoc PLoc = SM.getPresumedLoc(Loc);
 
   if (PLoc.isInvalid() || StringRef(PLoc.getFilename()).empty())
     // If the location is not valid then use main input file.
-    return DBuilder.createFile(remapDIPath(TheCU->getFilename()),
-                               remapDIPath(TheCU->getDirectory()),
-                               TheCU->getFile()->getChecksumKind(),
-                               TheCU->getFile()->getChecksum());
+    return getOrCreateMainFile();
 
   // Cache the results.
   const char *fname = PLoc.getFilename();
@@ -413,22 +421,27 @@ llvm::DIFile *CGDebugInfo::getOrCreateFile(SourceLocation Loc) {
   }
 
   SmallString<32> Checksum;
-  llvm::DIFile::ChecksumKind CSKind =
+  Optional<llvm::DIFile::ChecksumKind> CSKind =
       computeChecksum(SM.getFileID(Loc), Checksum);
+  Optional<llvm::DIFile::ChecksumInfo<StringRef>> CSInfo;
+  if (CSKind)
+    CSInfo.emplace(*CSKind, Checksum);
 
   llvm::DIFile *F = DBuilder.createFile(remapDIPath(PLoc.getFilename()),
                                         remapDIPath(getCurrentDirname()),
-                                        CSKind, Checksum);
+                                        CSInfo,
+                                        getSource(SM, SM.getFileID(Loc)));
 
   DIFileCache[fname].reset(F);
   return F;
 }
 
 llvm::DIFile *CGDebugInfo::getOrCreateMainFile() {
-  return DBuilder.createFile(remapDIPath(TheCU->getFilename()),
-                             remapDIPath(TheCU->getDirectory()),
-                             TheCU->getFile()->getChecksumKind(),
-                             TheCU->getFile()->getChecksum());
+  return DBuilder.createFile(
+      remapDIPath(TheCU->getFilename()),
+      remapDIPath(TheCU->getDirectory()),
+      TheCU->getFile()->getChecksum(),
+      CGM.getCodeGenOpts().EmbedSource ? TheCU->getSource() : None);
 }
 
 std::string CGDebugInfo::remapDIPath(StringRef Path) const {
@@ -472,7 +485,8 @@ StringRef CGDebugInfo::getCurrentDirname() {
 
 void CGDebugInfo::CreateCompileUnit() {
   SmallString<32> Checksum;
-  llvm::DIFile::ChecksumKind CSKind = llvm::DIFile::CSK_None;
+  Optional<llvm::DIFile::ChecksumKind> CSKind;
+  Optional<llvm::DIFile::ChecksumInfo<StringRef>> CSInfo;
 
   // Should we be asking the SourceManager for the main file name, instead of
   // accepting it as an argument? This just causes the main file name to
@@ -551,13 +565,18 @@ void CGDebugInfo::CreateCompileUnit() {
     break;
   }
 
+  if (CSKind)
+    CSInfo.emplace(*CSKind, Checksum);
+
   // Create new compile unit.
   // FIXME - Eliminate TheCU.
   auto &CGOpts = CGM.getCodeGenOpts();
   TheCU = DBuilder.createCompileUnit(
       LangTag,
       DBuilder.createFile(remapDIPath(MainFileName),
-                          remapDIPath(getCurrentDirname()), CSKind, Checksum),
+                          remapDIPath(getCurrentDirname()),
+                          CSInfo,
+                          getSource(SM, SM.getMainFileID())),
       Producer, LO.Optimize || CGOpts.PrepareForLTO || CGOpts.EmitSummaryIndex,
       CGOpts.DwarfDebugFlags, RuntimeVers,
       CGOpts.EnableSplitDwarf ? "" : CGOpts.SplitDwarfFile, EmissionKind,
@@ -2107,6 +2126,7 @@ CGDebugInfo::getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
             : ~1ULL;
     llvm::DIBuilder DIB(CGM.getModule());
     DIB.createCompileUnit(TheCU->getSourceLanguage(),
+                          // TODO: Support "Source" from external AST providers?
                           DIB.createFile(Mod.getModuleName(), Mod.getPath()),
                           TheCU->getProducer(), true, StringRef(), 0,
                           Mod.getASTFile(), llvm::DICompileUnit::FullDebug,
@@ -2291,12 +2311,14 @@ llvm::DIType *CGDebugInfo::CreateType(const VectorType *Ty,
                                       llvm::DIFile *Unit) {
   llvm::DIType *ElementTy = getOrCreateType(Ty->getElementType(), Unit);
   int64_t Count = Ty->getNumElements();
-  if (Count == 0)
-    // If number of elements are not known then this is an unbounded array.
-    // Use Count == -1 to express such arrays.
-    Count = -1;
 
-  llvm::Metadata *Subscript = DBuilder.getOrCreateSubrange(0, Count);
+  llvm::Metadata *Subscript;
+  QualType QTy(Ty, 0);
+  auto SizeExpr = SizeExprCache.find(QTy);
+  if (SizeExpr != SizeExprCache.end())
+    Subscript = DBuilder.getOrCreateSubrange(0, SizeExpr->getSecond());
+  else
+    Subscript = DBuilder.getOrCreateSubrange(0, Count ? Count : -1);
   llvm::DINodeArray SubscriptArray = DBuilder.getOrCreateArray(Subscript);
 
   uint64_t Size = CGM.getContext().getTypeSize(Ty);
@@ -2353,8 +2375,12 @@ llvm::DIType *CGDebugInfo::CreateType(const ArrayType *Ty, llvm::DIFile *Unit) {
       }
     }
 
-    // FIXME: Verify this is right for VLAs.
-    Subscripts.push_back(DBuilder.getOrCreateSubrange(0, Count));
+    auto SizeNode = SizeExprCache.find(EltTy);
+    if (SizeNode != SizeExprCache.end())
+      Subscripts.push_back(
+          DBuilder.getOrCreateSubrange(0, SizeNode->getSecond()));
+    else
+      Subscripts.push_back(DBuilder.getOrCreateSubrange(0, Count));
     EltTy = Ty->getElementType();
   }
 
@@ -2485,9 +2511,12 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const EnumType *Ty) {
   // Create elements for each enumerator.
   SmallVector<llvm::Metadata *, 16> Enumerators;
   ED = ED->getDefinition();
+  bool IsSigned = ED->getIntegerType()->isSignedIntegerType();
   for (const auto *Enum : ED->enumerators()) {
-    Enumerators.push_back(DBuilder.createEnumerator(
-        Enum->getName(), Enum->getInitVal().getSExtValue()));
+    const auto &InitVal = Enum->getInitVal();
+    auto Value = IsSigned ? InitVal.getSExtValue() : InitVal.getZExtValue();
+    Enumerators.push_back(
+        DBuilder.createEnumerator(Enum->getName(), Value, !IsSigned));
   }
 
   // Return a CompositeType for the enum itself.
@@ -2496,11 +2525,10 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const EnumType *Ty) {
   llvm::DIFile *DefUnit = getOrCreateFile(ED->getLocation());
   unsigned Line = getLineNumber(ED->getLocation());
   llvm::DIScope *EnumContext = getDeclContextDescriptor(ED);
-  llvm::DIType *ClassTy =
-      ED->isFixed() ? getOrCreateType(ED->getIntegerType(), DefUnit) : nullptr;
+  llvm::DIType *ClassTy = getOrCreateType(ED->getIntegerType(), DefUnit);
   return DBuilder.createEnumerationType(EnumContext, ED->getName(), DefUnit,
                                         Line, Size, Align, EltArray, ClassTy,
-                                        FullName);
+                                        FullName, ED->isFixed());
 }
 
 llvm::DIMacro *CGDebugInfo::CreateMacro(llvm::DIMacroFile *Parent,
@@ -3008,7 +3036,7 @@ llvm::DISubprogram *CGDebugInfo::getFunctionFwdDeclOrStub(GlobalDecl GD,
       !FD->isExternallyVisible(),
       /* isDefinition = */ false, 0, Flags, CGM.getLangOpts().Optimize,
       TParamsArray.get(), getFunctionDeclaration(FD));
-  const auto *CanonDecl = cast<FunctionDecl>(FD->getCanonicalDecl());
+  const FunctionDecl *CanonDecl = FD->getCanonicalDecl();
   FwdDeclReplaceMap.emplace_back(std::piecewise_construct,
                                  std::make_tuple(CanonDecl),
                                  std::make_tuple(SP));
@@ -3222,7 +3250,7 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, SourceLocation Loc,
   if (Name.startswith("\01"))
     Name = Name.substr(1);
 
-  if (!HasDecl || D->isImplicit()) {
+  if (!HasDecl || D->isImplicit() || D->hasAttr<ArtificialAttr>()) {
     Flags |= llvm::DINode::FlagArtificial;
     // Artificial functions should not silently reuse CurLoc.
     CurLoc = SourceLocation();
@@ -3472,13 +3500,14 @@ llvm::DIType *CGDebugInfo::EmitTypeForVarWithBlocksAttr(const VarDecl *VD,
                                    nullptr, Elements);
 }
 
-void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::Value *Storage,
-                              llvm::Optional<unsigned> ArgNo,
-                              CGBuilderTy &Builder) {
+llvm::DILocalVariable *CGDebugInfo::EmitDeclare(const VarDecl *VD,
+                                                llvm::Value *Storage,
+                                                llvm::Optional<unsigned> ArgNo,
+                                                CGBuilderTy &Builder) {
   assert(DebugKind >= codegenoptions::LimitedDebugInfo);
   assert(!LexicalBlockStack.empty() && "Region stack mismatch, stack empty!");
   if (VD->hasAttr<NoDebugAttr>())
-    return;
+    return nullptr;
 
   bool Unwritten =
       VD->isImplicit() || (isa<Decl>(VD->getDeclContext()) &&
@@ -3496,7 +3525,7 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::Value *Storage,
   // If there is no debug info for this type then do not emit debug info
   // for this variable.
   if (!Ty)
-    return;
+    return nullptr;
 
   // Get location information.
   unsigned Line = 0;
@@ -3547,7 +3576,7 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::Value *Storage,
   } else if (const auto *RT = dyn_cast<RecordType>(VD->getType())) {
     // If VD is an anonymous union then Storage represents value for
     // all union fields.
-    const auto *RD = cast<RecordDecl>(RT->getDecl());
+    const RecordDecl *RD = RT->getDecl();
     if (RD->isUnion() && RD->isAnonymousStructOrUnion()) {
       // GDB has trouble finding local variables in anonymous unions, so we emit
       // artifical local variables for each of the members.
@@ -3592,13 +3621,15 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::Value *Storage,
   DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(Expr),
                          llvm::DebugLoc::get(Line, Column, Scope, CurInlinedAt),
                          Builder.GetInsertBlock());
+
+  return D;
 }
 
-void CGDebugInfo::EmitDeclareOfAutoVariable(const VarDecl *VD,
-                                            llvm::Value *Storage,
-                                            CGBuilderTy &Builder) {
+llvm::DILocalVariable *
+CGDebugInfo::EmitDeclareOfAutoVariable(const VarDecl *VD, llvm::Value *Storage,
+                                       CGBuilderTy &Builder) {
   assert(DebugKind >= codegenoptions::LimitedDebugInfo);
-  EmitDeclare(VD, Storage, llvm::None, Builder);
+  return EmitDeclare(VD, Storage, llvm::None, Builder);
 }
 
 llvm::DIType *CGDebugInfo::CreateSelfType(const QualType &QualTy,

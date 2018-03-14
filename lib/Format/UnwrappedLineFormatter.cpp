@@ -304,9 +304,23 @@ private:
     if (TheLine->First->is(tok::l_brace) && TheLine->First == TheLine->Last &&
         I != AnnotatedLines.begin() &&
         I[-1]->First->isOneOf(tok::kw_if, tok::kw_while, tok::kw_for)) {
-      return Style.AllowShortBlocksOnASingleLine
-                 ? tryMergeSimpleBlock(I - 1, E, Limit)
-                 : 0;
+      unsigned MergedLines = 0;
+      if (Style.AllowShortBlocksOnASingleLine) {
+        MergedLines = tryMergeSimpleBlock(I - 1, E, Limit);
+        // If we managed to merge the block, discard the first merged line
+        // since we are merging starting from I.
+        if (MergedLines > 0)
+          --MergedLines;
+      }
+      return MergedLines;
+    }
+    // Don't merge block with left brace wrapped after ObjC special blocks
+    if (TheLine->First->is(tok::l_brace) && I != AnnotatedLines.begin() &&
+        I[-1]->First->is(tok::at) && I[-1]->First->Next) {
+      tok::ObjCKeywordKind kwId = I[-1]->First->Next->Tok.getObjCKeywordID();
+      if (kwId == clang::tok::objc_autoreleasepool ||
+          kwId == clang::tok::objc_synchronized)
+        return 0;
     }
     // Try to merge a block with left brace wrapped that wasn't yet covered
     if (TheLine->Last->is(tok::l_brace)) {

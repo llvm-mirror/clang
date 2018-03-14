@@ -61,6 +61,8 @@ def _SLASH_Brepro_ : CLFlag<"Brepro-">,
 def _SLASH_C : CLFlag<"C">,
   HelpText<"Don't discard comments when preprocessing">, Alias<C>;
 def _SLASH_c : CLFlag<"c">, HelpText<"Compile only">, Alias<c>;
+def _SLASH_d1PP : CLFlag<"d1PP">,
+  HelpText<"Retain macro definitions in /E mode">, Alias<dD>;
 def _SLASH_d1reportAllClassLayout : CLFlag<"d1reportAllClassLayout">,
   HelpText<"Dump record layout information">, Alias<fdump_record_layouts>;
 def _SLASH_diagnostics_caret : CLFlag<"diagnostics:caret">,
@@ -164,6 +166,9 @@ def _SLASH_wd4996 : CLFlag<"wd4996">, Alias<W_Joined>,
   AliasArgs<["no-deprecated-declarations"]>;
 def _SLASH_vd : CLJoined<"vd">, HelpText<"Control vtordisp placement">,
   Alias<vtordisp_mode_EQ>;
+def _SLASH_X : CLFlag<"X">,
+  HelpText<"Don't add %INCLUDE% to the include search path">,
+  Alias<nostdlibinc>;
 def _SLASH_Zc_sizedDealloc : CLFlag<"Zc:sizedDealloc">,
   HelpText<"Enable C++14 sized global deallocation functions">,
   Alias<fsized_deallocation>;
@@ -235,6 +240,8 @@ def _SLASH_Fi : CLCompileJoined<"Fi">,
 def _SLASH_Fo : CLCompileJoined<"Fo">,
   HelpText<"Set output object file, or directory (ends in / or \\) (with /c)">,
   MetaVarName<"<file or directory>">;
+def _SLASH_Guard : CLJoined<"guard:">,
+  HelpText<"Enable Control Flow Guard with /guard:cf">;
 def _SLASH_GX : CLFlag<"GX">,
   HelpText<"Enable exception handling">;
 def _SLASH_GX_ : CLFlag<"GX-">,
@@ -324,6 +331,7 @@ def _SLASH_kernel_ : CLIgnoredFlag<"kernel-">;
 def _SLASH_nologo : CLIgnoredFlag<"nologo">;
 def _SLASH_Og : CLIgnoredFlag<"Og">;
 def _SLASH_openmp_ : CLIgnoredFlag<"openmp-">;
+def _SLASH_permissive_ : CLIgnoredFlag<"permissive-">;
 def _SLASH_RTC : CLIgnoredJoined<"RTC">;
 def _SLASH_sdl : CLIgnoredFlag<"sdl">;
 def _SLASH_sdl_ : CLIgnoredFlag<"sdl-">;
@@ -344,6 +352,8 @@ def _SLASH_Zo_ : CLIgnoredFlag<"Zo-">;
 // Unsupported:
 
 def _SLASH_AI : CLJoined<"AI">;
+def _SLASH_Bt : CLFlag<"Bt">;
+def _SLASH_Bt_plus : CLFlag<"Bt+">;
 def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_doc : CLJoined<"doc">;
 def _SLASH_FA_joined : CLJoined<"FA">;
@@ -364,7 +374,6 @@ def _SLASH_GL_ : CLFlag<"GL-">;
 def _SLASH_Gm : CLFlag<"Gm">;
 def _SLASH_Gm_ : CLFlag<"Gm-">;
 def _SLASH_GT : CLFlag<"GT">;
-def _SLASH_Guard : CLJoined<"guard:">;
 def _SLASH_GZ : CLFlag<"GZ">;
 def _SLASH_H : CLFlag<"H">;
 def _SLASH_homeparams : CLFlag<"homeparams">;
@@ -382,7 +391,6 @@ def _SLASH_u : CLFlag<"u">;
 def _SLASH_V : CLFlag<"V">;
 def _SLASH_WL : CLFlag<"WL">;
 def _SLASH_Wp64 : CLFlag<"Wp64">;
-def _SLASH_X : CLFlag<"X">;
 def _SLASH_Yd : CLFlag<"Yd">;
 def _SLASH_Yl : CLJoined<"Yl">;
 def _SLASH_Za : CLFlag<"Za">;

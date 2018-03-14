@@ -236,8 +236,21 @@ TemplateDecl *Decl::getDescribedTemplate() const {
     return RD->getDescribedClassTemplate();
   else if (auto *VD = dyn_cast<VarDecl>(this))
     return VD->getDescribedVarTemplate();
+  else if (auto *AD = dyn_cast<TypeAliasDecl>(this))
+    return AD->getDescribedAliasTemplate();
 
   return nullptr;
+}
+
+bool Decl::isTemplated() const {
+  // A declaration is dependent if it is a template or a template pattern, or
+  // is within (lexcially for a friend, semantically otherwise) a dependent
+  // context.
+  // FIXME: Should local extern declarations be treated like friends?
+  if (auto *AsDC = dyn_cast<DeclContext>(this))
+    return AsDC->isDependentContext();
+  auto *DC = getFriendObjectKind() ? getLexicalDeclContext() : getDeclContext();
+  return DC->isDependentContext() || isTemplateDecl() || getDescribedTemplate();
 }
 
 const DeclContext *Decl::getParentFunctionOrMethod() const {
@@ -891,12 +904,14 @@ bool Decl::AccessDeclContextSanity() const {
   // 4. the context is not a record
   // 5. it's invalid
   // 6. it's a C++0x static_assert.
+  // 7. it's a block literal declaration
   if (isa<TranslationUnitDecl>(this) ||
       isa<TemplateTypeParmDecl>(this) ||
       isa<NonTypeTemplateParmDecl>(this) ||
       !isa<CXXRecordDecl>(getDeclContext()) ||
       isInvalidDecl() ||
       isa<StaticAssertDecl>(this) ||
+      isa<BlockDecl>(this) ||
       // FIXME: a ParmVarDecl can have ClassTemplateSpecialization
       // as DeclContext (?).
       isa<ParmVarDecl>(this) ||
@@ -1588,17 +1603,7 @@ DeclContext::noload_lookup(DeclarationName Name) {
   if (PrimaryContext != this)
     return PrimaryContext->noload_lookup(Name);
 
-  // If we have any lazy lexical declarations not in our lookup map, add them
-  // now. Don't import any external declarations, not even if we know we have
-  // some missing from the external visible lookups.
-  if (HasLazyLocalLexicalLookups) {
-    SmallVector<DeclContext *, 2> Contexts;
-    collectAllContexts(Contexts);
-    for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
-      buildLookupImpl(Contexts[I], hasExternalVisibleStorage());
-    HasLazyLocalLexicalLookups = false;
-  }
-
+  loadLazyLocalLexicalLookups();
   StoredDeclsMap *Map = LookupPtr;
   if (!Map)
     return lookup_result();
@@ -1606,6 +1611,19 @@ DeclContext::noload_lookup(DeclarationName Name) {
   StoredDeclsMap::iterator I = Map->find(Name);
   return I != Map->end() ? I->second.getLookupResult()
                          : lookup_result();
+}
+
+// If we have any lazy lexical declarations not in our lookup map, add them
+// now. Don't import any external declarations, not even if we know we have
+// some missing from the external visible lookups.
+void DeclContext::loadLazyLocalLexicalLookups() {
+  if (HasLazyLocalLexicalLookups) {
+    SmallVector<DeclContext *, 2> Contexts;
+    collectAllContexts(Contexts);
+    for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
+      buildLookupImpl(Contexts[I], hasExternalVisibleStorage());
+    HasLazyLocalLexicalLookups = false;
+  }
 }
 
 void DeclContext::localUncachedLookup(DeclarationName Name,

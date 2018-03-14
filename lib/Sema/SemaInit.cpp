@@ -352,6 +352,7 @@ class InitListChecker {
                                bool FillWithNoInit = false);
   void FillInEmptyInitializations(const InitializedEntity &Entity,
                                   InitListExpr *ILE, bool &RequiresSecondPass,
+                                  InitListExpr *OuterILE, unsigned OuterIndex,
                                   bool FillWithNoInit = false);
   bool CheckFlexibleArrayInit(const InitializedEntity &Entity,
                               Expr *InitExpr, FieldDecl *Field,
@@ -517,12 +518,13 @@ void InitListChecker::FillInEmptyInitForBase(
     ILE->setInit(Init, BaseInit.getAs<Expr>());
   } else if (InitListExpr *InnerILE =
                  dyn_cast<InitListExpr>(ILE->getInit(Init))) {
-    FillInEmptyInitializations(BaseEntity, InnerILE,
-                               RequiresSecondPass, FillWithNoInit);
+    FillInEmptyInitializations(BaseEntity, InnerILE, RequiresSecondPass,
+                               ILE, Init, FillWithNoInit);
   } else if (DesignatedInitUpdateExpr *InnerDIUE =
                dyn_cast<DesignatedInitUpdateExpr>(ILE->getInit(Init))) {
     FillInEmptyInitializations(BaseEntity, InnerDIUE->getUpdater(),
-                               RequiresSecondPass, /*FillWithNoInit =*/true);
+                               RequiresSecondPass, ILE, Init,
+                               /*FillWithNoInit =*/true);
   }
 }
 
@@ -605,23 +607,42 @@ void InitListChecker::FillInEmptyInitForField(unsigned Init, FieldDecl *Field,
   } else if (InitListExpr *InnerILE
                = dyn_cast<InitListExpr>(ILE->getInit(Init)))
     FillInEmptyInitializations(MemberEntity, InnerILE,
-                               RequiresSecondPass, FillWithNoInit);
+                               RequiresSecondPass, ILE, Init, FillWithNoInit);
   else if (DesignatedInitUpdateExpr *InnerDIUE
                = dyn_cast<DesignatedInitUpdateExpr>(ILE->getInit(Init)))
     FillInEmptyInitializations(MemberEntity, InnerDIUE->getUpdater(),
-                               RequiresSecondPass, /*FillWithNoInit =*/ true);
+                               RequiresSecondPass, ILE, Init,
+                               /*FillWithNoInit =*/true);
 }
 
 /// Recursively replaces NULL values within the given initializer list
 /// with expressions that perform value-initialization of the
-/// appropriate type.
+/// appropriate type, and finish off the InitListExpr formation.
 void
 InitListChecker::FillInEmptyInitializations(const InitializedEntity &Entity,
                                             InitListExpr *ILE,
                                             bool &RequiresSecondPass,
+                                            InitListExpr *OuterILE,
+                                            unsigned OuterIndex,
                                             bool FillWithNoInit) {
   assert((ILE->getType() != SemaRef.Context.VoidTy) &&
          "Should not have void type");
+
+  // If this is a nested initializer list, we might have changed its contents
+  // (and therefore some of its properties, such as instantiation-dependence)
+  // while filling it in. Inform the outer initializer list so that its state
+  // can be updated to match.
+  // FIXME: We should fully build the inner initializers before constructing
+  // the outer InitListExpr instead of mutating AST nodes after they have
+  // been used as subexpressions of other nodes.
+  struct UpdateOuterILEWithUpdatedInit {
+    InitListExpr *Outer;
+    unsigned OuterIndex;
+    ~UpdateOuterILEWithUpdatedInit() {
+      if (Outer)
+        Outer->setInit(OuterIndex, Outer->getInit(OuterIndex));
+    }
+  } UpdateOuterRAII = {OuterILE, OuterIndex};
 
   // A transparent ILE is not performing aggregate initialization and should
   // not be filled in.
@@ -769,11 +790,12 @@ InitListChecker::FillInEmptyInitializations(const InitializedEntity &Entity,
     } else if (InitListExpr *InnerILE
                  = dyn_cast_or_null<InitListExpr>(InitExpr))
       FillInEmptyInitializations(ElementEntity, InnerILE, RequiresSecondPass,
-                                 FillWithNoInit);
+                                 ILE, Init, FillWithNoInit);
     else if (DesignatedInitUpdateExpr *InnerDIUE
                  = dyn_cast_or_null<DesignatedInitUpdateExpr>(InitExpr))
       FillInEmptyInitializations(ElementEntity, InnerDIUE->getUpdater(),
-                                 RequiresSecondPass, /*FillWithNoInit =*/ true);
+                                 RequiresSecondPass, ILE, Init,
+                                 /*FillWithNoInit =*/true);
   }
 }
 
@@ -795,10 +817,11 @@ InitListChecker::InitListChecker(Sema &S, const InitializedEntity &Entity,
 
   if (!hadError && !VerifyOnly) {
     bool RequiresSecondPass = false;
-    FillInEmptyInitializations(Entity, FullyStructuredList, RequiresSecondPass);
+    FillInEmptyInitializations(Entity, FullyStructuredList, RequiresSecondPass,
+                               /*OuterILE=*/nullptr, /*OuterIndex=*/0);
     if (RequiresSecondPass && !hadError)
       FillInEmptyInitializations(Entity, FullyStructuredList,
-                                 RequiresSecondPass);
+                                 RequiresSecondPass, nullptr, 0);
   }
 }
 
@@ -1162,10 +1185,12 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
       if (!hadError && !VerifyOnly) {
         bool RequiresSecondPass = false;
         FillInEmptyInitializations(Entity, InnerStructuredList,
-                                   RequiresSecondPass);
+                                   RequiresSecondPass, StructuredList,
+                                   StructuredIndex);
         if (RequiresSecondPass && !hadError)
           FillInEmptyInitializations(Entity, InnerStructuredList,
-                                     RequiresSecondPass);
+                                     RequiresSecondPass, StructuredList,
+                                     StructuredIndex);
       }
       ++StructuredIndex;
       ++Index;
@@ -3533,8 +3558,8 @@ static bool TryInitializerListConstruction(Sema &S,
       clang::ArrayType::Normal, 0);
   InitializedEntity HiddenArray =
       InitializedEntity::InitializeTemporary(ArrayType);
-  InitializationKind Kind =
-      InitializationKind::CreateDirectList(List->getExprLoc());
+  InitializationKind Kind = InitializationKind::CreateDirectList(
+      List->getExprLoc(), List->getLocStart(), List->getLocEnd());
   TryListInitialization(S, HiddenArray, Kind, List, Sequence,
                         TreatUnavailableAsInvalid);
   if (Sequence)
@@ -6031,10 +6056,7 @@ PerformConstructorInitialization(Sema &S,
     TypeSourceInfo *TSInfo = Entity.getTypeSourceInfo();
     if (!TSInfo)
       TSInfo = S.Context.getTrivialTypeSourceInfo(Entity.getType(), Loc);
-    SourceRange ParenOrBraceRange =
-      (Kind.getKind() == InitializationKind::IK_DirectList)
-      ? SourceRange(LBraceLoc, RBraceLoc)
-      : Kind.getParenRange();
+    SourceRange ParenOrBraceRange = Kind.getParenOrBraceRange();
 
     if (auto *Shadow = dyn_cast<ConstructorUsingShadowDecl>(
             Step.Function.FoundDecl.getDecl())) {
@@ -6068,7 +6090,7 @@ PerformConstructorInitialization(Sema &S,
     if (IsListInitialization)
       ParenOrBraceRange = SourceRange(LBraceLoc, RBraceLoc);
     else if (Kind.getKind() == InitializationKind::IK_Direct)
-      ParenOrBraceRange = Kind.getParenRange();
+      ParenOrBraceRange = Kind.getParenOrBraceRange();
 
     // If the entity allows NRVO, mark the construction as elidable
     // unconditionally.
@@ -6594,7 +6616,7 @@ InitializationSequence::Perform(Sema &S,
     if (Kind.getKind() == InitializationKind::IK_Direct &&
         !Kind.isExplicitCast()) {
       // Rebuild the ParenListExpr.
-      SourceRange ParenRange = Kind.getParenRange();
+      SourceRange ParenRange = Kind.getParenOrBraceRange();
       return S.ActOnParenListExpr(ParenRange.getBegin(), ParenRange.getEnd(),
                                   Args);
     }
@@ -7114,14 +7136,17 @@ InitializationSequence::Perform(Sema &S,
       bool IsStdInitListInit =
           Step->Kind == SK_StdInitializerListConstructorCall;
       Expr *Source = CurInit.get();
+      SourceRange Range = Kind.hasParenOrBraceRange()
+                              ? Kind.getParenOrBraceRange()
+                              : SourceRange();
       CurInit = PerformConstructorInitialization(
           S, UseTemporary ? TempEntity : Entity, Kind,
           Source ? MultiExprArg(Source) : Args, *Step,
           ConstructorInitRequiresZeroInit,
           /*IsListInitialization*/ IsStdInitListInit,
           /*IsStdInitListInitialization*/ IsStdInitListInit,
-          /*LBraceLoc*/ SourceLocation(),
-          /*RBraceLoc*/ SourceLocation());
+          /*LBraceLoc*/ Range.getBegin(),
+          /*RBraceLoc*/ Range.getEnd());
       break;
     }
 

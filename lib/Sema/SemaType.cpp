@@ -31,6 +31,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
+#include "clang/Sema/TemplateInstCallback.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -2851,6 +2852,14 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::BlockLiteralContext:
       Error = 9; // Block literal
       break;
+    case DeclaratorContext::TemplateArgContext:
+      // Within a template argument list, a deduced template specialization
+      // type will be reinterpreted as a template template argument.
+      if (isa<DeducedTemplateSpecializationType>(Deduced) &&
+          !D.getNumTypeObjects() &&
+          D.getDeclSpec().getParsedSpecifiers() == DeclSpec::PQ_TypeSpecifier)
+        break;
+      LLVM_FALLTHROUGH;
     case DeclaratorContext::TemplateTypeArgContext:
       Error = 10; // Template type argument
       break;
@@ -2859,6 +2868,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       Error = 12; // Type alias
       break;
     case DeclaratorContext::TrailingReturnContext:
+    case DeclaratorContext::TrailingReturnVarContext:
       if (!SemaRef.getLangOpts().CPlusPlus14 || !IsCXXAutoType)
         Error = 13; // Function return type
       break;
@@ -2961,6 +2971,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     unsigned DiagID = 0;
     switch (D.getContext()) {
     case DeclaratorContext::TrailingReturnContext:
+    case DeclaratorContext::TrailingReturnVarContext:
       // Class and enumeration definitions are syntactically not allowed in
       // trailing return types.
       llvm_unreachable("parser should not have allowed this");
@@ -2988,6 +2999,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::CXXNewContext:
     case DeclaratorContext::CXXCatchContext:
     case DeclaratorContext::ObjCCatchContext:
+    case DeclaratorContext::TemplateArgContext:
     case DeclaratorContext::TemplateTypeArgContext:
       DiagID = diag::err_type_defined_in_type_specifier;
       break;
@@ -3914,6 +3926,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::ObjCResultContext:
     case DeclaratorContext::PrototypeContext:
     case DeclaratorContext::TrailingReturnContext:
+    case DeclaratorContext::TrailingReturnVarContext:
       isFunctionOrMethod = true;
       LLVM_FALLTHROUGH;
 
@@ -4007,6 +4020,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::LambdaExprParameterContext:
     case DeclaratorContext::ObjCCatchContext:
     case DeclaratorContext::TemplateParamContext:
+    case DeclaratorContext::TemplateArgContext:
     case DeclaratorContext::TemplateTypeArgContext:
     case DeclaratorContext::TypeNameContext:
     case DeclaratorContext::FunctionalCastContext:
@@ -4828,6 +4842,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         !(Kind == Member &&
           D.getDeclSpec().getStorageClassSpec() != DeclSpec::SCS_static) &&
         !IsTypedefName &&
+        D.getContext() != DeclaratorContext::TemplateArgContext &&
         D.getContext() != DeclaratorContext::TemplateTypeArgContext) {
       SourceLocation Loc = D.getLocStart();
       SourceRange RemovalRange;
@@ -4954,6 +4969,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::LambdaExprContext:
     case DeclaratorContext::ConversionIdContext:
     case DeclaratorContext::TrailingReturnContext:
+    case DeclaratorContext::TrailingReturnVarContext:
+    case DeclaratorContext::TemplateArgContext:
     case DeclaratorContext::TemplateTypeArgContext:
       // FIXME: We may want to allow parameter packs in block-literal contexts
       // in the future.
@@ -7561,6 +7578,14 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
         diagnoseMissingImport(Loc, SuggestedDef, MissingImportKind::Definition,
                               /*Recover*/TreatAsComplete);
       return !TreatAsComplete;
+    } else if (Def && !TemplateInstCallbacks.empty()) {
+      CodeSynthesisContext TempInst;
+      TempInst.Kind = CodeSynthesisContext::Memoization;
+      TempInst.Template = Def;
+      TempInst.Entity = Def;
+      TempInst.PointOfInstantiation = Loc;
+      atTemplateBegin(TemplateInstCallbacks, *this, TempInst);
+      atTemplateEnd(TemplateInstCallbacks, *this, TempInst);
     }
 
     return false;
@@ -7790,7 +7815,8 @@ bool Sema::RequireLiteralType(SourceLocation Loc, QualType T,
          diag::note_non_literal_user_provided_dtor :
          diag::note_non_literal_nontrivial_dtor) << RD;
     if (!Dtor->isUserProvided())
-      SpecialMemberIsTrivial(Dtor, CXXDestructor, /*Diagnose*/true);
+      SpecialMemberIsTrivial(Dtor, CXXDestructor, TAH_IgnoreTrivialABI,
+                             /*Diagnose*/true);
   }
 
   return true;
@@ -7851,11 +7877,12 @@ static QualType getDecltypeForExpr(Sema &S, Expr *E) {
   //
   // We apply the same rules for Objective-C ivar and property references.
   if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    if (const ValueDecl *VD = dyn_cast<ValueDecl>(DRE->getDecl()))
-      return VD->getType();
+    const ValueDecl *VD = DRE->getDecl();
+    return VD->getType();
   } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
-    if (const FieldDecl *FD = dyn_cast<FieldDecl>(ME->getMemberDecl()))
-      return FD->getType();
+    if (const ValueDecl *VD = ME->getMemberDecl())
+      if (isa<FieldDecl>(VD) || isa<VarDecl>(VD))
+        return VD->getType();
   } else if (const ObjCIvarRefExpr *IR = dyn_cast<ObjCIvarRefExpr>(E)) {
     return IR->getDecl()->getType();
   } else if (const ObjCPropertyRefExpr *PR = dyn_cast<ObjCPropertyRefExpr>(E)) {

@@ -46,7 +46,7 @@ static void handleHVXWarnings(const Driver &D, const ArgList &Args) {
   // Handle the unsupported values passed to mhvx-length.
   if (Arg *A = Args.getLastArg(options::OPT_mhexagon_hvx_length_EQ)) {
     StringRef Val = A->getValue();
-    if (Val != "64B" && Val != "128B")
+    if (!Val.equals_lower("64b") && !Val.equals_lower("128b"))
       D.Diag(diag::err_drv_unsupported_option_argument)
           << A->getOption().getName() << Val;
   }
@@ -521,11 +521,15 @@ unsigned HexagonToolChain::getOptimizationLevel(
 void HexagonToolChain::addClangTargetOptions(const ArgList &DriverArgs,
                                              ArgStringList &CC1Args,
                                              Action::OffloadKind) const {
-  if (DriverArgs.hasArg(options::OPT_ffp_contract))
-    return;
-  unsigned OptLevel = getOptimizationLevel(DriverArgs);
-  if (OptLevel >= 3)
-    CC1Args.push_back("-ffp-contract=fast");
+  if (!DriverArgs.hasArg(options::OPT_ffp_contract)) {
+    unsigned OptLevel = getOptimizationLevel(DriverArgs);
+    if (OptLevel >= 3)
+      CC1Args.push_back("-ffp-contract=fast");
+  }
+  if (DriverArgs.hasArg(options::OPT_ffixed_r19)) {
+    CC1Args.push_back("-target-feature");
+    CC1Args.push_back("+reserved-r19");
+  }
 }
 
 void HexagonToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,

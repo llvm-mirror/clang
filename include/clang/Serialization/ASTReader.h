@@ -14,14 +14,15 @@
 #ifndef LLVM_CLANG_SERIALIZATION_ASTREADER_H
 #define LLVM_CLANG_SERIALIZATION_ASTREADER_H
 
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclarationName.h"
+#include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/TemplateBase.h"
 #include "clang/AST/TemplateName.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticOptions.h"
-#include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/OpenCLOptions.h"
@@ -79,9 +80,6 @@ class ASTContext;
 class ASTDeserializationListener;
 class ASTReader;
 class ASTRecordReader;
-class CXXBaseSpecifier;
-class CXXConstructorDecl;
-class CXXCtorInitializer;
 class CXXTemporary;
 class Decl;
 class DeclaratorDecl;
@@ -102,7 +100,6 @@ class MacroInfo;
 class MemoryBufferCache;
 class NamedDecl;
 class NamespaceDecl;
-class NestedNameSpecifier;
 class ObjCCategoryDecl;
 class ObjCInterfaceDecl;
 class PCHContainerReader;
@@ -294,7 +291,7 @@ class PCHValidator : public ASTReaderListener {
 
 public:
   PCHValidator(Preprocessor &PP, ASTReader &Reader)
-    : PP(PP), Reader(Reader) {}
+      : PP(PP), Reader(Reader) {}
 
   bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain,
                            bool AllowCompatibleDifferences) override;
@@ -321,8 +318,7 @@ class SimpleASTReaderListener : public ASTReaderListener {
   Preprocessor &PP;
 
 public:
-  SimpleASTReaderListener(Preprocessor &PP)
-    : PP(PP) {}
+  SimpleASTReaderListener(Preprocessor &PP) : PP(PP) {}
 
   bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
                                std::string &SuggestedPredefines) override;
@@ -559,7 +555,7 @@ private:
 
     FileDeclsInfo() = default;
     FileDeclsInfo(ModuleFile *Mod, ArrayRef<serialization::LocalDeclID> Decls)
-      : Mod(Mod), Decls(Decls) {}
+        : Mod(Mod), Decls(Decls) {}
   };
 
   /// \brief Map from a FileID to the file-level declarations that it contains.
@@ -753,6 +749,13 @@ private:
   /// added to the global preprocessing entity ID to produce a local ID.
   GlobalPreprocessedEntityMapType GlobalPreprocessedEntityMap;
 
+  using GlobalSkippedRangeMapType =
+      ContinuousRangeMap<unsigned, ModuleFile *, 4>;
+
+  /// \brief Mapping from global skipped range base IDs to the module in which
+  /// the skipped ranges reside.
+  GlobalSkippedRangeMapType GlobalSkippedRangeMap;
+
   /// \name CodeGen-relevant special data
   /// \brief Fields containing data that is relevant to CodeGen.
   //@{
@@ -898,7 +901,7 @@ public:
     SourceLocation ImportLoc;
 
     ImportedSubmodule(serialization::SubmoduleID ID, SourceLocation ImportLoc)
-      : ID(ID), ImportLoc(ImportLoc) {}
+        : ID(ID), ImportLoc(ImportLoc) {}
   };
 
 private:
@@ -1145,7 +1148,7 @@ private:
 
   public:
     ReadingKindTracker(enum ReadingKind newKind, ASTReader &reader)
-      : Reader(reader), PrevKind(Reader.ReadingKind) {
+        : Reader(reader), PrevKind(Reader.ReadingKind) {
       Reader.ReadingKind = newKind;
     }
 
@@ -1161,7 +1164,7 @@ private:
 
   public:
     ProcessingUpdatesRAIIObj(ASTReader &reader)
-      : Reader(reader), PrevState(Reader.ProcessingUpdateRecords) {
+        : Reader(reader), PrevState(Reader.ProcessingUpdateRecords) {
       Reader.ProcessingUpdateRecords = true;
     }
 
@@ -1250,7 +1253,7 @@ private:
     ImportedModule(ModuleFile *Mod,
                    ModuleFile *ImportedBy,
                    SourceLocation ImportLoc)
-      : Mod(Mod), ImportedBy(ImportedBy), ImportLoc(ImportLoc) {}
+        : Mod(Mod), ImportedBy(ImportedBy), ImportLoc(ImportLoc) {}
   };
 
   ASTReadResult ReadASTCore(StringRef FileName, ModuleKind Type,
@@ -1314,8 +1317,7 @@ private:
     ModuleFile *F;
     uint64_t Offset;
 
-    RecordLocation(ModuleFile *M, uint64_t O)
-      : F(M), Offset(O) {}
+    RecordLocation(ModuleFile *M, uint64_t O) : F(M), Offset(O) {}
   };
 
   QualType readTypeRecord(unsigned Index);
@@ -1693,6 +1695,9 @@ public:
   Optional<bool> isPreprocessedEntityInFileID(unsigned Index,
                                               FileID FID) override;
 
+  /// \brief Read a preallocated skipped range from the external source.
+  SourceRange ReadSkippedRange(unsigned Index) override;
+
   /// \brief Read the header file information for the given file entry.
   HeaderFileInfo GetHeaderFileInfo(const FileEntry *FE) override;
 
@@ -1775,7 +1780,7 @@ public:
   /// was read from the given AST file.
   QualType readType(ModuleFile &F, const RecordData &Record, unsigned &Idx) {
     if (Idx >= Record.size())
-      return QualType();
+      return {};
 
     return getLocalType(F, Record[Idx++]);
   }
@@ -2618,7 +2623,7 @@ public:
 /// then restores it when destroyed.
 struct SavedStreamPosition {
   explicit SavedStreamPosition(llvm::BitstreamCursor &Cursor)
-    : Cursor(Cursor), Offset(Cursor.GetCurrentBitNo()) {}
+      : Cursor(Cursor), Offset(Cursor.GetCurrentBitNo()) {}
 
   ~SavedStreamPosition() {
     Cursor.JumpToBit(Offset);

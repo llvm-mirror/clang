@@ -836,6 +836,10 @@ public:
 
   void setLexicalDeclContext(DeclContext *DC);
 
+  /// Determine whether this declaration is a templated entity (whether it is
+  // within the scope of a template parameter).
+  bool isTemplated() const;
+
   /// isDefinedOutsideFunctionOrMethod - This predicate returns true if this
   /// scoped decl is defined outside the current function or method.  This is
   /// roughly global variables and functions, but also handles enums (which
@@ -1823,7 +1827,9 @@ public:
   using lookups_range = llvm::iterator_range<all_lookups_iterator>;
 
   lookups_range lookups() const;
-  lookups_range noload_lookups() const;
+  // Like lookups(), but avoids loading external declarations.
+  // If PreserveInternalState, avoids building lookup data structures too.
+  lookups_range noload_lookups(bool PreserveInternalState) const;
 
   /// \brief Iterators over all possible lookups within this context.
   all_lookups_iterator lookups_begin() const;
@@ -1943,6 +1949,7 @@ private:
 
   StoredDeclsMap *CreateStoredDeclsMap(ASTContext &C) const;
 
+  void loadLazyLocalLexicalLookups();
   void buildLookupImpl(DeclContext *DCtx, bool Internal);
   void makeDeclVisibleInContextWithFlags(NamedDecl *D, bool Internal,
                                          bool Rediscoverable);

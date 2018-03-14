@@ -65,23 +65,43 @@ protected:
   FormatStyle getRawStringPbStyleWithColumns(unsigned ColumnLimit) {
     FormatStyle Style = getLLVMStyle();
     Style.ColumnLimit = ColumnLimit;
-    Style.RawStringFormats = {{/*Delimiter=*/"pb",
-                               /*Kind=*/FormatStyle::LK_TextProto,
-                               /*BasedOnStyle=*/"google"}};
+    Style.RawStringFormats = {
+        {
+            /*Language=*/FormatStyle::LK_TextProto,
+            /*Delimiters=*/{"pb"},
+            /*EnclosingFunctions=*/{},
+            /*CanonicalDelimiter=*/"",
+            /*BasedOnStyle=*/"google",
+        },
+    };
     return Style;
   }
 
   FormatStyle getRawStringLLVMCppStyleBasedOn(std::string BasedOnStyle) {
     FormatStyle Style = getLLVMStyle();
-    Style.RawStringFormats = {{/*Delimiter=*/"cpp",
-                               /*Kind=*/FormatStyle::LK_Cpp, BasedOnStyle}};
+    Style.RawStringFormats = {
+        {
+            /*Language=*/FormatStyle::LK_Cpp,
+            /*Delimiters=*/{"cpp"},
+            /*EnclosingFunctions=*/{},
+            /*CanonicalDelimiter=*/"",
+            BasedOnStyle,
+        },
+    };
     return Style;
   }
 
   FormatStyle getRawStringGoogleCppStyleBasedOn(std::string BasedOnStyle) {
     FormatStyle Style = getGoogleStyle(FormatStyle::LK_Cpp);
-    Style.RawStringFormats = {{/*Delimiter=*/"cpp",
-                               /*Kind=*/FormatStyle::LK_Cpp, BasedOnStyle}};
+    Style.RawStringFormats = {
+        {
+            /*Language=*/FormatStyle::LK_Cpp,
+            /*Delimiters=*/{"cpp"},
+            /*EnclosingFunctions=*/{},
+            /*CanonicalDelimiter=*/"",
+            BasedOnStyle,
+        },
+    };
     return Style;
   }
 
@@ -112,6 +132,27 @@ TEST_F(FormatTestRawStrings, ReformatsAccordingToBaseStyle) {
                    getRawStringGoogleCppStyleBasedOn("llvm")));
 }
 
+TEST_F(FormatTestRawStrings, UsesConfigurationOverBaseStyle) {
+  // llvm style puts '*' on the right.
+  // google style puts '*' on the left.
+
+  // Uses the configured google style inside raw strings even if BasedOnStyle in
+  // the raw string format is llvm.
+  FormatStyle Style = getGoogleStyle(FormatStyle::LK_Cpp);
+  EXPECT_EQ(0, parseConfiguration("---\n"
+                                  "Language: Cpp\n"
+                                  "BasedOnStyle: Google", &Style).value());
+  Style.RawStringFormats = {{
+      FormatStyle::LK_Cpp,
+      {"cpp"},
+      {},
+      /*CanonicalDelimiter=*/"",
+      /*BasedOnStyle=*/"llvm",
+  }};
+  expect_eq(R"test(int* i = R"cpp(int* j = 0;)cpp";)test",
+            format(R"test(int * i = R"cpp(int * j = 0;)cpp";)test", Style));
+}
+
 TEST_F(FormatTestRawStrings, MatchesDelimitersCaseSensitively) {
   // Don't touch the 'PB' raw string, format the 'pb' raw string.
   expect_eq(R"test(
@@ -121,29 +162,6 @@ t = R"pb(item: 1)pb";)test",
 s = R"PB(item:1)PB";
 t = R"pb(item:1)pb";)test",
                    getRawStringPbStyleWithColumns(40)));
-
-  FormatStyle MixedStyle = getLLVMStyle();
-  MixedStyle.RawStringFormats = {
-      {/*Delimiter=*/"cpp", /*Kind=*/FormatStyle::LK_Cpp,
-       /*BasedOnStyle=*/"llvm"},
-      {/*Delimiter=*/"CPP", /*Kind=*/FormatStyle::LK_Cpp,
-       /*BasedOnStyle=*/"google"}};
-
-  // Format the 'cpp' raw string with '*' on the right.
-  // Format the 'CPP' raw string with '*' on the left.
-  // Do not format the 'Cpp' raw string.
-  // Do not format non-raw strings.
-  expect_eq(R"test(
-a = R"cpp(int *i = 0;)cpp";
-b = R"CPP(int* j = 0;)CPP";
-c = R"Cpp(int * k = 0;)Cpp";
-d = R"cpp(int * k = 0;)Cpp";)test",
-            format(R"test(
-a = R"cpp(int * i = 0;)cpp";
-b = R"CPP(int * j = 0;)CPP";
-c = R"Cpp(int * k = 0;)Cpp";
-d = R"cpp(int * k = 0;)Cpp";)test",
-                   MixedStyle));
 }
 
 TEST_F(FormatTestRawStrings, ReformatsShortRawStringsOnSingleLine) {
@@ -168,7 +186,7 @@ TEST_F(FormatTestRawStrings, ReformatsShortRawStringsOnSingleLine) {
           R"test(P p = TP(R"pb(item_1:1 item_2:2)pb");)test",
           getRawStringPbStyleWithColumns(40)));
   expect_eq(
-      R"test(P p = TP(R"pb(item_1 <1> item_2: {2})pb");)test",
+      R"test(P p = TP(R"pb(item_1 < 1 > item_2: { 2 })pb");)test",
       format(
           R"test(P p = TP(R"pb(item_1<1> item_2:{2})pb");)test",
           getRawStringPbStyleWithColumns(40)));
@@ -207,8 +225,8 @@ P p = TPPPPPPPPPPPPPPP(R"pb(item_1: 1, item_2: 2, item_3: 3)pb");)test",
                    getRawStringPbStyleWithColumns(40)));
 
   expect_eq(R"test(
-P p = TP(R"pb(item_1 <1>
-              item_2: <2>
+P p = TP(R"pb(item_1 < 1 >
+              item_2: < 2 >
               item_3 {})pb");)test",
       format(R"test(
 P p = TP(R"pb(item_1<1> item_2:<2> item_3{ })pb");)test",
@@ -227,10 +245,10 @@ P p = TP(R"pb(item_1: 1, item_2: 2, item_3: 3, item_4: 4)pb");)test",
 
   expect_eq(R"test(
 P p = TPPPPPPPPPPPPPPP(
-    R"pb(item_1 <1>,
-         item_2: {2},
-         item_3: <3>,
-         item_4: {4})pb");)test",
+    R"pb(item_1 < 1 >,
+         item_2: { 2 },
+         item_3: < 3 >,
+         item_4: { 4 })pb");)test",
             format(R"test(
 P p = TPPPPPPPPPPPPPPP(R"pb(item_1<1>, item_2: {2}, item_3: <3>, item_4:{4})pb");)test",
                    getRawStringPbStyleWithColumns(40)));
@@ -277,7 +295,7 @@ int f(string s) {
 
 TEST_F(FormatTestRawStrings, FormatsRawStringArguments) {
   expect_eq(R"test(
-P p = TP(R"pb(key {1})pb", param_2);)test",
+P p = TP(R"pb(key { 1 })pb", param_2);)test",
             format(R"test(
 P p = TP(R"pb(key{1})pb",param_2);)test",
                    getRawStringPbStyleWithColumns(40)));
@@ -290,9 +308,9 @@ PPPPPPPPPPPPP(R"pb(keykeyk)pb", param_2);)test",
                    getRawStringPbStyleWithColumns(40)));
 
   expect_eq(R"test(
-P p =
-    TP(R"pb(item: {i: 1, s: 's'}
-            item: {i: 2, s: 't'})pb");)test",
+P p = TP(
+    R"pb(item: { i: 1, s: 's' }
+         item: { i: 2, s: 't' })pb");)test",
             format(R"test(
 P p = TP(R"pb(item: {i: 1, s: 's'} item: {i: 2, s: 't'})pb");)test",
                    getRawStringPbStyleWithColumns(40)));
@@ -726,6 +744,41 @@ TEST_F(FormatTestRawStrings, DontFormatNonRawStrings) {
   expect_eq(R"test(a = R"pb(key:value)";)test",
             format(R"test(a = R"pb(key:value)";)test",
                    getRawStringPbStyleWithColumns(20)));
+}
+
+TEST_F(FormatTestRawStrings, FormatsRawStringsWithEnclosingFunctionName) {
+  FormatStyle Style = getRawStringPbStyleWithColumns(40);
+  Style.RawStringFormats[0].EnclosingFunctions.push_back(
+      "PARSE_TEXT_PROTO");
+  Style.RawStringFormats[0].EnclosingFunctions.push_back("ParseTextProto");
+  expect_eq(R"test(a = PARSE_TEXT_PROTO(R"(key: value)");)test",
+            format(R"test(a = PARSE_TEXT_PROTO(R"(key:value)");)test", Style));
+
+  expect_eq(R"test(
+a = PARSE_TEXT_PROTO /**/ (
+    /**/ R"(key: value)");)test",
+            format(R"test(
+a = PARSE_TEXT_PROTO/**/(/**/R"(key:value)");)test",
+                   Style));
+
+  expect_eq(R"test(
+a = ParseTextProto<ProtoType>(
+    R"(key: value)");)test",
+            format(R"test(
+a = ParseTextProto<ProtoType>(R"(key:value)");)test",
+                   Style));
+}
+
+TEST_F(FormatTestRawStrings, UpdatesToCanonicalDelimiters) {
+  FormatStyle Style = getRawStringPbStyleWithColumns(25);
+  Style.RawStringFormats[0].CanonicalDelimiter = "proto";
+  expect_eq(R"test(a = R"proto(key: value)proto";)test",
+            format(R"test(a = R"pb(key:value)pb";)test", Style));
+
+  // Don't update to canonical delimiter if it occurs as a raw string suffix in
+  // the raw string content.
+  expect_eq(R"test(a = R"pb(key: ")proto")pb";)test",
+            format(R"test(a = R"pb(key:")proto")pb";)test", Style));
 }
 
 } // end namespace

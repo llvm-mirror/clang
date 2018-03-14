@@ -786,12 +786,14 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   FD->HasWrittenPrototype = Record.readInt();
   FD->IsDeleted = Record.readInt();
   FD->IsTrivial = Record.readInt();
+  FD->IsTrivialForCall = Record.readInt();
   FD->IsDefaulted = Record.readInt();
   FD->IsExplicitlyDefaulted = Record.readInt();
   FD->HasImplicitReturnZero = Record.readInt();
   FD->IsConstexpr = Record.readInt();
   FD->UsesSEHTry = Record.readInt();
   FD->HasSkippedBody = Record.readInt();
+  FD->IsMultiVersion = Record.readInt();
   FD->IsLateTemplateParsed = Record.readInt();
   FD->setCachedLinkage(Linkage(Record.readInt()));
   FD->EndRangeLoc = ReadSourceLocation();
@@ -1576,7 +1578,9 @@ void ASTDeclReader::ReadCXXDefinitionData(
   Data.DefaultedMoveAssignmentIsDeleted = Record.readInt();
   Data.DefaultedDestructorIsDeleted = Record.readInt();
   Data.HasTrivialSpecialMembers = Record.readInt();
+  Data.HasTrivialSpecialMembersForCall = Record.readInt();
   Data.DeclaredNonTrivialSpecialMembers = Record.readInt();
+  Data.DeclaredNonTrivialSpecialMembersForCall = Record.readInt();
   Data.HasIrrelevantDestructor = Record.readInt();
   Data.HasConstexprNonCopyMoveConstructor = Record.readInt();
   Data.HasDefaultedDefaultConstructor = Record.readInt();
@@ -1714,7 +1718,9 @@ void ASTDeclReader::MergeDefinitionData(
   MATCH_FIELD(DefaultedMoveAssignmentIsDeleted)
   MATCH_FIELD(DefaultedDestructorIsDeleted)
   OR_FIELD(HasTrivialSpecialMembers)
+  OR_FIELD(HasTrivialSpecialMembersForCall)
   OR_FIELD(DeclaredNonTrivialSpecialMembers)
+  OR_FIELD(DeclaredNonTrivialSpecialMembersForCall)
   MATCH_FIELD(HasIrrelevantDestructor)
   OR_FIELD(HasConstexprNonCopyMoveConstructor)
   OR_FIELD(HasDefaultedDefaultConstructor)
@@ -1905,7 +1911,7 @@ void ASTDeclReader::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
   if (auto *OperatorDelete = ReadDeclAs<FunctionDecl>()) {
-    auto *Canon = cast<CXXDestructorDecl>(D->getCanonicalDecl());
+    CXXDestructorDecl *Canon = D->getCanonicalDecl();
     auto *ThisArg = Record.readExpr();
     // FIXME: Check consistency if we have an old and new operator delete.
     if (!Canon->OperatorDelete) {
@@ -2818,6 +2824,21 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
                         CtorY->getInheritedConstructor().getConstructor()))
         return false;
     }
+
+    if (FuncX->isMultiVersion() != FuncY->isMultiVersion())
+      return false;
+
+    // Multiversioned functions with different feature strings are represented
+    // as separate declarations.
+    if (FuncX->isMultiVersion()) {
+      const auto *TAX = FuncX->getAttr<TargetAttr>();
+      const auto *TAY = FuncY->getAttr<TargetAttr>();
+      assert(TAX && TAY && "Multiversion Function without target attribute");
+
+      if (TAX->getFeaturesStr() != TAY->getFeaturesStr())
+        return false;
+    }
+
     ASTContext &C = FuncX->getASTContext();
     if (!C.hasSameType(FuncX->getType(), FuncY->getType())) {
       // We can get functions with different types on the redecl chain in C++17

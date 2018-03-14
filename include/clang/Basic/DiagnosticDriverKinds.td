@@ -333,6 +333,10 @@ def warn_drv_unsupported_abicalls : Warning<
   "ignoring '-mabicalls' option as it cannot be used with "
   "non position-independent code and the N64 ABI">,
   InGroup<OptionIgnored>;
+def err_drv_unsupported_indirect_jump_opt : Error<
+  "'-mindirect-jump=%0' is unsupported with the '%1' architecture">;
+def err_drv_unknown_indirect_jump_opt : Error<
+  "unknown '-mindirect-jump=' option '%0'">;
 
 def warn_drv_unable_to_find_directory_expected : Warning<
   "unable to find %0 directory, expected to be in '%1'">,
@@ -361,4 +365,12 @@ def warn_drv_fine_grained_bitfield_accesses_ignored : Warning<
 def note_drv_verify_prefix_spelling : Note<
   "-verify prefixes must start with a letter and contain only alphanumeric"
   " characters, hyphens, and underscores">;
+
+def warn_drv_experimental_isel_incomplete : Warning<
+  "-fexperimental-isel support for the '%0' architecture is incomplete">,
+  InGroup<ExperimentalISel>;
+
+def warn_drv_experimental_isel_incomplete_opt : Warning<
+  "-fexperimental-isel support is incomplete for this architecture at the current optimization level">,
+  InGroup<ExperimentalISel>;
 }
