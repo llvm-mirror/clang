@@ -1,19 +1,30 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
-  <Metadata>
-    <Identity Id="3cb18a5e-97e9-11e7-abc4-cec278b6b50a" Version="@CLANG_FORMAT_VS_VERSION@" Language="en-US" Publisher="LLVM"/>
-    <DisplayName>ClangFormat</DisplayName>
-    <Description xml:space="preserve">A tool to format C/C++/Obj-C code.</Description>
-    <MoreInfo>http://clang.llvm.org/docs/ClangFormat.html</MoreInfo>
+<Vsix xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Version="1.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2010">
+  <Identifier Id="3cb18a5e-97e9-11e7-abc4-cec278b6b50a">
+    <Name>ClangFormat</Name>
+    <Author>Unknown</Author>
+    <Version>@CLANG_FORMAT_VS_VERSION@</Version>
+    <Description xml:space="preserve">clang-format is a tool to format C/C++/Obj-C source code. This plugin provides a convenient way of using it in Visual Studio.
+It adds two new commands under the Tools menu: Clang Format Selection (CTRL+R, CTRL+F) and Clang Format Document (CTRl+R, CTRL+D).
+For more information, see the clang-format documentation at http://clang.llvm.org/docs/ClangFormat.html
+
+Note: This Plugin contains some adaptions to the original implementation. Source code can be found at https://github.com/3mb3dw0rk5/clang/tree/atmelstudio-clang-format-vs/tools/clang-format-vs.</Description>
+    <Locale>1033</Locale>
+    <MoreInfoUrl>https://github.com/3mb3dw0rk5/clang/tree/atmelstudio-clang-format-vs/tools/clang-format-vs</MoreInfoUrl>
     <License>license.txt</License>
-  </Metadata>
-  <Installation InstalledByMsi="false">
-    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[11.0, 15.0]" />
-  </Installation>
-  <Dependencies>
-    <Dependency Id="Microsoft.VisualStudio.MPF" MinVersion="11.0" DisplayName="Visual Studio MPF" />
-  </Dependencies>
-  <Prerequisites>
-    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[11.0,)" DisplayName="Visual Studio core editor" />
-  </Prerequisites>
-</PackageManifest>
+    <GettingStartedGuide></GettingStartedGuide>
+    <Icon></Icon>
+    <PreviewImage>Resources\Preview.png</PreviewImage>
+    <InstalledByMsi>false</InstalledByMsi>
+    <SupportedProducts>
+      <IsolatedShell Version="7.0">AtmelStudio</IsolatedShell>
+    </SupportedProducts>
+    <SupportedFrameworkRuntimeEdition MinVersion="4.0" MaxVersion="4.5" />
+  </Identifier>
+  <References>
+  </References>
+  <Content>
+    <VsPackage>ClangFormat.pkgdef</VsPackage>
+    <MefComponent>ClangFormat.dll</MefComponent>
+  </Content>
+</Vsix>

@@ -36,6 +36,7 @@ namespace LLVM.ClangFormat
         private string fallbackStyle = "LLVM";
         private bool sortIncludes = false;
         private string style = "file";
+        private string formatOnSavePath = "clang-format";
         private bool formatOnSave = false;
         private string formatOnSaveFileExtensions =
             ".c;.cpp;.cxx;.cc;.tli;.tlh;.h;.hh;.hpp;.hxx;.hh;.inl;" +
@@ -176,6 +177,16 @@ namespace LLVM.ClangFormat
         }
 
         [Category("Format On Save")]
+        [DisplayName("Path")]
+        [Description("Path to clang-format executable."
+            )]
+        public string FormatOnSavePath
+        {
+            get { return formatOnSavePath; }
+            set { formatOnSavePath = value; }
+        }
+
+        [Category("Format On Save")]
         [DisplayName("Enable")]
         [Description("Enable running clang-format when modified files are saved. " +
                      "Will only format if Style is found (ignores Fallback Style)."
@@ -294,7 +305,7 @@ namespace LLVM.ClangFormat
             int start = view.Selection.Start.Position.GetContainingLine().Start.Position;
             int end = view.Selection.End.Position.GetContainingLine().End.Position;
             int length = end - start;
-            
+
             // clang-format doesn't support formatting a range that starts at the end
             // of the file.
             if (start >= text.Length && text.Length > 0)
@@ -363,7 +374,7 @@ namespace LLVM.ClangFormat
 
         /// <summary>
         /// Runs the given text through clang-format and returns the replacements as XML.
-        /// 
+        ///
         /// Formats the text range starting at offset of the given length.
         /// </summary>
         private static string RunClangFormat(string text, int offset, int length, string path, string filePath, OptionPageGrid options)
@@ -373,7 +384,7 @@ namespace LLVM.ClangFormat
 
             System.Diagnostics.Process process = new System.Diagnostics.Process();
             process.StartInfo.UseShellExecute = false;
-            process.StartInfo.FileName = vsixPath + "\\clang-format.exe";
+            process.StartInfo.FileName = options.FormatOnSavePath;
             // Poor man's escaping - this will not work when quotes are already escaped
             // in the input (but we don't need more).
             string style = options.Style.Replace("\"", "\\\"");
@@ -408,7 +419,7 @@ namespace LLVM.ClangFormat
             catch (Exception e)
             {
                 throw new Exception(
-                    "Cannot execute " + process.StartInfo.FileName + ".\n\"" + 
+                    "Cannot execute " + process.StartInfo.FileName + ".\n\"" +
                     e.Message + "\".\nPlease make sure it is on the PATH.");
             }
             // 2. We write everything to the standard output - this cannot block, as clang-format
