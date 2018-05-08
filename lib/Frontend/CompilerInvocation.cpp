@@ -1608,7 +1608,6 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
                 .Case("c", InputKind::C)
                 .Case("cl", InputKind::OpenCL)
                 .Case("cuda", InputKind::CUDA)
-                .Case("hip", InputKind::HIP)
                 .Case("c++", InputKind::CXX)
                 .Case("objective-c", InputKind::ObjC)
                 .Case("objective-c++", InputKind::ObjCXX)
@@ -1888,9 +1887,6 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     case InputKind::RenderScript:
       LangStd = LangStandard::lang_c99;
       break;
-    case InputKind::HIP:
-      LangStd = LangStandard::lang_hip;
-      break;
     }
   }
 
@@ -1938,8 +1934,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     }
   }
 
-  Opts.HIP = IK.getLanguage() == InputKind::HIP;
-  Opts.CUDA = IK.getLanguage() == InputKind::CUDA || Opts.HIP;
+  Opts.CUDA = IK.getLanguage() == InputKind::CUDA;
   if (Opts.CUDA)
     // Set default FP_CONTRACT to FAST.
     Opts.setDefaultFPContractMode(LangOptions::FPC_Fast);
@@ -2010,10 +2005,6 @@ static bool IsInputCompatibleWithStandard(InputKind IK,
     return S.getLanguage() == InputKind::CUDA ||
            S.getLanguage() == InputKind::CXX;
 
-  case InputKind::HIP:
-    return S.getLanguage() == InputKind::CXX ||
-           S.getLanguage() == InputKind::HIP;
-
   case InputKind::Asm:
     // Accept (and ignore) all -std= values.
     // FIXME: The -std= value is not ignored; it affects the tokenization
@@ -2041,8 +2032,6 @@ static const StringRef GetInputKindName(InputKind IK) {
     return "CUDA";
   case InputKind::RenderScript:
     return "RenderScript";
-  case InputKind::HIP:
-    return "HIP";
 
   case InputKind::Asm:
     return "Asm";

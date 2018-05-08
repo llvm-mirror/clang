@@ -42,9 +42,8 @@ ExprResult Sema::ActOnCUDAExecConfigExpr(Scope *S, SourceLocation LLLLoc,
                                          SourceLocation GGGLoc) {
   FunctionDecl *ConfigDecl = Context.getcudaConfigureCallDecl();
   if (!ConfigDecl)
-    return ExprError(
-        Diag(LLLLoc, diag::err_undeclared_var_use)
-        << (getLangOpts().HIP ? "hipConfigureCall" : "cudaConfigureCall"));
+    return ExprError(Diag(LLLLoc, diag::err_undeclared_var_use)
+                     << "cudaConfigureCall");
   QualType ConfigQTy = ConfigDecl->getType();
 
   DeclRefExpr *ConfigDR = new (Context)

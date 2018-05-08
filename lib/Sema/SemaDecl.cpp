@@ -4212,12 +4212,6 @@ Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS, DeclSpec &DS,
                                  MultiTemplateParamsArg TemplateParams,
                                  bool IsExplicitInstantiation,
                                  RecordDecl *&AnonRecord) {
-
-  // We don't need to do any additional declspecifier checking on concept
-  // definitions since that should already have been done when the concept kw
-  // location was set within DS.
-  if (DS.isConceptSpecified()) return DS.getRepAsConcept();
-  
   Decl *TagD = nullptr;
   TagDecl *Tag = nullptr;
   if (DS.getTypeSpecType() == DeclSpec::TST_class ||
@@ -9062,13 +9056,11 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
   if (getLangOpts().CUDA) {
     IdentifierInfo *II = NewFD->getIdentifier();
-    if (II &&
-        II->isStr(getLangOpts().HIP ? "hipConfigureCall"
-                                    : "cudaConfigureCall") &&
-        !NewFD->isInvalidDecl() &&
+    if (II && II->isStr("cudaConfigureCall") && !NewFD->isInvalidDecl() &&
         NewFD->getDeclContext()->getRedeclContext()->isTranslationUnit()) {
       if (!R->getAs<FunctionType>()->getReturnType()->isScalarType())
         Diag(NewFD->getLocation(), diag::err_config_scalar_return);
+
       Context.setcudaConfigureCallDecl(NewFD);
     }
 

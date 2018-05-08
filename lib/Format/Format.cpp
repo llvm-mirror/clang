@@ -718,39 +718,20 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
   GoogleStyle.ObjCSpaceAfterProperty = false;
   GoogleStyle.ObjCSpaceBeforeProtocolList = true;
   GoogleStyle.PointerAlignment = FormatStyle::PAS_Left;
-  GoogleStyle.RawStringFormats = {
+  GoogleStyle.RawStringFormats = {{
+      FormatStyle::LK_TextProto,
+      /*Delimiters=*/
       {
-          FormatStyle::LK_Cpp,
-          /*Delimiters=*/
-          {
-              "cc",
-              "CC",
-              "cpp",
-              "Cpp",
-              "CPP",
-              "c++",
-              "C++",
-          },
-          /*EnclosingFunctionNames=*/
-          {},
-          /*CanonicalDelimiter=*/"",
-          /*BasedOnStyle=*/"google",
+          "pb",
+          "PB",
+          "proto",
+          "PROTO",
       },
-      {
-          FormatStyle::LK_TextProto,
-          /*Delimiters=*/
-          {
-              "pb",
-              "PB",
-              "proto",
-              "PROTO",
-          },
-          /*EnclosingFunctionNames=*/
-          {},
-          /*CanonicalDelimiter=*/"",
-          /*BasedOnStyle=*/"google",
-      },
-  };
+      /*EnclosingFunctionNames=*/
+      {},
+      /*CanonicalDelimiter=*/"",
+      /*BasedOnStyle=*/"google",
+  }};
   GoogleStyle.SpacesBeforeTrailingComments = 2;
   GoogleStyle.Standard = FormatStyle::LS_Auto;
 

@@ -309,7 +309,6 @@ private:
 protected:
   friend class ASTDeclReader;
   friend class ASTDeclWriter;
-  friend class ASTImporter;
   friend class ASTReader;
   friend class CXXClassMemberWrapper;
   friend class LinkageComputer;
