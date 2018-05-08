@@ -43,6 +43,7 @@ CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum f
 CODEGENOPT(CoverageNoFunctionNamesInData, 1, 0) ///< Do not include function names in GCDA files.
 CODEGENOPT(CoverageExitBlockBeforeBody, 1, 0) ///< Whether to emit the exit block before the body blocks in GCNO files.
 CODEGENOPT(CXAAtExit         , 1, 1) ///< Use __cxa_atexit for calling destructors.
+CODEGENOPT(RegisterGlobalDtorsWithAtExit, 1, 1) ///< Use atexit or __cxa_atexit to register global destructors.
 CODEGENOPT(CXXCtorDtorAliases, 1, 0) ///< Emit complete ctors/dtors as linker
                                      ///< aliases to base ctors when possible.
 CODEGENOPT(DataSections      , 1, 0) ///< Set when -fdata-sections is enabled.
@@ -68,6 +69,7 @@ CODEGENOPT(EmitDeclMetadata  , 1, 0) ///< Emit special metadata indicating what
                                      ///< Decl* various IR entities came from.
                                      ///< Only useful when running CodeGen as a
                                      ///< subroutine.
+CODEGENOPT(EmitVersionIdentMetadata , 1, 1) ///< Emit compiler version metadata.
 CODEGENOPT(EmitGcovArcs      , 1, 0) ///< Emit coverage data files, aka. GCDA.
 CODEGENOPT(EmitGcovNotes     , 1, 0) ///< Emit coverage "notes" files, aka GCNO.
 CODEGENOPT(EmitOpenCLArgMetadata , 1, 0) ///< Emit OpenCL kernel arg metadata.
@@ -94,6 +96,9 @@ CODEGENOPT(StackSizeSection  , 1, 0) ///< Set when -fstack-size-section is enabl
 
 ///< Set when -fxray-always-emit-customevents is enabled.
 CODEGENOPT(XRayAlwaysEmitCustomEvents , 1, 0)
+
+///< Set when -fxray-always-emit-typedevents is enabled.
+CODEGENOPT(XRayAlwaysEmitTypedEvents , 1, 0)
 
 ///< Set the minimum number of instructions in a function to determine selective
 ///< XRay instrumentation.
@@ -137,9 +142,6 @@ CODEGENOPT(NoZeroInitializedInBSS , 1, 0) ///< -fno-zero-initialized-in-bss.
 ENUM_CODEGENOPT(ObjCDispatchMethod, ObjCDispatchMethodKind, 2, Legacy)
 CODEGENOPT(OmitLeafFramePointer , 1, 0) ///< Set when -momit-leaf-frame-pointer is
                                         ///< enabled.
-
-/// A version of Clang that we should attempt to be ABI-compatible with.
-ENUM_CODEGENOPT(ClangABICompat, ClangABI, 4, ClangABI::Latest)
 
 VALUE_CODEGENOPT(OptimizationLevel, 2, 0) ///< The -O[0-3] option specified.
 VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified.

@@ -276,6 +276,7 @@
 // RUN:     -fno-inline-small-functions -finline-small-functions              \
 // RUN:     -fno-fat-lto-objects -ffat-lto-objects                            \
 // RUN:     -fno-merge-constants -fmerge-constants                            \
+// RUN:     -fno-merge-all-constants -fmerge-all-constants                    \
 // RUN:     -fno-caller-saves -fcaller-saves                                  \
 // RUN:     -fno-reorder-blocks -freorder-blocks                              \
 // RUN:     -fno-schedule-insns2 -fschedule-insns2                            \
@@ -301,8 +302,6 @@
 // RUN: -fkeep-inline-functions                                               \
 // RUN: -fno-keep-inline-functions                                            \
 // RUN: -freorder-blocks                                                      \
-// RUN: -falign-functions                                                     \
-// RUN: -falign-functions=1                                                   \
 // RUN: -ffloat-store                                                         \
 // RUN: -fgcse                                                                \
 // RUN: -fivopts                                                              \
@@ -369,8 +368,6 @@
 // CHECK-WARNING-DAG: optimization flag '-fkeep-inline-functions' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fno-keep-inline-functions' is not supported
 // CHECK-WARNING-DAG: optimization flag '-freorder-blocks' is not supported
-// CHECK-WARNING-DAG: optimization flag '-falign-functions' is not supported
-// CHECK-WARNING-DAG: optimization flag '-falign-functions=1' is not supported
 // CHECK-WARNING-DAG: optimization flag '-ffloat-store' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fgcse' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fivopts' is not supported
@@ -522,3 +519,10 @@
 // RUN: %clang -### -S -fno-discard-value-names %s 2>&1 | FileCheck -check-prefix=CHECK-NO-DISCARD-NAMES %s
 // CHECK-DISCARD-NAMES: "-discard-value-names"
 // CHECK-NO-DISCARD-NAMES-NOT: "-discard-value-names"
+//
+// RUN: %clang -### -S -fmerge-all-constants %s 2>&1 | FileCheck -check-prefix=CHECK-MERGE-ALL-CONSTANTS %s
+// RUN: %clang -### -S -fno-merge-all-constants %s 2>&1 | FileCheck -check-prefix=CHECK-NO-MERGE-ALL-CONSTANTS %s
+// RUN: %clang -### -S -fmerge-all-constants -fno-merge-all-constants %s 2>&1 | FileCheck -check-prefix=CHECK-NO-MERGE-ALL-CONSTANTS %s
+// RUN: %clang -### -S -fno-merge-all-constants -fmerge-all-constants %s 2>&1 | FileCheck -check-prefix=CHECK-MERGE-ALL-CONSTANTS %s
+// CHECK-NO-MERGE-ALL-CONSTANTS-NOT: "-fmerge-all-constants"
+// CHECK-MERGE-ALL-CONSTANTS: "-fmerge-all-constants"

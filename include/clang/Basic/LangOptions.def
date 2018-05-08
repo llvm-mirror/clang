@@ -188,11 +188,14 @@ ENUM_LANGOPT(DefaultCallingConv, DefaultCallingConvention, 3, DCC_None, "default
 LANGOPT(ShortEnums        , 1, 0, "short enum types")
 
 LANGOPT(OpenCL            , 1, 0, "OpenCL")
-LANGOPT(OpenCLVersion     , 32, 0, "OpenCL version")
+LANGOPT(OpenCLVersion     , 32, 0, "OpenCL C version")
+LANGOPT(OpenCLCPlusPlus   , 1, 0, "OpenCL C++")
+LANGOPT(OpenCLCPlusPlusVersion     , 32, 0, "OpenCL C++ version")
 LANGOPT(NativeHalfType    , 1, 0, "Native half type support")
 LANGOPT(NativeHalfArgsAndReturns, 1, 0, "Native half args and returns")
 LANGOPT(HalfArgsAndReturns, 1, 0, "half args and returns")
 LANGOPT(CUDA              , 1, 0, "CUDA")
+LANGOPT(HIP               , 1, 0, "HIP")
 LANGOPT(OpenMP            , 32, 0, "OpenMP support and version of OpenMP (31, 40 or 45)")
 LANGOPT(OpenMPSimd        , 1, 0, "Use SIMD only OpenMP support.")
 LANGOPT(OpenMPUseTLS      , 1, 0, "Use TLS for threadprivates or runtime calls")
@@ -236,6 +239,7 @@ LANGOPT(ObjCAutoRefCount , 1, 0, "Objective-C automated reference counting")
 LANGOPT(ObjCWeakRuntime     , 1, 0, "__weak support in the ARC runtime")
 LANGOPT(ObjCWeak            , 1, 0, "Objective-C __weak in ARC and MRC files")
 LANGOPT(ObjCSubscriptingLegacyRuntime         , 1, 0, "Subscripting support in legacy ObjectiveC runtime")
+LANGOPT(CFProtectionBranch , 1, 0, "Control-Flow Branch Protection enabled")
 LANGOPT(FakeAddressSpaceMap , 1, 0, "OpenCL fake address space map")
 ENUM_LANGOPT(AddressSpaceMapMangling , AddrSpaceMapMangling, 2, ASMM_Target, "OpenCL address space map mangling mode")
 LANGOPT(IncludeDefaultHeader, 1, 0, "Include default header file for OpenCL")
@@ -279,9 +283,18 @@ LANGOPT(XRayInstrument, 1, 0, "controls whether to do XRay instrumentation")
 LANGOPT(XRayAlwaysEmitCustomEvents, 1, 0,
         "controls whether to always emit intrinsic calls to "
         "__xray_customevent(...) builtin.")
+LANGOPT(XRayAlwaysEmitTypedEvents, 1, 0,
+        "controls whether to always emit intrinsic calls to "
+        "__xray_typedevent(...) builtin.")
 
 BENIGN_LANGOPT(AllowEditorPlaceholders, 1, 0,
                "allow editor placeholders in source")
+
+ENUM_LANGOPT(ClangABICompat, ClangABI, 4, ClangABI::Latest,
+             "version of Clang that we should attempt to be ABI-compatible "
+             "with")
+
+COMPATIBLE_VALUE_LANGOPT(FunctionAlignment, 5, 0, "Default alignment for functions")
 
 #undef LANGOPT
 #undef COMPATIBLE_LANGOPT
@@ -292,4 +305,3 @@ BENIGN_LANGOPT(AllowEditorPlaceholders, 1, 0,
 #undef VALUE_LANGOPT
 #undef COMPATIBLE_VALUE_LANGOPT
 #undef BENIGN_VALUE_LANGOPT
-

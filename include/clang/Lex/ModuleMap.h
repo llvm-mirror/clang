@@ -21,6 +21,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -104,7 +105,19 @@ class ModuleMap {
   /// \brief The number of modules we have created in total.
   unsigned NumCreatedModules = 0;
 
+  /// In case a module has a export_as entry, it might have a pending link
+  /// name to be determined if that module is imported.
+  llvm::StringMap<llvm::StringSet<>> PendingLinkAsModule;
+
 public:
+  /// Use PendingLinkAsModule information to mark top level link names that
+  /// are going to be replaced by export_as aliases.
+  void resolveLinkAsDependencies(Module *Mod);
+
+  /// Make module to use export_as as the link dependency name if enough
+  /// information is available or add it to a pending list otherwise.
+  void addLinkAsDependency(Module *Mod);
+
   /// \brief Flags describing the role of a module header.
   enum ModuleHeaderRole {
     /// \brief This header is normally included in the module.
@@ -199,7 +212,7 @@ private:
   llvm::DenseMap<const DirectoryEntry *, Module *> UmbrellaDirs;
 
   /// \brief A generation counter that is used to test whether modules of the
-  /// same name may shadow or are illegal redefintions.
+  /// same name may shadow or are illegal redefinitions.
   ///
   /// Modules from earlier scopes may shadow modules from later ones.
   /// Modules from the same scope may not have the same name.

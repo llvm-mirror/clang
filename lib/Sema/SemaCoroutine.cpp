@@ -19,6 +19,7 @@
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Overload.h"
+#include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
 
 using namespace clang;
@@ -361,12 +362,21 @@ static ExprResult buildMemberCall(Sema &S, Expr *Base, SourceLocation Loc,
   if (Result.isInvalid())
     return ExprError();
 
+  // We meant exactly what we asked for. No need for typo correction.
+  if (auto *TE = dyn_cast<TypoExpr>(Result.get())) {
+    S.clearDelayedTypo(TE);
+    S.Diag(Loc, diag::err_no_member)
+        << NameInfo.getName() << Base->getType()->getAsCXXRecordDecl()
+        << Base->getSourceRange();
+    return ExprError();
+  }
+
   return S.ActOnCallExpr(nullptr, Result.get(), Loc, Args, Loc, nullptr);
 }
 
 // See if return type is coroutine-handle and if so, invoke builtin coro-resume
 // on its address. This is to enable experimental support for coroutine-handle
-// returning await_suspend that results in a guranteed tail call to the target
+// returning await_suspend that results in a guaranteed tail call to the target
 // coroutine.
 static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
                            SourceLocation Loc) {
@@ -707,9 +717,14 @@ ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E,
   if (E->getValueKind() == VK_RValue)
     E = CreateMaterializeTemporaryExpr(E->getType(), E, true);
 
+  // The location of the `co_await` token cannot be used when constructing
+  // the member call expressions since it's before the location of `Expr`, which
+  // is used as the start of the member call expression.
+  SourceLocation CallLoc = E->getExprLoc();
+
   // Build the await_ready, await_suspend, await_resume calls.
   ReadySuspendResumeResult RSS =
-      buildCoawaitCalls(*this, Coroutine->CoroutinePromise, Loc, E);
+      buildCoawaitCalls(*this, Coroutine->CoroutinePromise, CallLoc, E);
   if (RSS.IsInvalid)
     return ExprError();
 
@@ -1095,8 +1110,8 @@ bool CoroutineStmtBuilder::makeNewAndDeleteExpr() {
 
     PlacementArgs.push_back(PDRefExpr.get());
   }
-  S.FindAllocationFunctions(Loc, SourceRange(),
-                            /*UseGlobal*/ false, PromiseType,
+  S.FindAllocationFunctions(Loc, SourceRange(), /*NewScope*/ Sema::AFS_Class,
+                            /*DeleteScope*/ Sema::AFS_Both, PromiseType,
                             /*isArray*/ false, PassAlignment, PlacementArgs,
                             OperatorNew, UnusedResult, /*Diagnose*/ false);
 
@@ -1106,10 +1121,21 @@ bool CoroutineStmtBuilder::makeNewAndDeleteExpr() {
   // an argument of type std::size_t."
   if (!OperatorNew && !PlacementArgs.empty()) {
     PlacementArgs.clear();
-    S.FindAllocationFunctions(Loc, SourceRange(),
-                              /*UseGlobal*/ false, PromiseType,
-                              /*isArray*/ false, PassAlignment,
-                              PlacementArgs, OperatorNew, UnusedResult);
+    S.FindAllocationFunctions(Loc, SourceRange(), /*NewScope*/ Sema::AFS_Class,
+                              /*DeleteScope*/ Sema::AFS_Both, PromiseType,
+                              /*isArray*/ false, PassAlignment, PlacementArgs,
+                              OperatorNew, UnusedResult, /*Diagnose*/ false);
+  }
+
+  // [dcl.fct.def.coroutine]/7
+  // "The allocation function’s name is looked up in the scope of P. If this
+  // lookup fails, the allocation function’s name is looked up in the global
+  // scope."
+  if (!OperatorNew) {
+    S.FindAllocationFunctions(Loc, SourceRange(), /*NewScope*/ Sema::AFS_Global,
+                              /*DeleteScope*/ Sema::AFS_Both, PromiseType,
+                              /*isArray*/ false, PassAlignment, PlacementArgs,
+                              OperatorNew, UnusedResult);
   }
 
   bool IsGlobalOverload =
@@ -1123,8 +1149,8 @@ bool CoroutineStmtBuilder::makeNewAndDeleteExpr() {
       return false;
     PlacementArgs = {StdNoThrow};
     OperatorNew = nullptr;
-    S.FindAllocationFunctions(Loc, SourceRange(),
-                              /*UseGlobal*/ true, PromiseType,
+    S.FindAllocationFunctions(Loc, SourceRange(), /*NewScope*/ Sema::AFS_Both,
+                              /*DeleteScope*/ Sema::AFS_Both, PromiseType,
                               /*isArray*/ false, PassAlignment, PlacementArgs,
                               OperatorNew, UnusedResult);
   }

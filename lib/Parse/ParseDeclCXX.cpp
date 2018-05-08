@@ -14,6 +14,7 @@
 #include "clang/Parse/Parser.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/OperatorKinds.h"
@@ -22,7 +23,6 @@
 #include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
-#include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/SmallString.h"
@@ -188,8 +188,8 @@ Parser::DeclGroupPtrTy Parser::ParseNamespace(DeclaratorContext Context,
                                    IdentLoc, Ident, T.getOpenLocation(), 
                                    attrs.getList(), ImplicitUsingDirectiveDecl);
 
-  PrettyDeclStackTraceEntry CrashInfo(Actions, NamespcDecl, NamespaceLoc,
-                                      "parsing namespace");
+  PrettyDeclStackTraceEntry CrashInfo(Actions.Context, NamespcDecl,
+                                      NamespaceLoc, "parsing namespace");
 
   // Parse the contents of the namespace.  This includes parsing recovery on 
   // any improperly nested namespaces.
@@ -2561,8 +2561,8 @@ Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   if (MalformedTypeSpec)
     DS.SetTypeSpecError();
 
-  ParseDeclarationSpecifiers(DS, TemplateInfo, AS, DeclSpecContext::DSC_class,
-                             &CommonLateParsedAttrs);
+  ParseDeclarationSpecifiersOrConceptDefinition(
+      DS, TemplateInfo, AS, DeclSpecContext::DSC_class, &CommonLateParsedAttrs);
 
   // Turn off colon protection that was set for declspec.
   X.restore();
@@ -3110,7 +3110,7 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
          TagType == DeclSpec::TST_union  ||
          TagType == DeclSpec::TST_class) && "Invalid TagType!");
 
-  PrettyDeclStackTraceEntry CrashInfo(Actions, TagDecl, RecordLoc,
+  PrettyDeclStackTraceEntry CrashInfo(Actions.Context, TagDecl, RecordLoc,
                                       "parsing struct/union/class body");
 
   // Determine whether this is a non-nested class. Note that local
@@ -4036,7 +4036,7 @@ void Parser::ParseCXX11AttributeSpecifier(ParsedAttributes &attrs,
 
     if (TryConsumeToken(tok::ellipsis))
       Diag(Tok, diag::err_cxx11_attribute_forbids_ellipsis)
-        << AttrName->getName();
+        << AttrName;
   }
 
   if (ExpectAndConsume(tok::r_square))

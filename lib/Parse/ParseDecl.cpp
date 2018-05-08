@@ -15,6 +15,7 @@
 #include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
@@ -22,7 +23,6 @@
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/ParsedTemplate.h"
-#include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/Optional.h"
@@ -1739,7 +1739,8 @@ Parser::ParseSimpleDeclaration(DeclaratorContext Context,
   ParsingDeclSpec DS(*this);
 
   DeclSpecContext DSContext = getDeclSpecContextFromDeclaratorContext(Context);
-  ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS_none, DSContext);
+  ParseDeclarationSpecifiersOrConceptDefinition(DS, ParsedTemplateInfo(),
+                                                       AS_none, DSContext);
 
   // If we had a free-standing type definition with a missing semicolon, we
   // may get this far before the problem becomes obvious.
@@ -2027,8 +2028,13 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
     }
 
     Decl *ThisDecl = Actions.ActOnDeclarator(getCurScope(), D);
-    if (IsForRangeLoop)
+    if (IsForRangeLoop) {
       Actions.ActOnCXXForRangeDecl(ThisDecl);
+    } else {
+      // Obj-C for loop
+      if (auto *VD = dyn_cast_or_null<VarDecl>(ThisDecl))
+        VD->setObjCForDecl(true);
+    }
     Actions.FinalizeDeclaration(ThisDecl);
     D.complete(ThisDecl);
     return Actions.FinalizeDeclaratorGroup(getCurScope(), DS, ThisDecl);
@@ -2381,7 +2387,8 @@ void Parser::ParseSpecifierQualifierList(DeclSpec &DS, AccessSpecifier AS,
   /// specifier-qualifier-list is a subset of declaration-specifiers.  Just
   /// parse declaration-specifiers and complain about extra stuff.
   /// TODO: diagnose attribute-specifiers and alignment-specifiers.
-  ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS, DSC);
+  ParseDeclarationSpecifiersOrConceptDefinition(DS, ParsedTemplateInfo(), AS,
+                                                DSC);
 
   // Validate declspec for type-name.
   unsigned Specs = DS.getParsedSpecifiers();
@@ -2463,7 +2470,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
 
   SourceLocation Loc = Tok.getLocation();
   // If we see an identifier that is not a type name, we normally would
-  // parse it as the identifer being declared.  However, when a typename
+  // parse it as the identifier being declared.  However, when a typename
   // is typo'd or the definition is not included, this will incorrectly
   // parse the typename as the identifier name and fall over misparsing
   // later parts of the diagnostic.
@@ -2866,11 +2873,12 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
   // and call ParsedFreeStandingDeclSpec as appropriate.
   DS.ClearTypeSpecType();
   ParsedTemplateInfo NotATemplate;
-  ParseDeclarationSpecifiers(DS, NotATemplate, AS, DSContext, LateAttrs);
+  ParseDeclarationSpecifiersOrConceptDefinition(DS, NotATemplate, AS, DSContext,
+                                      LateAttrs);
   return false;
 }
 
-/// ParseDeclarationSpecifiers
+/// ParseDeclarationSpecifiersOrConceptDefinition
 ///       declaration-specifiers: [C99 6.7]
 ///         storage-class-specifier declaration-specifiers[opt]
 ///         type-specifier declaration-specifiers[opt]
@@ -2897,7 +2905,8 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
 /// [OpenCL] '__kernel'
 ///       'friend': [C++ dcl.friend]
 ///       'constexpr': [C++0x dcl.constexpr]
-void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
+/// [C++2a] 'concept'
+void Parser::ParseDeclarationSpecifiersOrConceptDefinition(DeclSpec &DS,
                                         const ParsedTemplateInfo &TemplateInfo,
                                         AccessSpecifier AS,
                                         DeclSpecContext DSContext,
@@ -3449,6 +3458,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     case tok::kw_thread_local:
       isInvalid = DS.SetStorageClassSpecThread(DeclSpec::TSCS_thread_local, Loc,
                                                PrevSpec, DiagID);
+      isStorageClass = true;
       break;
     case tok::kw__Thread_local:
       isInvalid = DS.SetStorageClassSpecThread(DeclSpec::TSCS__Thread_local,
@@ -3461,7 +3471,15 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       isInvalid = DS.setFunctionSpecInline(Loc, PrevSpec, DiagID);
       break;
     case tok::kw_virtual:
-      isInvalid = DS.setFunctionSpecVirtual(Loc, PrevSpec, DiagID);
+      // OpenCL C++ v1.0 s2.9: the virtual function qualifier is not supported.
+      if (getLangOpts().OpenCLCPlusPlus) {
+        DiagID = diag::err_openclcxx_virtual_function;
+        PrevSpec = Tok.getIdentifierInfo()->getNameStart();
+        isInvalid = true;
+      }
+      else {
+        isInvalid = DS.setFunctionSpecVirtual(Loc, PrevSpec, DiagID);
+      }
       break;
     case tok::kw_explicit:
       isInvalid = DS.setFunctionSpecExplicit(Loc, PrevSpec, DiagID);
@@ -3666,7 +3684,11 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       ConsumeToken();
       ParseEnumSpecifier(Loc, DS, TemplateInfo, AS, DSContext);
       continue;
-
+    
+    case tok::kw_concept:
+      ConsumeToken();
+      ParseConceptDefinition(Loc, DS, TemplateInfo, AS, DSContext);
+      continue;
     // cv-qualifier:
     case tok::kw_const:
       isInvalid = DS.SetTypeQual(DeclSpec::TQ_const, Loc, PrevSpec, DiagID,
@@ -3799,7 +3821,8 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
 
     DS.SetRangeEnd(Tok.getLocation());
     if (DiagID != diag::err_bool_redeclaration)
-      ConsumeToken();
+      // After an error the next token can be an annotation token.
+      ConsumeAnyToken();
 
     AttrsLastTime = false;
   }
@@ -3908,7 +3931,7 @@ void Parser::ParseStructDeclaration(
 ///
 void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
                                   unsigned TagType, Decl *TagDecl) {
-  PrettyDeclStackTraceEntry CrashInfo(Actions, TagDecl, RecordLoc,
+  PrettyDeclStackTraceEntry CrashInfo(Actions.Context, TagDecl, RecordLoc,
                                       "parsing struct/union body");
   assert(!getLangOpts().CPlusPlus && "C++ declarations not supported");
 
@@ -5119,7 +5142,7 @@ void Parser::ParseTypeQualifierListOpt(
                                  getLangOpts());
       break;
     case tok::kw___uptr:
-      // GNU libc headers in C mode use '__uptr' as an identifer which conflicts
+      // GNU libc headers in C mode use '__uptr' as an identifier which conflicts
       // with the MS modifier keyword.
       if ((AttrReqs & AR_DeclspecAttributesParsed) && !getLangOpts().CPlusPlus &&
           IdentifierRequired && DS.isEmpty() && NextToken().is(tok::semi)) {
@@ -6351,7 +6374,7 @@ void Parser::ParseParameterDeclarationClause(
     // too much hassle.
     DS.takeAttributesFrom(FirstArgAttrs);
 
-    ParseDeclarationSpecifiers(DS);
+    ParseDeclarationSpecifiersOrConceptDefinition(DS);
 
 
     // Parse the declarator.  This is "PrototypeContext" or 

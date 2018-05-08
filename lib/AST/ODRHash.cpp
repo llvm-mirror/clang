@@ -148,6 +148,8 @@ void ODRHash::AddTemplateArgument(TemplateArgument TA) {
       AddQualType(TA.getAsType());
       break;
     case TemplateArgument::Declaration:
+      AddDecl(TA.getAsDecl());
+      break;
     case TemplateArgument::NullPtr:
     case TemplateArgument::Integral:
       break;
@@ -329,6 +331,15 @@ public:
     }
 
     AddQualType(D->getReturnType());
+
+    const auto* SpecializationArgs = D->getTemplateSpecializationArgs();
+    Hash.AddBoolean(SpecializationArgs);
+    if (SpecializationArgs) {
+      ID.AddInteger(SpecializationArgs->size());
+      for (const TemplateArgument &TA : SpecializationArgs->asArray()) {
+        Hash.AddTemplateArgument(TA);
+      }
+    }
 
     Inherited::VisitFunctionDecl(D);
   }
@@ -642,13 +653,41 @@ public:
     VisitFunctionType(T);
   }
 
+  void VisitPointerType(const PointerType *T) {
+    AddQualType(T->getPointeeType());
+    VisitType(T);
+  }
+
+  void VisitReferenceType(const ReferenceType *T) {
+    AddQualType(T->getPointeeTypeAsWritten());
+    VisitType(T);
+  }
+
+  void VisitLValueReferenceType(const LValueReferenceType *T) {
+    VisitReferenceType(T);
+  }
+
+  void VisitRValueReferenceType(const RValueReferenceType *T) {
+    VisitReferenceType(T);
+  }
+
   void VisitTypedefType(const TypedefType *T) {
     AddDecl(T->getDecl());
     QualType UnderlyingType = T->getDecl()->getUnderlyingType();
     VisitQualifiers(UnderlyingType.getQualifiers());
-    while (const TypedefType *Underlying =
-               dyn_cast<TypedefType>(UnderlyingType.getTypePtr())) {
-      UnderlyingType = Underlying->getDecl()->getUnderlyingType();
+    while (true) {
+      if (const TypedefType *Underlying =
+              dyn_cast<TypedefType>(UnderlyingType.getTypePtr())) {
+        UnderlyingType = Underlying->getDecl()->getUnderlyingType();
+        continue;
+      }
+      if (const ElaboratedType *Underlying =
+              dyn_cast<ElaboratedType>(UnderlyingType.getTypePtr())) {
+        UnderlyingType = Underlying->getNamedType();
+        continue;
+      }
+
+      break;
     }
     AddType(UnderlyingType.getTypePtr());
     VisitType(T);

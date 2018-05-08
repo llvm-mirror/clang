@@ -258,6 +258,10 @@ public:
   /// and headers from used modules.
   unsigned NoUndeclaredIncludes : 1;
 
+  /// \brief Whether this module came from a "private" module map, found next
+  /// to a regular (public) module map.
+  unsigned ModuleMapIsPrivate : 1;
+
   /// \brief Describes the visibility of the various names within a
   /// particular module.
   enum NameVisibilityKind {
@@ -330,6 +334,10 @@ public:
   /// \brief The set of libraries or frameworks to link against when
   /// an entity from this module is used.
   llvm::SmallVector<LinkLibrary, 2> LinkLibraries;
+
+  /// Autolinking uses the framework name for linking purposes
+  /// when this is false and the export_as name otherwise.
+  bool UseExportAsModuleLinkName = false;
 
   /// \brief The set of "configuration macros", which are macros that
   /// (intentionally) change how this module is built.

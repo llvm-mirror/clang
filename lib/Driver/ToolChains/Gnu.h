@@ -265,6 +265,11 @@ public:
                                 StringRef CandidateTriple,
                                 bool NeedsBiarchSuffix = false);
 
+    bool ScanGentooConfigs(const llvm::Triple &TargetTriple,
+                           const llvm::opt::ArgList &Args,
+                           const SmallVectorImpl<StringRef> &CandidateTriples,
+                           const SmallVectorImpl<StringRef> &BiarchTriples);
+
     bool ScanGentooGccConfig(const llvm::Triple &TargetTriple,
                              const llvm::opt::ArgList &Args,
                              StringRef CandidateTriple,
@@ -311,7 +316,9 @@ protected:
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
 
-  virtual std::string findLibCxxIncludePath() const;
+  virtual void
+  addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
+                        llvm::opt::ArgStringList &CC1Args) const;
   virtual void
   addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                            llvm::opt::ArgStringList &CC1Args) const;

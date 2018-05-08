@@ -17,6 +17,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Serialization/ASTReader.h"
 #include "clang/Serialization/ASTWriter.h"
@@ -101,6 +102,7 @@ namespace clang {
     void VisitBindingDecl(BindingDecl *D);
     void VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D);
     void VisitTemplateDecl(TemplateDecl *D);
+    void VisitConceptDecl(ConceptDecl *D);
     void VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D);
     void VisitClassTemplateDecl(ClassTemplateDecl *D);
     void VisitVarTemplateDecl(VarTemplateDecl *D);
@@ -465,6 +467,11 @@ void ASTDeclWriter::VisitRecordDecl(RecordDecl *D) {
   Record.push_back(D->isAnonymousStructOrUnion());
   Record.push_back(D->hasObjectMember());
   Record.push_back(D->hasVolatileMember());
+  Record.push_back(D->isNonTrivialToPrimitiveDefaultInitialize());
+  Record.push_back(D->isNonTrivialToPrimitiveCopy());
+  Record.push_back(D->isNonTrivialToPrimitiveDestroy());
+  Record.push_back(D->isParamDestroyedInCallee());
+  Record.push_back(D->getArgPassingRestrictions());
 
   if (D->getDeclContext() == D->getLexicalDeclContext() &&
       !D->hasAttrs() &&
@@ -914,6 +921,7 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
     Record.push_back(D->isExceptionVariable());
     Record.push_back(D->isNRVOVariable());
     Record.push_back(D->isCXXForRangeDecl());
+    Record.push_back(D->isObjCForDecl());
     Record.push_back(D->isARCPseudoStrong());
     Record.push_back(D->isInline());
     Record.push_back(D->isInlineSpecified());
@@ -1386,6 +1394,12 @@ void ASTDeclWriter::VisitTemplateDecl(TemplateDecl *D) {
 
   Record.AddDeclRef(D->getTemplatedDecl());
   Record.AddTemplateParameterList(D->getTemplateParameters());
+}
+
+void ASTDeclWriter::VisitConceptDecl(ConceptDecl *D) {
+  VisitTemplateDecl(D);
+  Record.AddStmt(D->getConstraintExpr());
+  Code = serialization::DECL_CONCEPT;
 }
 
 void ASTDeclWriter::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
@@ -1899,6 +1913,18 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // AnonymousStructUnion
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // hasObjectMember
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // hasVolatileMember
+
+  // isNonTrivialToPrimitiveDefaultInitialize
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+  // isNonTrivialToPrimitiveCopy
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+  // isNonTrivialToPrimitiveDestroy
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+  // isParamDestroyedInCallee
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+  // getArgPassingRestrictions
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2));
+
   // DC
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // LexicalOffset
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // VisibleOffset
@@ -2014,6 +2040,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isExceptionVariable
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isNRVOVariable
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isCXXForRangeDecl
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isObjCForDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isARCPseudoStrong
   Abv->Add(BitCodeAbbrevOp(0));                         // isInline
   Abv->Add(BitCodeAbbrevOp(0));                         // isInlineSpecified
@@ -2214,6 +2241,9 @@ static bool isRequiredDecl(const Decl *D, ASTContext &Context,
 }
 
 void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
+  PrettyDeclStackTraceEntry CrashInfo(Context, D, SourceLocation(),
+                                      "serializing");
+
   // Determine the ID for this declaration.
   serialization::DeclID ID;
   assert(!D->isFromASTFile() && "should not be emitting imported decl");

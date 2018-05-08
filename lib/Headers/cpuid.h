@@ -177,6 +177,7 @@
 #define bit_AVX512VBMI       0x00000002
 #define bit_PKU              0x00000004
 #define bit_OSPKE            0x00000010
+#define bit_WAITPKG          0x00000020
 #define bit_AVX512VBMI2      0x00000040
 #define bit_SHSTK            0x00000080
 #define bit_GFNI             0x00000100
@@ -186,6 +187,7 @@
 #define bit_AVX512BITALG     0x00001000
 #define bit_AVX512VPOPCNTDQ  0x00004000
 #define bit_RDPID            0x00400000
+#define bit_CLDEMOTE         0x02000000
 
 /* Features in %edx for leaf 7 sub-leaf 0 */
 #define bit_AVX5124VNNIW  0x00000004
@@ -215,8 +217,9 @@
 #define bit_3DNOWP      0x40000000
 #define bit_3DNOW       0x80000000
 
-/* Features in %ebx for leaf 0x80000001 */
+/* Features in %ebx for leaf 0x80000008 */
 #define bit_CLZERO      0x00000001
+#define bit_WBNOINVD    0x00000200
 
 
 #if __i386__

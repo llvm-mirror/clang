@@ -71,6 +71,22 @@ int testIt() {
 }
 } // namespace templated_alloc_size
 
+// Be sure that an ExprWithCleanups doesn't deter us.
+namespace alloc_size_with_cleanups {
+struct Foo {
+  ~Foo();
+};
+
+void *my_malloc(const Foo &, int N) __attribute__((alloc_size(2)));
+
+// CHECK-LABEL: define i32 @_ZN24alloc_size_with_cleanups6testItEv
+int testIt() {
+  int *const p = (int *)my_malloc(Foo{}, 3);
+  // CHECK: ret i32 3
+  return __builtin_object_size(p, 0);
+}
+} // namespace alloc_size_with_cleanups
+
 class C {
 public:
   void *my_malloc(int N) __attribute__((alloc_size(2)));
@@ -87,16 +103,4 @@ int callMemberMalloc() {
 int callMemberCalloc() {
   // CHECK: ret i32 32
   return __builtin_object_size(C().my_calloc(16, 2), 0);
-}
-
-struct D {
-  ~D();
-  void *my_malloc(int N) __attribute__((alloc_size(2)));
-};
-
-// CHECK-LABEL: define i32 @_Z20callExprWithCleanupsv
-int callExprWithCleanups() {
-  int *const p = (int *)D().my_malloc(3);
-  // CHECK: ret i32 3
-  return __builtin_object_size(p, 0);
 }

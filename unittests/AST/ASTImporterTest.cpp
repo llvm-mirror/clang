@@ -17,10 +17,17 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Tooling/Tooling.h"
+
+#include "DeclMatcher.h"
 #include "gtest/gtest.h"
+#include "llvm/ADT/StringMap.h"
 
 namespace clang {
 namespace ast_matchers {
+
+using internal::Matcher;
+using internal::BindableMatcher;
+using llvm::StringMap;
 
 typedef std::vector<std::string> ArgVector;
 typedef std::vector<ArgVector> RunOptions;
@@ -29,7 +36,7 @@ static bool isCXX(Language Lang) {
   return Lang == Lang_CXX || Lang == Lang_CXX11;
 }
 
-static RunOptions getRunOptionsForLanguage(Language Lang) {
+static ArgVector getBasicRunOptionsForLanguage(Language Lang) {
   ArgVector BasicArgs;
   // Test with basic arguments.
   switch (Lang) {
@@ -49,6 +56,11 @@ static RunOptions getRunOptionsForLanguage(Language Lang) {
   case Lang_OBJCXX:
     llvm_unreachable("Not implemented yet!");
   }
+  return BasicArgs;
+}
+
+static RunOptions getRunOptionsForLanguage(Language Lang) {
+  ArgVector BasicArgs = getBasicRunOptionsForLanguage(Lang);
 
   // For C++, test with "-fdelayed-template-parsing" enabled to handle MSVC
   // default behaviour.
@@ -61,51 +73,39 @@ static RunOptions getRunOptionsForLanguage(Language Lang) {
   return {BasicArgs};
 }
 
-template<typename NodeType, typename MatcherType>
-testing::AssertionResult
-testImport(const std::string &FromCode, const ArgVector &FromArgs,
-           const std::string &ToCode, const ArgVector &ToArgs,
-           MatchVerifier<NodeType> &Verifier, const MatcherType &AMatcher) {
-  const char *const InputFileName = "input.cc";
-  const char *const OutputFileName = "output.cc";
+// Creates a virtual file and assigns that to the context of given AST. If the
+// file already exists then the file will not be created again as a duplicate.
+static void
+createVirtualFileIfNeeded(ASTUnit *ToAST, StringRef FileName,
+                          std::unique_ptr<llvm::MemoryBuffer> &&Buffer) {
+  assert(ToAST);
+  ASTContext &ToCtx = ToAST->getASTContext();
+  auto *OFS = static_cast<vfs::OverlayFileSystem *>(
+      ToCtx.getSourceManager().getFileManager().getVirtualFileSystem().get());
+  auto *MFS =
+      static_cast<vfs::InMemoryFileSystem *>(OFS->overlays_begin()->get());
+  MFS->addFile(FileName, 0, std::move(Buffer));
+}
 
-  std::unique_ptr<ASTUnit>
-      FromAST = tooling::buildASTFromCodeWithArgs(
-        FromCode, FromArgs, InputFileName),
-      ToAST = tooling::buildASTFromCodeWithArgs(ToCode, ToArgs, OutputFileName);
+static void createVirtualFileIfNeeded(ASTUnit *ToAST, StringRef FileName,
+                                      StringRef Code) {
+  return createVirtualFileIfNeeded(ToAST, FileName,
+                                   llvm::MemoryBuffer::getMemBuffer(Code));
+}
 
-  ASTContext &FromCtx = FromAST->getASTContext(),
-      &ToCtx = ToAST->getASTContext();
+template <typename NodeType>
+NodeType importNode(ASTUnit *From, ASTUnit *To, ASTImporter &Importer,
+                    NodeType Node) {
+  ASTContext &ToCtx = To->getASTContext();
 
-  // Add input.cc to virtual file system so importer can 'find' it
-  // while importing SourceLocations.
-  vfs::OverlayFileSystem *OFS = static_cast<vfs::OverlayFileSystem *>(
-        ToCtx.getSourceManager().getFileManager().getVirtualFileSystem().get());
-  vfs::InMemoryFileSystem *MFS = static_cast<vfs::InMemoryFileSystem *>(
-        OFS->overlays_begin()->get());
-  MFS->addFile(InputFileName, 0, llvm::MemoryBuffer::getMemBuffer(FromCode));
+  // Add 'From' file to virtual file system so importer can 'find' it
+  // while importing SourceLocations. It is safe to add same file multiple
+  // times - it just isn't replaced.
+  StringRef FromFileName = From->getMainFileName();
+  createVirtualFileIfNeeded(To, FromFileName,
+                            From->getBufferForFile(FromFileName));
 
-  ASTImporter Importer(ToCtx, ToAST->getFileManager(),
-                       FromCtx, FromAST->getFileManager(), false);
-
-  IdentifierInfo *ImportedII = &FromCtx.Idents.get("declToImport");
-  assert(ImportedII && "Declaration with 'declToImport' name"
-                       "should be specified in test!");
-  DeclarationName ImportDeclName(ImportedII);
-  SmallVector<NamedDecl *, 4> FoundDecls;
-  FromCtx.getTranslationUnitDecl()->localUncachedLookup(
-        ImportDeclName, FoundDecls);
-
-  if (FoundDecls.size() != 1)
-    return testing::AssertionFailure() << "Multiple declarations were found!";
-
-  // Sanity check: the node being imported should match in the same way as
-  // the result node.
-  EXPECT_TRUE(Verifier.match(FoundDecls.front(), AMatcher));
-
-  auto Imported = Importer.Import(FoundDecls.front());
-  if (!Imported)
-    return testing::AssertionFailure() << "Import failed, nullptr returned!";
+  auto Imported = Importer.Import(Node);
 
   // This should dump source locations and assert if some source locations
   // were not imported.
@@ -117,10 +117,71 @@ testImport(const std::string &FromCode, const ArgVector &FromArgs,
   // implemented subtrees.
   Imported->dump(ToNothing);
 
-  return Verifier.match(Imported, AMatcher);
+  return Imported;
 }
 
-template<typename NodeType, typename MatcherType>
+const StringRef DeclToImportID = "declToImport";
+const StringRef DeclToVerifyID = "declToVerify";
+
+template <typename NodeType>
+testing::AssertionResult
+testImport(const std::string &FromCode, const ArgVector &FromArgs,
+           const std::string &ToCode, const ArgVector &ToArgs,
+           MatchVerifier<NodeType> &Verifier,
+           const BindableMatcher<NodeType> &SearchMatcher,
+           const BindableMatcher<NodeType> &VerificationMatcher) {
+  const char *const InputFileName = "input.cc";
+  const char *const OutputFileName = "output.cc";
+
+  std::unique_ptr<ASTUnit>
+      FromAST = tooling::buildASTFromCodeWithArgs(
+        FromCode, FromArgs, InputFileName),
+      ToAST = tooling::buildASTFromCodeWithArgs(ToCode, ToArgs, OutputFileName);
+
+  ASTContext &FromCtx = FromAST->getASTContext(),
+      &ToCtx = ToAST->getASTContext();
+
+  ASTImporter Importer(ToCtx, ToAST->getFileManager(),
+                       FromCtx, FromAST->getFileManager(), false);
+
+  auto FoundNodes = match(SearchMatcher, FromCtx);
+  if (FoundNodes.size() != 1)
+    return testing::AssertionFailure()
+           << "Multiple potential nodes were found!";
+
+  auto ToImport = selectFirst<NodeType>(DeclToImportID, FoundNodes);
+  if (!ToImport)
+    return testing::AssertionFailure() << "Node type mismatch!";
+
+  // Sanity check: the node being imported should match in the same way as
+  // the result node.
+  BindableMatcher<NodeType> WrapperMatcher(VerificationMatcher);
+  EXPECT_TRUE(Verifier.match(ToImport, WrapperMatcher));
+
+  auto Imported = importNode(FromAST.get(), ToAST.get(), Importer, ToImport);
+  if (!Imported)
+    return testing::AssertionFailure() << "Import failed, nullptr returned!";
+
+  return Verifier.match(Imported, WrapperMatcher);
+}
+
+template <typename NodeType>
+testing::AssertionResult
+testImport(const std::string &FromCode, const ArgVector &FromArgs,
+           const std::string &ToCode, const ArgVector &ToArgs,
+           MatchVerifier<NodeType> &Verifier,
+           const BindableMatcher<NodeType> &VerificationMatcher) {
+  return testImport(
+      FromCode, FromArgs, ToCode, ToArgs, Verifier,
+      translationUnitDecl(
+          has(namedDecl(hasName(DeclToImportID)).bind(DeclToImportID))),
+      VerificationMatcher);
+}
+
+/// Test how AST node named "declToImport" located in the translation unit
+/// of "FromCode" virtual file is imported to "ToCode" virtual file.
+/// The verification is done by running AMatcher over the imported node.
+template <typename NodeType, typename MatcherType>
 void testImport(const std::string &FromCode, Language FromLang,
                 const std::string &ToCode, Language ToLang,
                 MatchVerifier<NodeType> &Verifier,
@@ -133,6 +194,268 @@ void testImport(const std::string &FromCode, Language FromLang,
                              Verifier, AMatcher));
 }
 
+// This class provides generic methods to write tests which can check internal
+// attributes of AST nodes like getPreviousDecl(), isVirtual(), etc.  Also,
+// this fixture makes it possible to import from several "From" contexts.
+class ASTImporterTestBase : public ::testing::TestWithParam<ArgVector> {
+
+  const char *const InputFileName = "input.cc";
+  const char *const OutputFileName = "output.cc";
+
+  // Buffer for the To context, must live in the test scope.
+  std::string ToCode;
+
+  struct TU {
+    // Buffer for the context, must live in the test scope.
+    StringRef Code;
+    StringRef FileName;
+    std::unique_ptr<ASTUnit> Unit;
+    TranslationUnitDecl *TUDecl = nullptr;
+    TU(StringRef Code, StringRef FileName, ArgVector Args)
+        : Code(Code), FileName(FileName),
+          Unit(tooling::buildASTFromCodeWithArgs(this->Code, Args,
+                                                 this->FileName)),
+          TUDecl(Unit->getASTContext().getTranslationUnitDecl()) {}
+  };
+
+  // We may have several From contexts and related translation units. In each
+  // AST, the buffers for the source are handled via references and are set
+  // during the creation of the AST. These references must point to a valid
+  // buffer until the AST is alive. Thus, we must use a list in order to avoid
+  // moving of the stored objects because that would mean breaking the
+  // references in the AST. By using a vector a move could happen when the
+  // vector is expanding, with the list we won't have these issues.
+  std::list<TU> FromTUs;
+
+public:
+  // We may have several From context but only one To context.
+  std::unique_ptr<ASTUnit> ToAST;
+
+  // Returns the argument vector used for a specific language, this set
+  // can be tweaked by the test parameters.
+  ArgVector getArgVectorForLanguage(Language Lang) {
+    ArgVector Args = getBasicRunOptionsForLanguage(Lang);
+    ArgVector ExtraArgs = GetParam();
+    for (const auto& Arg : ExtraArgs) {
+      Args.push_back(Arg);
+    }
+    return Args;
+  }
+
+  // Creates an AST both for the From and To source code and imports the Decl
+  // of the identifier into the To context.
+  // Must not be called more than once within the same test.
+  std::tuple<Decl *, Decl *>
+  getImportedDecl(StringRef FromSrcCode, Language FromLang, StringRef ToSrcCode,
+                  Language ToLang, StringRef Identifier = DeclToImportID) {
+    ArgVector FromArgs = getArgVectorForLanguage(FromLang),
+              ToArgs = getArgVectorForLanguage(ToLang);
+
+    FromTUs.emplace_back(FromSrcCode, InputFileName, FromArgs);
+    TU &FromTU = FromTUs.back();
+
+    ToCode = ToSrcCode;
+    assert(!ToAST);
+    ToAST = tooling::buildASTFromCodeWithArgs(ToCode, ToArgs, OutputFileName);
+
+    ASTContext &FromCtx = FromTU.Unit->getASTContext(),
+               &ToCtx = ToAST->getASTContext();
+
+    createVirtualFileIfNeeded(ToAST.get(), InputFileName, FromTU.Code);
+
+    ASTImporter Importer(ToCtx, ToAST->getFileManager(), FromCtx,
+                         FromTU.Unit->getFileManager(), false);
+
+    IdentifierInfo *ImportedII = &FromCtx.Idents.get(Identifier);
+    assert(ImportedII && "Declaration with the given identifier "
+                         "should be specified in test!");
+    DeclarationName ImportDeclName(ImportedII);
+    SmallVector<NamedDecl *, 4> FoundDecls;
+    FromCtx.getTranslationUnitDecl()->localUncachedLookup(ImportDeclName,
+                                                          FoundDecls);
+
+    assert(FoundDecls.size() == 1);
+
+    Decl *Imported = Importer.Import(FoundDecls.front());
+    assert(Imported);
+    return std::make_tuple(*FoundDecls.begin(), Imported);
+  }
+
+  // Creates a TU decl for the given source code.
+  // May be called several times in a given test.
+  TranslationUnitDecl *getTuDecl(StringRef SrcCode, Language Lang,
+                                 StringRef FileName = "input.cc") {
+    assert(
+        std::find_if(FromTUs.begin(), FromTUs.end(), [FileName](const TU &E) {
+          return E.FileName == FileName;
+        }) == FromTUs.end());
+
+    ArgVector Args = getArgVectorForLanguage(Lang);
+    FromTUs.emplace_back(SrcCode, FileName, Args);
+    TU &Tu = FromTUs.back();
+
+    return Tu.TUDecl;
+  }
+
+  // Import the given Decl into the ToCtx.
+  // May be called several times in a given test.
+  // The different instances of the param From may have different ASTContext.
+  Decl *Import(Decl *From, Language ToLang) {
+    if (!ToAST) {
+      ArgVector ToArgs = getArgVectorForLanguage(ToLang);
+      // Build the AST from an empty file.
+      ToAST =
+          tooling::buildASTFromCodeWithArgs(/*Code=*/"", ToArgs, "empty.cc");
+    }
+
+    // Create a virtual file in the To Ctx which corresponds to the file from
+    // which we want to import the `From` Decl. Without this source locations
+    // will be invalid in the ToCtx.
+    auto It = std::find_if(FromTUs.begin(), FromTUs.end(), [From](const TU &E) {
+      return E.TUDecl == From->getTranslationUnitDecl();
+    });
+    assert(It != FromTUs.end());
+    createVirtualFileIfNeeded(ToAST.get(), It->FileName, It->Code);
+
+    ASTContext &FromCtx = From->getASTContext(),
+               &ToCtx = ToAST->getASTContext();
+    ASTImporter Importer(ToCtx, ToAST->getFileManager(), FromCtx,
+                         FromCtx.getSourceManager().getFileManager(), false);
+    return Importer.Import(From);
+  }
+
+  ~ASTImporterTestBase() {
+    if (!::testing::Test::HasFailure()) return;
+
+    for (auto &Tu : FromTUs) {
+      assert(Tu.Unit);
+      llvm::errs() << "FromAST:\n";
+      Tu.Unit->getASTContext().getTranslationUnitDecl()->dump();
+      llvm::errs() << "\n";
+    }
+    if (ToAST) {
+      llvm::errs() << "ToAST:\n";
+      ToAST->getASTContext().getTranslationUnitDecl()->dump();
+    }
+  }
+};
+
+
+struct ImportAction {
+  StringRef FromFilename;
+  StringRef ToFilename;
+  // FIXME: Generalize this to support other node kinds.
+  BindableMatcher<Decl> ImportPredicate;
+
+  ImportAction(StringRef FromFilename, StringRef ToFilename,
+               DeclarationMatcher ImportPredicate)
+      : FromFilename(FromFilename), ToFilename(ToFilename),
+        ImportPredicate(ImportPredicate) {}
+
+  ImportAction(StringRef FromFilename, StringRef ToFilename,
+               const std::string &DeclName)
+      : FromFilename(FromFilename), ToFilename(ToFilename),
+        ImportPredicate(namedDecl(hasName(DeclName))) {}
+};
+
+using SingleASTUnitForAllOpts = std::vector<std::unique_ptr<ASTUnit>>;
+using AllASTUnitsForAllOpts = StringMap<SingleASTUnitForAllOpts>;
+
+struct CodeEntry {
+  std::string CodeSample;
+  Language Lang;
+
+  /// Builds N copies of ASTUnits for each potential compile options set
+  /// for further import actions. N is equal to size of this option set.
+  SingleASTUnitForAllOpts createASTUnits(StringRef FileName) const {
+    auto RunOpts = getRunOptionsForLanguage(Lang);
+    size_t NumOpts = RunOpts.size();
+    SingleASTUnitForAllOpts ResultASTs(NumOpts);
+    for (size_t CompileOpt = 0; CompileOpt < NumOpts; ++CompileOpt) {
+      auto AST = tooling::buildASTFromCodeWithArgs(
+          CodeSample, RunOpts[CompileOpt], FileName);
+      EXPECT_TRUE(AST.get());
+      ResultASTs[CompileOpt] = std::move(AST);
+    }
+    return ResultASTs;
+  }
+};
+
+using CodeFiles = StringMap<CodeEntry>;
+
+/// Test an arbitrary sequence of imports for a set of given in-memory files.
+/// The verification is done by running VerificationMatcher against a specified
+/// AST node inside of one of given files.
+/// \param CodeSamples Map whose key is the file name and the value is the file
+/// content.
+/// \param ImportActions Sequence of imports. Each import in sequence
+/// specifies "from file" and "to file" and a matcher that is used for
+/// searching a declaration for import in "from file".
+/// \param FileForFinalCheck Name of virtual file for which the final check is
+/// applied.
+/// \param FinalSelectPredicate Matcher that specifies the AST node in the
+/// FileForFinalCheck for which the verification will be done.
+/// \param VerificationMatcher Matcher that will be used for verification after
+/// all imports in sequence are done.
+void testImportSequence(const CodeFiles &CodeSamples,
+                        const std::vector<ImportAction> &ImportActions,
+                        StringRef FileForFinalCheck,
+                        BindableMatcher<Decl> FinalSelectPredicate,
+                        BindableMatcher<Decl> VerificationMatcher) {
+  AllASTUnitsForAllOpts AllASTUnits;
+  using ImporterKey = std::pair<const ASTUnit *, const ASTUnit *>;
+  llvm::DenseMap<ImporterKey, std::unique_ptr<ASTImporter>> Importers;
+
+  auto GenASTsIfNeeded = [&AllASTUnits, &CodeSamples](StringRef Filename) {
+    if (!AllASTUnits.count(Filename)) {
+      auto Found = CodeSamples.find(Filename);
+      assert(Found != CodeSamples.end() && "Wrong file for import!");
+      AllASTUnits[Filename] = Found->getValue().createASTUnits(Filename);
+    }
+  };
+
+  size_t NumCompileOpts = 0;
+  for (const ImportAction &Action : ImportActions) {
+    StringRef FromFile = Action.FromFilename, ToFile = Action.ToFilename;
+    GenASTsIfNeeded(FromFile);
+    GenASTsIfNeeded(ToFile);
+    NumCompileOpts = AllASTUnits[FromFile].size();
+
+    for (size_t CompileOpt = 0; CompileOpt < NumCompileOpts; ++CompileOpt) {
+      ASTUnit *From = AllASTUnits[FromFile][CompileOpt].get();
+      ASTUnit *To = AllASTUnits[ToFile][CompileOpt].get();
+
+      // Create a new importer if needed.
+      std::unique_ptr<ASTImporter> &ImporterRef = Importers[{From, To}];
+      if (!ImporterRef)
+        ImporterRef.reset(new ASTImporter(
+            To->getASTContext(), To->getFileManager(), From->getASTContext(),
+            From->getFileManager(), false));
+
+      // Find the declaration and import it.
+      auto FoundDecl = match(Action.ImportPredicate.bind(DeclToImportID),
+                             From->getASTContext());
+      EXPECT_TRUE(FoundDecl.size() == 1);
+      const Decl *ToImport = selectFirst<Decl>(DeclToImportID, FoundDecl);
+      auto Imported = importNode(From, To, *ImporterRef, ToImport);
+      EXPECT_TRUE(Imported);
+    }
+  }
+
+  // NOTE: We don't do cross-option import check here due to fast growth of
+  // potential option sets.
+  for (size_t CompileOpt = 0; CompileOpt < NumCompileOpts; ++CompileOpt) {
+    // Find the declaration and import it.
+    auto FoundDecl =
+        match(FinalSelectPredicate.bind(DeclToVerifyID),
+              AllASTUnits[FileForFinalCheck][CompileOpt]->getASTContext());
+    EXPECT_TRUE(FoundDecl.size() == 1);
+    const Decl *ToVerify = selectFirst<Decl>(DeclToVerifyID, FoundDecl);
+    MatchVerifier<Decl> Verifier;
+    EXPECT_TRUE(Verifier.match(ToVerify,
+                               BindableMatcher<Decl>(VerificationMatcher)));
+  }
+}
 
 TEST(ImportExpr, ImportStringLiteral) {
   MatchVerifier<Decl> Verifier;
@@ -814,6 +1137,576 @@ TEST(ImportExpr, DependentSizedArrayType) {
              Lang_CXX, "", Lang_CXX, Verifier,
              classTemplateDecl(has(cxxRecordDecl(
                  has(fieldDecl(hasType(dependentSizedArrayType())))))));
+}
+
+TEST_P(ASTImporterTestBase, DISABLED_ImportFunctionWithBackReferringParameter) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      template <typename T> struct X {};
+
+      void declToImport(int y, X<int> &x) {}
+
+      template <> struct X<int> {
+        void g() {
+          X<int> x;
+          declToImport(0, x);
+        }
+      };
+      )",
+      Lang_CXX, "", Lang_CXX);
+
+  MatchVerifier<Decl> Verifier;
+  auto Matcher = functionDecl(hasName("declToImport"),
+                              parameterCountIs(2),
+                              hasParameter(0, hasName("y")),
+                              hasParameter(1, hasName("x")),
+                              hasParameter(1, hasType(asString("X<int> &"))));
+  ASSERT_TRUE(Verifier.match(From, Matcher));
+  EXPECT_TRUE(Verifier.match(To, Matcher));
+}
+
+TEST_P(ASTImporterTestBase,
+       TUshouldNotContainTemplatedDeclOfFunctionTemplates) {
+  Decl *From, *To;
+  std::tie(From, To) =
+      getImportedDecl("template <typename T> void declToImport() { T a = 1; }"
+                      "void instantiate() { declToImport<int>(); }",
+                      Lang_CXX, "", Lang_CXX);
+
+  auto Check = [](Decl *D) -> bool {
+    auto TU = D->getTranslationUnitDecl();
+    for (auto Child : TU->decls()) {
+      if (auto *FD = dyn_cast<FunctionDecl>(Child)) {
+        if (FD->getNameAsString() == "declToImport") {
+          GTEST_NONFATAL_FAILURE_(
+              "TU should not contain any FunctionDecl with name declToImport");
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  ASSERT_TRUE(Check(From));
+  EXPECT_TRUE(Check(To));
+}
+
+TEST_P(ASTImporterTestBase, TUshouldNotContainTemplatedDeclOfClassTemplates) {
+  Decl *From, *To;
+  std::tie(From, To) =
+      getImportedDecl("template <typename T> struct declToImport { T t; };"
+                      "void instantiate() { declToImport<int>(); }",
+                      Lang_CXX, "", Lang_CXX);
+
+  auto Check = [](Decl *D) -> bool {
+    auto TU = D->getTranslationUnitDecl();
+    for (auto Child : TU->decls()) {
+      if (auto *RD = dyn_cast<CXXRecordDecl>(Child)) {
+        if (RD->getNameAsString() == "declToImport") {
+          GTEST_NONFATAL_FAILURE_(
+              "TU should not contain any CXXRecordDecl with name declToImport");
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  ASSERT_TRUE(Check(From));
+  EXPECT_TRUE(Check(To));
+}
+
+TEST_P(ASTImporterTestBase, TUshouldNotContainTemplatedDeclOfTypeAlias) {
+  Decl *From, *To;
+  std::tie(From, To) =
+      getImportedDecl(
+          "template <typename T> struct X {};"
+          "template <typename T> using declToImport = X<T>;"
+          "void instantiate() { declToImport<int> a; }",
+                      Lang_CXX11, "", Lang_CXX11);
+
+  auto Check = [](Decl *D) -> bool {
+    auto TU = D->getTranslationUnitDecl();
+    for (auto Child : TU->decls()) {
+      if (auto *AD = dyn_cast<TypeAliasDecl>(Child)) {
+        if (AD->getNameAsString() == "declToImport") {
+          GTEST_NONFATAL_FAILURE_(
+              "TU should not contain any TypeAliasDecl with name declToImport");
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  ASSERT_TRUE(Check(From));
+  EXPECT_TRUE(Check(To));
+}
+
+TEST_P(
+    ASTImporterTestBase,
+    DISABLED_TUshouldNotContainClassTemplateSpecializationOfImplicitInstantiation) {
+
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      template<class T>
+      class Base {};
+      class declToImport : public Base<declToImport> {};
+      )",
+      Lang_CXX, "", Lang_CXX);
+
+  // Check that the ClassTemplateSpecializationDecl is NOT the child of the TU.
+  auto Pattern =
+      translationUnitDecl(unless(has(classTemplateSpecializationDecl())));
+  ASSERT_TRUE(
+      MatchVerifier<Decl>{}.match(From->getTranslationUnitDecl(), Pattern));
+  EXPECT_TRUE(
+      MatchVerifier<Decl>{}.match(To->getTranslationUnitDecl(), Pattern));
+
+  // Check that the ClassTemplateSpecializationDecl is the child of the
+  // ClassTemplateDecl.
+  Pattern = translationUnitDecl(has(classTemplateDecl(
+      hasName("Base"), has(classTemplateSpecializationDecl()))));
+  ASSERT_TRUE(
+      MatchVerifier<Decl>{}.match(From->getTranslationUnitDecl(), Pattern));
+  EXPECT_TRUE(
+      MatchVerifier<Decl>{}.match(To->getTranslationUnitDecl(), Pattern));
+}
+
+AST_MATCHER_P(RecordDecl, hasFieldOrder, std::vector<StringRef>, Order) {
+  size_t Index = 0;
+  for (FieldDecl *Field : Node.fields()) {
+    if (Index == Order.size())
+      return false;
+    if (Field->getName() != Order[Index])
+      return false;
+    ++Index;
+  }
+  return Index == Order.size();
+}
+
+TEST_P(ASTImporterTestBase,
+       TUshouldContainClassTemplateSpecializationOfExplicitInstantiation) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      namespace NS {
+        template<class T>
+        class X {};
+        template class X<int>;
+      }
+      )",
+      Lang_CXX, "", Lang_CXX, "NS");
+
+  // Check that the ClassTemplateSpecializationDecl is NOT the child of the
+  // ClassTemplateDecl.
+  auto Pattern = namespaceDecl(has(classTemplateDecl(
+      hasName("X"), unless(has(classTemplateSpecializationDecl())))));
+  ASSERT_TRUE(MatchVerifier<Decl>{}.match(From, Pattern));
+  EXPECT_TRUE(MatchVerifier<Decl>{}.match(To, Pattern));
+
+  // Check that the ClassTemplateSpecializationDecl is the child of the
+  // NamespaceDecl.
+  Pattern = namespaceDecl(has(classTemplateSpecializationDecl(hasName("X"))));
+  ASSERT_TRUE(MatchVerifier<Decl>{}.match(From, Pattern));
+  EXPECT_TRUE(MatchVerifier<Decl>{}.match(To, Pattern));
+}
+
+TEST_P(ASTImporterTestBase, CXXRecordDeclFieldsShouldBeInCorrectOrder) {
+  Decl *From, *To;
+  std::tie(From, To) =
+      getImportedDecl(
+          "struct declToImport { int a; int b; };",
+                      Lang_CXX11, "", Lang_CXX11);
+
+  MatchVerifier<Decl> Verifier;
+  ASSERT_TRUE(Verifier.match(From, cxxRecordDecl(hasFieldOrder({"a", "b"}))));
+  EXPECT_TRUE(Verifier.match(To, cxxRecordDecl(hasFieldOrder({"a", "b"}))));
+}
+
+TEST_P(ASTImporterTestBase,
+       DISABLED_CXXRecordDeclFieldOrderShouldNotDependOnImportOrder) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      // The original recursive algorithm of ASTImporter first imports 'c' then
+      // 'b' and lastly 'a'.  Therefore we must restore the order somehow.
+      R"s(
+      struct declToImport {
+          int a = c + b;
+          int b = 1;
+          int c = 2;
+      };
+      )s",
+      Lang_CXX11, "", Lang_CXX11);
+
+  MatchVerifier<Decl> Verifier;
+  ASSERT_TRUE(
+      Verifier.match(From, cxxRecordDecl(hasFieldOrder({"a", "b", "c"}))));
+  EXPECT_TRUE(
+      Verifier.match(To, cxxRecordDecl(hasFieldOrder({"a", "b", "c"}))));
+}
+
+TEST_P(ASTImporterTestBase, DISABLED_ShouldImportImplicitCXXRecordDecl) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      template <typename U>
+      struct declToImport {
+      };
+      )",
+      Lang_CXX, "", Lang_CXX);
+
+  MatchVerifier<Decl> Verifier;
+  // Match the implicit Decl.
+  auto Matcher = classTemplateDecl(has(cxxRecordDecl(has(cxxRecordDecl()))));
+  ASSERT_TRUE(Verifier.match(From, Matcher));
+  EXPECT_TRUE(Verifier.match(To, Matcher));
+}
+
+TEST_P(
+    ASTImporterTestBase,
+    DISABLED_ShouldImportImplicitCXXRecordDeclOfClassTemplateSpecializationDecl) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      template<class T>
+      class Base {};
+      class declToImport : public Base<declToImport> {};
+      )",
+      Lang_CXX, "", Lang_CXX);
+
+  auto hasImplicitClass = has(cxxRecordDecl());
+  auto Pattern = translationUnitDecl(has(classTemplateDecl(
+      hasName("Base"),
+      has(classTemplateSpecializationDecl(hasImplicitClass)))));
+  ASSERT_TRUE(
+      MatchVerifier<Decl>{}.match(From->getTranslationUnitDecl(), Pattern));
+  EXPECT_TRUE(
+      MatchVerifier<Decl>{}.match(To->getTranslationUnitDecl(), Pattern));
+}
+
+TEST_P(ASTImporterTestBase, IDNSOrdinary) {
+  Decl *From, *To;
+  std::tie(From, To) =
+      getImportedDecl("void declToImport() {}", Lang_CXX, "", Lang_CXX);
+
+  MatchVerifier<Decl> Verifier;
+  auto Matcher = functionDecl();
+  ASSERT_TRUE(Verifier.match(From, Matcher));
+  EXPECT_TRUE(Verifier.match(To, Matcher));
+  EXPECT_EQ(From->getIdentifierNamespace(), To->getIdentifierNamespace());
+}
+
+TEST_P(ASTImporterTestBase, DISABLED_IDNSOfNonmemberOperator) {
+  Decl *FromTU = getTuDecl(
+      R"(
+      struct X {};
+      void operator<<(int, X);
+      )",
+      Lang_CXX);
+  Decl *From = LastDeclMatcher<Decl>{}.match(FromTU, functionDecl());
+  const Decl *To = Import(From, Lang_CXX);
+  EXPECT_EQ(From->getIdentifierNamespace(), To->getIdentifierNamespace());
+}
+
+TEST_P(ASTImporterTestBase,
+       ShouldImportMembersOfClassTemplateSpecializationDecl) {
+  Decl *From, *To;
+  std::tie(From, To) = getImportedDecl(
+      R"(
+      template<class T>
+      class Base { int a; };
+      class declToImport : Base<declToImport> {};
+      )",
+      Lang_CXX, "", Lang_CXX);
+
+  auto Pattern = translationUnitDecl(has(classTemplateDecl(
+      hasName("Base"),
+      has(classTemplateSpecializationDecl(has(fieldDecl(hasName("a"))))))));
+  ASSERT_TRUE(
+      MatchVerifier<Decl>{}.match(From->getTranslationUnitDecl(), Pattern));
+  EXPECT_TRUE(
+      MatchVerifier<Decl>{}.match(To->getTranslationUnitDecl(), Pattern));
+}
+
+INSTANTIATE_TEST_CASE_P(
+    ParameterizedTests, ASTImporterTestBase,
+    ::testing::Values(ArgVector(), ArgVector{"-fdelayed-template-parsing"}),);
+
+struct ImportFunctions : ASTImporterTestBase {};
+
+TEST_P(ImportFunctions,
+       PrototypeShouldBeImportedAsAPrototypeWhenThereIsNoDefinition) {
+  Decl *FromTU = getTuDecl("void f();", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *FromD =
+      FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(FromD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(!cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions,
+       PrototypeShouldBeImportedAsDefintionWhenThereIsADefinition) {
+  Decl *FromTU = getTuDecl("void f(); void f() {}", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *FromD = // Prototype
+      FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(FromD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions,
+       DefinitionShouldBeImportedAsDefintionWhenThereIsAPrototype) {
+  Decl *FromTU = getTuDecl("void f(); void f() {}", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *FromD = // Definition
+      LastDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(FromD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, DefinitionShouldBeImportedAsADefinition) {
+  Decl *FromTU = getTuDecl("void f() {}", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *FromD =
+      FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(FromD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, DISABLED_ImportPrototypeOfRecursiveFunction) {
+  Decl *FromTU = getTuDecl("void f(); void f() { f(); }", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *PrototypeFD =
+      FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(PrototypeFD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, ImportDefinitionOfRecursiveFunction) {
+  Decl *FromTU = getTuDecl("void f(); void f() { f(); }", Lang_CXX);
+  auto Pattern = functionDecl(hasName("f"));
+  FunctionDecl *DefinitionFD =
+      LastDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+  Decl *ImportedD = Import(DefinitionFD, Lang_CXX);
+  Decl *ToTU = ImportedD->getTranslationUnitDecl();
+
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, ImportPrototypes) {
+  auto Pattern = functionDecl(hasName("f"));
+
+  Decl *ImportedD;
+  {
+    Decl *FromTU = getTuDecl("void f();", Lang_CXX, "input0.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+    ImportedD = Import(FromD, Lang_CXX);
+  }
+  Decl *ImportedD1;
+  {
+    Decl *FromTU = getTuDecl("void f();", Lang_CXX, "input1.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+    ImportedD1 = Import(FromD, Lang_CXX);
+  }
+
+  Decl *ToTU = ToAST->getASTContext().getTranslationUnitDecl();
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_EQ(ImportedD, ImportedD1);
+  EXPECT_TRUE(!cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, ImportDefinitionThenPrototype) {
+  auto Pattern = functionDecl(hasName("f"));
+
+  Decl *ImportedD;
+  {
+    Decl *FromTU = getTuDecl("void f(){}", Lang_CXX, "input0.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+    ImportedD = Import(FromD, Lang_CXX);
+  }
+  Decl *ImportedD1;
+  {
+    Decl *FromTU = getTuDecl("void f();", Lang_CXX, "input1.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+    ImportedD1 = Import(FromD, Lang_CXX);
+  }
+
+  Decl *ToTU = ToAST->getASTContext().getTranslationUnitDecl();
+  EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
+  EXPECT_EQ(ImportedD, ImportedD1);
+  EXPECT_TRUE(cast<FunctionDecl>(ImportedD)->doesThisDeclarationHaveABody());
+}
+
+TEST_P(ImportFunctions, ImportPrototypeThenDefinition) {
+  auto Pattern = functionDecl(hasName("f"));
+
+  {
+    Decl *FromTU = getTuDecl("void f();", Lang_CXX, "input0.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+    Import(FromD, Lang_CXX);
+  }
+  {
+    Decl *FromTU = getTuDecl("void f(){}", Lang_CXX, "input1.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+    Import(FromD, Lang_CXX);
+  }
+
+  Decl *ToTU = ToAST->getASTContext().getTranslationUnitDecl();
+  ASSERT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 2u);
+  FunctionDecl *ProtoD = FirstDeclMatcher<FunctionDecl>().match(ToTU, Pattern);
+  EXPECT_TRUE(!ProtoD->doesThisDeclarationHaveABody());
+  FunctionDecl *DefinitionD =
+      LastDeclMatcher<FunctionDecl>().match(ToTU, Pattern);
+  EXPECT_TRUE(DefinitionD->doesThisDeclarationHaveABody());
+  EXPECT_EQ(DefinitionD->getPreviousDecl(), ProtoD);
+}
+
+TEST_P(ImportFunctions, DISABLED_ImportPrototypeThenProtoAndDefinition) {
+  auto Pattern = functionDecl(hasName("f"));
+
+  {
+    Decl *FromTU = getTuDecl("void f();", Lang_CXX, "input0.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+
+    Import(FromD, Lang_CXX);
+  }
+  {
+    Decl *FromTU = getTuDecl("void f(); void f(){}", Lang_CXX, "input1.cc");
+    FunctionDecl *FromD =
+        FirstDeclMatcher<FunctionDecl>().match(FromTU, Pattern);
+    Import(FromD, Lang_CXX);
+  }
+
+  Decl *ToTU = ToAST->getASTContext().getTranslationUnitDecl();
+  ASSERT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 2u);
+  FunctionDecl *ProtoD = FirstDeclMatcher<FunctionDecl>().match(ToTU, Pattern);
+  EXPECT_TRUE(!ProtoD->doesThisDeclarationHaveABody());
+  FunctionDecl *DefinitionD =
+      LastDeclMatcher<FunctionDecl>().match(ToTU, Pattern);
+  EXPECT_TRUE(DefinitionD->doesThisDeclarationHaveABody());
+  EXPECT_EQ(DefinitionD->getPreviousDecl(), ProtoD);
+}
+
+TEST_P(ImportFunctions, OverriddenMethodsShouldBeImported) {
+  auto Code =
+      R"(
+      struct B { virtual void f(); };
+      void B::f() {}
+      struct D : B { void f(); };
+      )";
+  auto Pattern =
+      cxxMethodDecl(hasName("f"), hasParent(cxxRecordDecl(hasName("D"))));
+  Decl *FromTU = getTuDecl(Code, Lang_CXX);
+  CXXMethodDecl *Proto =
+      FirstDeclMatcher<CXXMethodDecl>().match(FromTU, Pattern);
+
+  ASSERT_EQ(Proto->size_overridden_methods(), 1u);
+  CXXMethodDecl *To = cast<CXXMethodDecl>(Import(Proto, Lang_CXX));
+  EXPECT_EQ(To->size_overridden_methods(), 1u);
+}
+
+TEST_P(ImportFunctions, VirtualFlagShouldBePreservedWhenImportingPrototype) {
+  auto Code =
+      R"(
+      struct B { virtual void f(); };
+      void B::f() {}
+      )";
+  auto Pattern =
+      cxxMethodDecl(hasName("f"), hasParent(cxxRecordDecl(hasName("B"))));
+  Decl *FromTU = getTuDecl(Code, Lang_CXX);
+  CXXMethodDecl *Proto =
+      FirstDeclMatcher<CXXMethodDecl>().match(FromTU, Pattern);
+  CXXMethodDecl *Def = LastDeclMatcher<CXXMethodDecl>().match(FromTU, Pattern);
+
+  ASSERT_TRUE(Proto->isVirtual());
+  ASSERT_TRUE(Def->isVirtual());
+  CXXMethodDecl *To = cast<CXXMethodDecl>(Import(Proto, Lang_CXX));
+  EXPECT_TRUE(To->isVirtual());
+}
+
+INSTANTIATE_TEST_CASE_P(
+    ParameterizedTests, ImportFunctions,
+    ::testing::Values(ArgVector(), ArgVector{"-fdelayed-template-parsing"}),);
+
+AST_MATCHER_P(TagDecl, hasTypedefForAnonDecl, Matcher<TypedefNameDecl>,
+              InnerMatcher) {
+  if (auto *Typedef = Node.getTypedefNameForAnonDecl())
+    return InnerMatcher.matches(*Typedef, Finder, Builder);
+  return false;
+}
+
+TEST(ImportDecl, ImportEnumSequential) {
+  CodeFiles Samples{{"main.c",
+                     {"void foo();"
+                      "void moo();"
+                      "int main() { foo(); moo(); }",
+                      Lang_C}},
+
+                    {"foo.c",
+                     {"typedef enum { THING_VALUE } thing_t;"
+                      "void conflict(thing_t type);"
+                      "void foo() { (void)THING_VALUE; }"
+                      "void conflict(thing_t type) {}",
+                      Lang_C}},
+
+                    {"moo.c",
+                     {"typedef enum { THING_VALUE } thing_t;"
+                      "void conflict(thing_t type);"
+                      "void moo() { conflict(THING_VALUE); }",
+                      Lang_C}}};
+
+  auto VerificationMatcher =
+      enumDecl(has(enumConstantDecl(hasName("THING_VALUE"))),
+               hasTypedefForAnonDecl(hasName("thing_t")));
+
+  ImportAction ImportFoo{"foo.c", "main.c", functionDecl(hasName("foo"))},
+      ImportMoo{"moo.c", "main.c", functionDecl(hasName("moo"))};
+
+  testImportSequence(
+      Samples, {ImportFoo, ImportMoo}, // "foo", them "moo".
+      // Just check that there is only one enum decl in the result AST.
+      "main.c", enumDecl(), VerificationMatcher);
+
+  // For different import order, result should be the same.
+  testImportSequence(
+      Samples, {ImportMoo, ImportFoo}, // "moo", them "foo".
+      // Check that there is only one enum decl in the result AST.
+      "main.c", enumDecl(), VerificationMatcher);
 }
 
 } // end namespace ast_matchers

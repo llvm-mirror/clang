@@ -64,11 +64,11 @@ public:
 
   llvm::PointerType *getSamplerType(const Type *T);
 
-  // \brief Returnes a value which indicates the size in bytes of the pipe
+  // \brief Returns a value which indicates the size in bytes of the pipe
   // element.
   virtual llvm::Value *getPipeElemSize(const Expr *PipeArg);
 
-  // \brief Returnes a value which indicates the alignment in bytes of the pipe
+  // \brief Returns a value which indicates the alignment in bytes of the pipe
   // element.
   virtual llvm::Value *getPipeElemAlign(const Expr *PipeArg);
 
@@ -87,6 +87,10 @@ public:
   /// \param Block block literal emitted for the block expression.
   void recordBlockInfo(const BlockExpr *E, llvm::Function *InvokeF,
                        llvm::Value *Block);
+
+  /// \return LLVM block invoke function emitted for an expression derived from
+  /// the block expression.
+  llvm::Function *getInvokeFunction(const Expr *E);
 };
 
 }

@@ -151,8 +151,10 @@ def Exceptions : DiagGroup<"exceptions">;
 def GNUEmptyInitializer : DiagGroup<"gnu-empty-initializer">;
 def GNUEmptyStruct : DiagGroup<"gnu-empty-struct">;
 def ExtraTokens : DiagGroup<"extra-tokens">;
+def CXX98CompatExtraSemi : DiagGroup<"c++98-compat-extra-semi">;
 def CXX11ExtraSemi : DiagGroup<"c++11-extra-semi">;
-def ExtraSemi : DiagGroup<"extra-semi", [CXX11ExtraSemi]>;
+def ExtraSemi : DiagGroup<"extra-semi", [CXX98CompatExtraSemi,
+                                         CXX11ExtraSemi]>;
 
 def GNUFlexibleArrayInitializer : DiagGroup<"gnu-flexible-array-initializer">;
 def GNUFlexibleArrayUnionMember : DiagGroup<"gnu-flexible-array-union-member">;
@@ -196,6 +198,7 @@ def CXX98Compat : DiagGroup<"c++98-compat",
 def CXX98CompatPedantic : DiagGroup<"c++98-compat-pedantic",
                                     [CXX98Compat,
                                      CXX98CompatBindToTemporaryCopy,
+                                     CXX98CompatExtraSemi,
                                      CXXPre14CompatPedantic,
                                      CXXPre17CompatPedantic,
                                      CXXPre2aCompatPedantic]>;
@@ -380,7 +383,11 @@ def DeprecatedObjCIsaUsage : DiagGroup<"deprecated-objc-isa-usage">;
 def ExplicitInitializeCall : DiagGroup<"explicit-initialize-call">;
 def Packed : DiagGroup<"packed">;
 def Padded : DiagGroup<"padded">;
+
 def PessimizingMove : DiagGroup<"pessimizing-move">;
+def ReturnStdMoveInCXX11 : DiagGroup<"return-std-move-in-c++11">;
+def ReturnStdMove : DiagGroup<"return-std-move">;
+
 def PointerArith : DiagGroup<"pointer-arith">;
 def PoundWarning : DiagGroup<"#warnings">;
 def PoundPragmaMessage : DiagGroup<"#pragma-messages">,
@@ -397,7 +404,8 @@ def ReturnType : DiagGroup<"return-type", [ReturnTypeCLinkage]>;
 def BindToTemporaryCopy : DiagGroup<"bind-to-temporary-copy",
                                     [CXX98CompatBindToTemporaryCopy]>;
 def SelfAssignmentField : DiagGroup<"self-assign-field">;
-def SelfAssignment : DiagGroup<"self-assign", [SelfAssignmentField]>;
+def SelfAssignmentOverloaded : DiagGroup<"self-assign-overloaded">;
+def SelfAssignment : DiagGroup<"self-assign", [SelfAssignmentOverloaded, SelfAssignmentField]>;
 def SelfMove : DiagGroup<"self-move">;
 def SemiBeforeMethodBody : DiagGroup<"semicolon-before-method-body">;
 def Sentinel : DiagGroup<"sentinel">;
@@ -512,8 +520,13 @@ def UninitializedStaticSelfInit : DiagGroup<"static-self-init">;
 def Uninitialized  : DiagGroup<"uninitialized", [UninitializedSometimes,
                                                  UninitializedStaticSelfInit]>;
 def IgnoredPragmaIntrinsic : DiagGroup<"ignored-pragma-intrinsic">;
+// #pragma optimize is often used to avoid to work around MSVC codegen bugs or
+// to disable inlining. It's not completely clear what alternative to suggest
+// (#pragma clang optimize, noinline) so suggest nothing for now.
+def IgnoredPragmaOptimize : DiagGroup<"ignored-pragma-optimize">;
 def UnknownPragmas : DiagGroup<"unknown-pragmas">;
-def IgnoredPragmas : DiagGroup<"ignored-pragmas", [IgnoredPragmaIntrinsic]>;
+def IgnoredPragmas : DiagGroup<"ignored-pragmas",
+    [IgnoredPragmaIntrinsic, IgnoredPragmaOptimize]>;
 def PragmaClangAttribute : DiagGroup<"pragma-clang-attribute">;
 def PragmaPackSuspiciousInclude : DiagGroup<"pragma-pack-suspicious-include">;
 def PragmaPack : DiagGroup<"pragma-pack", [PragmaPackSuspiciousInclude]>;
@@ -715,7 +728,12 @@ def IntToVoidPointerCast : DiagGroup<"int-to-void-pointer-cast">;
 def IntToPointerCast : DiagGroup<"int-to-pointer-cast",
                                  [IntToVoidPointerCast]>;
 
-def Move : DiagGroup<"move", [PessimizingMove, RedundantMove, SelfMove]>;
+def Move : DiagGroup<"move", [
+    PessimizingMove,
+    RedundantMove,
+    ReturnStdMove,
+    SelfMove
+  ]>;
 
 def Extra : DiagGroup<"extra", [
     MissingFieldInitializers,

@@ -13,11 +13,11 @@
 
 #include "clang/Parse/Parser.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
-#include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -1490,7 +1490,7 @@ Decl *Parser::ParseObjCMethodDecl(SourceLocation mLoc,
       cStyleParamWarned = true;
     }
     DeclSpec DS(AttrFactory);
-    ParseDeclarationSpecifiers(DS);
+    ParseDeclarationSpecifiersOrConceptDefinition(DS);
     // Parse the declarator.
     Declarator ParmDecl(DS, DeclaratorContext::PrototypeContext);
     ParseDeclarator(ParmDecl);
@@ -2541,7 +2541,7 @@ StmtResult Parser::ParseObjCTryStmt(SourceLocation atLoc) {
                                         Scope::AtCatchScope);
         if (Tok.isNot(tok::ellipsis)) {
           DeclSpec DS(AttrFactory);
-          ParseDeclarationSpecifiers(DS);
+          ParseDeclarationSpecifiersOrConceptDefinition(DS);
           Declarator ParmDecl(DS, DeclaratorContext::ObjCCatchContext);
           ParseDeclarator(ParmDecl);
 
@@ -2680,7 +2680,7 @@ void Parser::StashAwayMethodOrFunctionBodyTokens(Decl *MDecl) {
 Decl *Parser::ParseObjCMethodDefinition() {
   Decl *MDecl = ParseObjCMethodPrototype();
 
-  PrettyDeclStackTraceEntry CrashInfo(Actions, MDecl, Tok.getLocation(),
+  PrettyDeclStackTraceEntry CrashInfo(Actions.Context, MDecl, Tok.getLocation(),
                                       "parsing Objective-C method");
 
   // parse optional ';'

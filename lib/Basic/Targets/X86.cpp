@@ -153,7 +153,10 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "mmx", true);
     break;
 
-  case CK_Icelake:
+  case CK_IcelakeServer:
+    setFeatureEnabledImpl(Features, "wbnoinvd", true);
+    LLVM_FALLTHROUGH;
+  case CK_IcelakeClient:
     setFeatureEnabledImpl(Features, "vaes", true);
     setFeatureEnabledImpl(Features, "gfni", true);
     setFeatureEnabledImpl(Features, "vpclmulqdq", true);
@@ -182,7 +185,8 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "xsavec", true);
     setFeatureEnabledImpl(Features, "xsaves", true);
     setFeatureEnabledImpl(Features, "mpx", true);
-    setFeatureEnabledImpl(Features, "sgx", true);
+    if (Kind != CK_SkylakeServer) // SKX inherits all SKL features, except SGX
+      setFeatureEnabledImpl(Features, "sgx", true);
     setFeatureEnabledImpl(Features, "clflushopt", true);
     setFeatureEnabledImpl(Features, "rtm", true);
     LLVM_FALLTHROUGH;
@@ -240,6 +244,15 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "fxsr", true);
     break;
 
+  case CK_Tremont:
+    setFeatureEnabledImpl(Features, "cldemote", true);
+    setFeatureEnabledImpl(Features, "gfni", true);
+    setFeatureEnabledImpl(Features, "waitpkg", true);
+    LLVM_FALLTHROUGH;
+  case CK_GoldmontPlus:
+    setFeatureEnabledImpl(Features, "rdpid", true);
+    setFeatureEnabledImpl(Features, "sgx", true);
+    LLVM_FALLTHROUGH;
   case CK_Goldmont:
     setFeatureEnabledImpl(Features, "sha", true);
     setFeatureEnabledImpl(Features, "rdseed", true);
@@ -790,10 +803,14 @@ bool X86TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasCLFLUSHOPT = true;
     } else if (Feature == "+clwb") {
       HasCLWB = true;
+    } else if (Feature == "+wbnoinvd") {
+      HasWBNOINVD = true;
     } else if (Feature == "+prefetchwt1") {
       HasPREFETCHWT1 = true;
     } else if (Feature == "+clzero") {
       HasCLZERO = true;
+    } else if (Feature == "+cldemote") {
+      HasCLDEMOTE = true;
     } else if (Feature == "+rdpid") {
       HasRDPID = true;
     } else if (Feature == "+retpoline") {
@@ -802,6 +819,8 @@ bool X86TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasRetpolineExternalThunk = true;
     } else if (Feature == "+sahf") {
       HasLAHFSAHF = true;
+    } else if (Feature == "+waitpkg") {
+      HasWAITPKG = true;
     }
 
     X86SSEEnum Level = llvm::StringSwitch<X86SSEEnum>(Feature)
@@ -922,6 +941,12 @@ void X86TargetInfo::getTargetDefines(const LangOptions &Opts,
   case CK_Goldmont:
     defineCPUMacros(Builder, "goldmont");
     break;
+  case CK_GoldmontPlus:
+    defineCPUMacros(Builder, "goldmont_plus");
+    break;
+  case CK_Tremont:
+    defineCPUMacros(Builder, "tremont");
+    break;
   case CK_Nehalem:
   case CK_Westmere:
   case CK_SandyBridge:
@@ -931,7 +956,8 @@ void X86TargetInfo::getTargetDefines(const LangOptions &Opts,
   case CK_SkylakeClient:
   case CK_SkylakeServer:
   case CK_Cannonlake:
-  case CK_Icelake:
+  case CK_IcelakeClient:
+  case CK_IcelakeServer:
     // FIXME: Historically, we defined this legacy name, it would be nice to
     // remove it at some point. We've never exposed fine-grained names for
     // recent primary x86 CPUs, and we should keep it that way.
@@ -1131,6 +1157,8 @@ void X86TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__CLFLUSHOPT__");
   if (HasCLWB)
     Builder.defineMacro("__CLWB__");
+  if (HasWBNOINVD)
+    Builder.defineMacro("__WBNOINVD__");
   if (HasMPX)
     Builder.defineMacro("__MPX__");
   if (HasSHSTK)
@@ -1145,6 +1173,10 @@ void X86TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__CLZERO__");
   if (HasRDPID)
     Builder.defineMacro("__RDPID__");
+  if (HasCLDEMOTE)
+    Builder.defineMacro("__CLDEMOTE__");
+  if (HasWAITPKG)
+    Builder.defineMacro("__WAITPKG__");
 
   // Each case falls through to the previous one here.
   switch (SSELevel) {
@@ -1254,6 +1286,7 @@ bool X86TargetInfo::isValidFeatureName(StringRef Name) const {
       .Case("avx512ifma", true)
       .Case("bmi", true)
       .Case("bmi2", true)
+      .Case("cldemote", true)
       .Case("clflushopt", true)
       .Case("clwb", true)
       .Case("clzero", true)
@@ -1294,6 +1327,8 @@ bool X86TargetInfo::isValidFeatureName(StringRef Name) const {
       .Case("tbm", true)
       .Case("vaes", true)
       .Case("vpclmulqdq", true)
+      .Case("wbnoinvd", true)
+      .Case("waitpkg", true)
       .Case("x87", true)
       .Case("xop", true)
       .Case("xsave", true)
@@ -1324,6 +1359,7 @@ bool X86TargetInfo::hasFeature(StringRef Feature) const {
       .Case("avx512ifma", HasAVX512IFMA)
       .Case("bmi", HasBMI)
       .Case("bmi2", HasBMI2)
+      .Case("cldemote", HasCLDEMOTE)
       .Case("clflushopt", HasCLFLUSHOPT)
       .Case("clwb", HasCLWB)
       .Case("clzero", HasCLZERO)
@@ -1368,6 +1404,8 @@ bool X86TargetInfo::hasFeature(StringRef Feature) const {
       .Case("tbm", HasTBM)
       .Case("vaes", HasVAES)
       .Case("vpclmulqdq", HasVPCLMULQDQ)
+      .Case("wbnoinvd", HasWBNOINVD)
+      .Case("waitpkg", HasWAITPKG)
       .Case("x86", true)
       .Case("x86_32", getTriple().getArch() == llvm::Triple::x86)
       .Case("x86_64", getTriple().getArch() == llvm::Triple::x86_64)
@@ -1533,7 +1571,7 @@ bool X86TargetInfo::validateAsmConstraint(
   case 'y': // Any MMX register.
   case 'v': // Any {X,Y,Z}MM register (Arch & context dependent)
   case 'x': // Any SSE register.
-  case 'k': // Any AVX512 mask register (same as Yk, additionaly allows k0
+  case 'k': // Any AVX512 mask register (same as Yk, additionally allows k0
             // for intermideate k reg operations).
   case 'Q': // Any register accessible as [r]h: a, b, c, and d.
   case 'R': // "Legacy" registers: ax, bx, cx, dx, di, si, sp, bp.

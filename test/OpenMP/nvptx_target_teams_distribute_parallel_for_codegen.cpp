@@ -9,10 +9,11 @@
 #define HEADER
 
 // Check that the execution mode of all 2 target regions on the gpu is set to SPMD Mode.
-// CHECK-DAG: {{@__omp_offloading_.+l30}}_exec_mode = weak constant i8 0
-// CHECK-DAG: {{@__omp_offloading_.+l36}}_exec_mode = weak constant i8 0
-// CHECK-DAG: {{@__omp_offloading_.+l41}}_exec_mode = weak constant i8 0
-// CHECK-DAG: {{@__omp_offloading_.+l46}}_exec_mode = weak constant i8 0
+// CHECK-DAG: {{@__omp_offloading_.+l32}}_exec_mode = weak constant i8 0
+// CHECK-DAG: {{@__omp_offloading_.+l38}}_exec_mode = weak constant i8 0
+// CHECK-DAG: {{@__omp_offloading_.+l43}}_exec_mode = weak constant i8 0
+// CHECK-DAG: {{@__omp_offloading_.+l48}}_exec_mode = weak constant i8 0
+// CHECK-DAG: {{@__omp_offloading_.+l56}}_exec_mode = weak constant i8 0
 
 #define N 1000
 #define M 10
@@ -22,10 +23,11 @@ tx ftemplate(int n) {
   tx a[N];
   short aa[N];
   tx b[10];
-  tx c[M][M];  
+  tx c[M][M];
   tx f = n;
   tx l;
   int k;
+  tx *v;
 
 #pragma omp target teams distribute parallel for lastprivate(l) dist_schedule(static,128) schedule(static,32)
   for(int i = 0; i < n; i++) {
@@ -47,10 +49,13 @@ tx ftemplate(int n) {
   for(int i = 0; i < M; i++) {
     for(int j = 0; j < M; j++) {
       k = M;
-      c[i][j] = i+j*f+k;      
+      c[i][j] = i + j * f + k;
     }
   }
 
+#pragma omp target teams distribute parallel for map(a, v[:N])
+  for(int i = 0; i < n; i++)
+    a[i] = v[i];
   return a[0];
 }
 
@@ -119,5 +124,9 @@ int bar(int n){
 // CHECK: call void @__kmpc_for_static_init_4({{.+}}, {{.+}}, {{.+}} 34,
 // CHECK: call void @__kmpc_for_static_fini(
 // CHECK: ret void
+
+// CHECK: define void @__omp_offloading_{{.*}}_l56(i[[SZ:64|32]] %{{[^,]+}}, [1000 x i32]* dereferenceable{{.*}}, i32* %{{[^)]+}})
+// CHECK: call void [[OUTLINED:@__omp_outlined.*]](i32* %{{.+}}, i32* %{{.+}}, i[[SZ]] %{{.*}}, i[[SZ]] %{{.*}}, i[[SZ]] %{{.*}}, [1000 x i32]* %{{.*}}, i32* %{{.*}})
+// CHECK: define internal void [[OUTLINED]](i32* noalias %{{.*}}, i32* noalias %{{.*}} i[[SZ]] %{{.+}}, i[[SZ]] %{{.+}}, i[[SZ]] %{{.+}}, [1000 x i32]* dereferenceable{{.*}}, i32* %{{.*}})
 
 #endif

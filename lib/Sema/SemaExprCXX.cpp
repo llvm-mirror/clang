@@ -728,7 +728,7 @@ ExprResult Sema::BuildCXXThrow(SourceLocation OpLoc, Expr *Ex,
     //       exception object
     const VarDecl *NRVOVariable = nullptr;
     if (IsThrownVarInScope)
-      NRVOVariable = getCopyElisionCandidate(QualType(), Ex, false);
+      NRVOVariable = getCopyElisionCandidate(QualType(), Ex, CES_Strict);
 
     InitializedEntity Entity = InitializedEntity::InitializeException(
         OpLoc, ExceptionObjectTy,
@@ -1114,8 +1114,9 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
 
   assert((!ByCopy || Explicit) && "cannot implicitly capture *this by value");
 
-  const unsigned MaxFunctionScopesIndex = FunctionScopeIndexToStopAt ?
-    *FunctionScopeIndexToStopAt : FunctionScopes.size() - 1;
+  const int MaxFunctionScopesIndex = FunctionScopeIndexToStopAt
+                                         ? *FunctionScopeIndexToStopAt
+                                         : FunctionScopes.size() - 1;
 
   // Check that we can capture the *enclosing object* (referred to by '*this')
   // by the capturing-entity/closure (lambda/block/etc) at
@@ -1141,7 +1142,7 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
 
 
   unsigned NumCapturingClosures = 0;
-  for (unsigned idx = MaxFunctionScopesIndex; idx != 0; idx--) {
+  for (int idx = MaxFunctionScopesIndex; idx >= 0; idx--) {
     if (CapturingScopeInfo *CSI =
             dyn_cast<CapturingScopeInfo>(FunctionScopes[idx])) {
       if (CSI->CXXThisCaptureIndex != 0) {
@@ -1196,8 +1197,8 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
   // FIXME: We need to delay this marking in PotentiallyPotentiallyEvaluated
   // contexts.
   QualType ThisTy = getCurrentThisType();
-  for (unsigned idx = MaxFunctionScopesIndex; NumCapturingClosures;
-      --idx, --NumCapturingClosures) {
+  for (int idx = MaxFunctionScopesIndex; NumCapturingClosures;
+       --idx, --NumCapturingClosures) {
     CapturingScopeInfo *CSI = cast<CapturingScopeInfo>(FunctionScopes[idx]);
     Expr *ThisExpr = nullptr;
 
@@ -1442,7 +1443,7 @@ namespace {
           CUDAPref = S.IdentifyCUDAPreference(Caller, FD);
     }
 
-    operator bool() const { return FD; }
+    explicit operator bool() const { return FD; }
 
     bool isBetterThan(const UsualDeallocFnInfo &Other, bool WantSize,
                       bool WantAlign) const {
@@ -1974,11 +1975,12 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
   bool PassAlignment = getLangOpts().AlignedAllocation &&
                        Alignment > NewAlignment;
 
+  AllocationFunctionScope Scope = UseGlobal ? AFS_Global : AFS_Both;
   if (!AllocType->isDependentType() &&
       !Expr::hasAnyTypeDependentArguments(PlacementArgs) &&
       FindAllocationFunctions(StartLoc,
                               SourceRange(PlacementLParen, PlacementRParen),
-                              UseGlobal, AllocType, ArraySize, PassAlignment,
+                              Scope, Scope, AllocType, ArraySize, PassAlignment,
                               PlacementArgs, OperatorNew, OperatorDelete))
     return ExprError();
 
@@ -2270,20 +2272,19 @@ static bool resolveAllocationOverload(
   llvm_unreachable("Unreachable, bad result from BestViableFunction");
 }
 
-
-/// FindAllocationFunctions - Finds the overloads of operator new and delete
-/// that are appropriate for the allocation.
 bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
-                                   bool UseGlobal, QualType AllocType,
-                                   bool IsArray, bool &PassAlignment,
-                                   MultiExprArg PlaceArgs,
+                                   AllocationFunctionScope NewScope,
+                                   AllocationFunctionScope DeleteScope,
+                                   QualType AllocType, bool IsArray,
+                                   bool &PassAlignment, MultiExprArg PlaceArgs,
                                    FunctionDecl *&OperatorNew,
                                    FunctionDecl *&OperatorDelete,
                                    bool Diagnose) {
   // --- Choosing an allocation function ---
   // C++ 5.3.4p8 - 14 & 18
-  // 1) If UseGlobal is true, only look in the global scope. Else, also look
-  //   in the scope of the allocated class.
+  // 1) If looking in AFS_Global scope for allocation functions, only look in
+  //    the global scope. Else, if AFS_Class, only look in the scope of the
+  //    allocated class. If AFS_Both, look in both.
   // 2) If an array size is given, look for operator new[], else look for
   //   operator new.
   // 3) The first argument is always size_t. Append the arguments from the
@@ -2333,7 +2334,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
     //   function's name is looked up in the global scope. Otherwise, if the
     //   allocated type is a class type T or array thereof, the allocation
     //   function's name is looked up in the scope of T.
-    if (AllocElemType->isRecordType() && !UseGlobal)
+    if (AllocElemType->isRecordType() && NewScope != AFS_Global)
       LookupQualifiedName(R, AllocElemType->getAsCXXRecordDecl());
 
     // We can see ambiguity here if the allocation function is found in
@@ -2344,8 +2345,12 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
     //   If this lookup fails to find the name, or if the allocated type is not
     //   a class type, the allocation function's name is looked up in the
     //   global scope.
-    if (R.empty())
+    if (R.empty()) {
+      if (NewScope == AFS_Class)
+        return true;
+
       LookupQualifiedName(R, Context.getTranslationUnitDecl());
+    }
 
     assert(!R.empty() && "implicitly declared allocation functions not found");
     assert(!R.isAmbiguous() && "global allocation functions are ambiguous");
@@ -2382,7 +2387,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
   //   the allocated type is not a class type or array thereof, the
   //   deallocation function's name is looked up in the global scope.
   LookupResult FoundDelete(*this, DeleteName, StartLoc, LookupOrdinaryName);
-  if (AllocElemType->isRecordType() && !UseGlobal) {
+  if (AllocElemType->isRecordType() && DeleteScope != AFS_Global) {
     CXXRecordDecl *RD
       = cast<CXXRecordDecl>(AllocElemType->getAs<RecordType>()->getDecl());
     LookupQualifiedName(FoundDelete, RD);
@@ -2392,6 +2397,9 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
 
   bool FoundGlobalDelete = FoundDelete.empty();
   if (FoundDelete.empty()) {
+    if (DeleteScope == AFS_Class)
+      return true;
+
     DeclareGlobalNewDelete();
     LookupQualifiedName(FoundDelete, Context.getTranslationUnitDecl());
   }
@@ -3340,6 +3348,128 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
       UsualArrayDeleteWantsSize, OperatorDelete, Ex.get(), StartLoc);
   AnalyzeDeleteExprMismatch(Result);
   return Result;
+}
+
+static bool resolveBuiltinNewDeleteOverload(Sema &S, CallExpr *TheCall,
+                                            bool IsDelete,
+                                            FunctionDecl *&Operator) {
+
+  DeclarationName NewName = S.Context.DeclarationNames.getCXXOperatorName(
+      IsDelete ? OO_Delete : OO_New);
+
+  LookupResult R(S, NewName, TheCall->getLocStart(), Sema::LookupOrdinaryName);
+  S.LookupQualifiedName(R, S.Context.getTranslationUnitDecl());
+  assert(!R.empty() && "implicitly declared allocation functions not found");
+  assert(!R.isAmbiguous() && "global allocation functions are ambiguous");
+
+  // We do our own custom access checks below.
+  R.suppressDiagnostics();
+
+  SmallVector<Expr *, 8> Args(TheCall->arg_begin(), TheCall->arg_end());
+  OverloadCandidateSet Candidates(R.getNameLoc(),
+                                  OverloadCandidateSet::CSK_Normal);
+  for (LookupResult::iterator FnOvl = R.begin(), FnOvlEnd = R.end();
+       FnOvl != FnOvlEnd; ++FnOvl) {
+    // Even member operator new/delete are implicitly treated as
+    // static, so don't use AddMemberCandidate.
+    NamedDecl *D = (*FnOvl)->getUnderlyingDecl();
+
+    if (FunctionTemplateDecl *FnTemplate = dyn_cast<FunctionTemplateDecl>(D)) {
+      S.AddTemplateOverloadCandidate(FnTemplate, FnOvl.getPair(),
+                                     /*ExplicitTemplateArgs=*/nullptr, Args,
+                                     Candidates,
+                                     /*SuppressUserConversions=*/false);
+      continue;
+    }
+
+    FunctionDecl *Fn = cast<FunctionDecl>(D);
+    S.AddOverloadCandidate(Fn, FnOvl.getPair(), Args, Candidates,
+                           /*SuppressUserConversions=*/false);
+  }
+
+  SourceRange Range = TheCall->getSourceRange();
+
+  // Do the resolution.
+  OverloadCandidateSet::iterator Best;
+  switch (Candidates.BestViableFunction(S, R.getNameLoc(), Best)) {
+  case OR_Success: {
+    // Got one!
+    FunctionDecl *FnDecl = Best->Function;
+    assert(R.getNamingClass() == nullptr &&
+           "class members should not be considered");
+
+    if (!FnDecl->isReplaceableGlobalAllocationFunction()) {
+      S.Diag(R.getNameLoc(), diag::err_builtin_operator_new_delete_not_usual)
+          << (IsDelete ? 1 : 0) << Range;
+      S.Diag(FnDecl->getLocation(), diag::note_non_usual_function_declared_here)
+          << R.getLookupName() << FnDecl->getSourceRange();
+      return true;
+    }
+
+    Operator = FnDecl;
+    return false;
+  }
+
+  case OR_No_Viable_Function:
+    S.Diag(R.getNameLoc(), diag::err_ovl_no_viable_function_in_call)
+        << R.getLookupName() << Range;
+    Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
+    return true;
+
+  case OR_Ambiguous:
+    S.Diag(R.getNameLoc(), diag::err_ovl_ambiguous_call)
+        << R.getLookupName() << Range;
+    Candidates.NoteCandidates(S, OCD_ViableCandidates, Args);
+    return true;
+
+  case OR_Deleted: {
+    S.Diag(R.getNameLoc(), diag::err_ovl_deleted_call)
+        << Best->Function->isDeleted() << R.getLookupName()
+        << S.getDeletedOrUnavailableSuffix(Best->Function) << Range;
+    Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
+    return true;
+  }
+  }
+  llvm_unreachable("Unreachable, bad result from BestViableFunction");
+}
+
+ExprResult
+Sema::SemaBuiltinOperatorNewDeleteOverloaded(ExprResult TheCallResult,
+                                             bool IsDelete) {
+  CallExpr *TheCall = cast<CallExpr>(TheCallResult.get());
+  if (!getLangOpts().CPlusPlus) {
+    Diag(TheCall->getExprLoc(), diag::err_builtin_requires_language)
+        << (IsDelete ? "__builtin_operator_delete" : "__builtin_operator_new")
+        << "C++";
+    return ExprError();
+  }
+  // CodeGen assumes it can find the global new and delete to call,
+  // so ensure that they are declared.
+  DeclareGlobalNewDelete();
+
+  FunctionDecl *OperatorNewOrDelete = nullptr;
+  if (resolveBuiltinNewDeleteOverload(*this, TheCall, IsDelete,
+                                      OperatorNewOrDelete))
+    return ExprError();
+  assert(OperatorNewOrDelete && "should be found");
+
+  TheCall->setType(OperatorNewOrDelete->getReturnType());
+  for (unsigned i = 0; i != TheCall->getNumArgs(); ++i) {
+    QualType ParamTy = OperatorNewOrDelete->getParamDecl(i)->getType();
+    InitializedEntity Entity =
+        InitializedEntity::InitializeParameter(Context, ParamTy, false);
+    ExprResult Arg = PerformCopyInitialization(
+        Entity, TheCall->getArg(i)->getLocStart(), TheCall->getArg(i));
+    if (Arg.isInvalid())
+      return ExprError();
+    TheCall->setArg(i, Arg.get());
+  }
+  auto Callee = dyn_cast<ImplicitCastExpr>(TheCall->getCallee());
+  assert(Callee && Callee->getCastKind() == CK_BuiltinFnToFnPtr &&
+         "Callee expected to be implicit cast to a builtin function pointer");
+  Callee->setType(OperatorNewOrDelete->getType());
+
+  return TheCallResult;
 }
 
 void Sema::CheckVirtualDtorCall(CXXDestructorDecl *dtor, SourceLocation Loc,
@@ -5324,7 +5454,7 @@ static bool TryClassUnification(Sema &Self, Expr *From, Expr *To,
   //      constraint that in the conversion the reference must bind directly to
   //      an lvalue.
   //   -- If E2 is an xvalue: E1 can be converted to match E2 if E1 can be
-  //      implicitly conveted to the type "rvalue reference to R2", subject to
+  //      implicitly converted to the type "rvalue reference to R2", subject to
   //      the constraint that the reference must bind directly.
   if (To->isLValue() || To->isXValue()) {
     QualType T = To->isLValue() ? Self.Context.getLValueReferenceType(ToType)
@@ -7176,9 +7306,6 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
 
   const bool IsFullExprInstantiationDependent = FE->isInstantiationDependent();
 
-  ArrayRef<const FunctionScopeInfo *> FunctionScopesArrayRef(
-      S.FunctionScopes.data(), S.FunctionScopes.size());
-
   // All the potentially captureable variables in the current nested
   // lambda (within a generic outer lambda), must be captured by an
   // outer lambda that is enclosed within a non-dependent context.
@@ -7207,7 +7334,7 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
     // capture the variable in that lambda (and all its enclosing lambdas).
     if (const Optional<unsigned> Index =
             getStackIndexOfNearestEnclosingCaptureCapableLambda(
-                FunctionScopesArrayRef, Var, S)) {
+                S.FunctionScopes, Var, S)) {
       const unsigned FunctionScopeIndexOfCapturableLambda = Index.getValue();
       MarkVarDeclODRUsed(Var, VarExpr->getExprLoc(), S,
                          &FunctionScopeIndexOfCapturableLambda);
@@ -7243,7 +7370,7 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
     // 'this' in that lambda (and all its enclosing lambdas).
     if (const Optional<unsigned> Index =
             getStackIndexOfNearestEnclosingCaptureCapableLambda(
-                FunctionScopesArrayRef, /*0 is 'this'*/ nullptr, S)) {
+                S.FunctionScopes, /*0 is 'this'*/ nullptr, S)) {
       const unsigned FunctionScopeIndexOfCapturableLambda = Index.getValue();
       S.CheckCXXThisCapture(CurrentLSI->PotentialThisCaptureLocation,
                             /*Explicit*/ false, /*BuildAndDiagnose*/ true,

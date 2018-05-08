@@ -245,7 +245,7 @@ def _SLASH_Guard : CLJoined<"guard:">,
 def _SLASH_GX : CLFlag<"GX">,
   HelpText<"Enable exception handling">;
 def _SLASH_GX_ : CLFlag<"GX-">,
-  HelpText<"Enable exception handling">;
+  HelpText<"Disable exception handling">;
 def _SLASH_imsvc : CLJoinedOrSeparate<"imsvc">,
   HelpText<"Add directory to system include search path, as if part of %INCLUDE%">,
   MetaVarName<"<dir>">;
@@ -338,12 +338,13 @@ def _SLASH_sdl_ : CLIgnoredFlag<"sdl-">;
 def _SLASH_utf8 : CLIgnoredFlag<"utf-8">,
   HelpText<"Set source and runtime encoding to UTF-8 (default)">;
 def _SLASH_w : CLIgnoredJoined<"w">;
+def _SLASH_Zc___cplusplus : CLIgnoredFlag<"Zc:__cplusplus">;
 def _SLASH_Zc_auto : CLIgnoredFlag<"Zc:auto">;
 def _SLASH_Zc_forScope : CLIgnoredFlag<"Zc:forScope">;
 def _SLASH_Zc_inline : CLIgnoredFlag<"Zc:inline">;
 def _SLASH_Zc_rvalueCast : CLIgnoredFlag<"Zc:rvalueCast">;
-def _SLASH_Zc_wchar_t : CLIgnoredFlag<"Zc:wchar_t">;
 def _SLASH_Zc_ternary : CLIgnoredFlag<"Zc:ternary">;
+def _SLASH_Zc_wchar_t : CLIgnoredFlag<"Zc:wchar_t">;
 def _SLASH_Zm : CLIgnoredJoined<"Zm">;
 def _SLASH_Zo : CLIgnoredFlag<"Zo">;
 def _SLASH_Zo_ : CLIgnoredFlag<"Zo-">;

@@ -187,7 +187,7 @@ namespace {
     }
 
     void done() {
-      std::sort(list.begin(), list.end(), UnqualUsingEntry::Comparator());
+      llvm::sort(list.begin(), list.end(), UnqualUsingEntry::Comparator());
     }
 
     typedef ListTy::const_iterator const_iterator;
@@ -4529,7 +4529,8 @@ static void AddKeywordsToConsumer(Sema &SemaRef,
       if (S && S->getContinueParent())
         Consumer.addKeywordResult("continue");
 
-      if (!SemaRef.getCurFunction()->SwitchStack.empty()) {
+      if (SemaRef.getCurFunction() &&
+          !SemaRef.getCurFunction()->SwitchStack.empty()) {
         Consumer.addKeywordResult("case");
         Consumer.addKeywordResult("default");
       }

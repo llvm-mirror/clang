@@ -275,8 +275,6 @@ def split_stacks : Flag<["-"], "split-stacks">,
   HelpText<"Try to use a split stack if possible.">;
 def mno_zero_initialized_in_bss : Flag<["-"], "mno-zero-initialized-in-bss">,
   HelpText<"Do not put zero initialized data in the BSS">;
-def backend_option : Separate<["-"], "backend-option">,
-  HelpText<"Additional arguments to forward to LLVM backend (during code gen)">;
 def mregparm : Separate<["-"], "mregparm">,
   HelpText<"Limit the number of registers available for integer arguments">;
 def munwind_tables : Flag<["-"], "munwind-tables">,
@@ -647,6 +645,8 @@ def disable_objc_default_synthesize_properties : Flag<["-"], "disable-objc-defau
   HelpText<"disable the default synthesis of Objective-C properties">;
 def fencode_extended_block_signature : Flag<["-"], "fencode-extended-block-signature">,
   HelpText<"enable extended encoding of block type signature">;
+def function_alignment : Separate<["-"], "function-alignment">,
+    HelpText<"default alignment for functions">;
 def pic_level : Separate<["-"], "pic-level">,
   HelpText<"Value for __PIC__">;
 def pic_is_pie : Flag<["-"], "pic-is-pie">,

@@ -511,7 +511,7 @@ namespace clang {
 namespace format {
 
 const std::error_category &getParseCategory() {
-  static ParseErrorCategory C;
+  static const ParseErrorCategory C{};
   return C;
 }
 std::error_code make_error_code(ParseError e) {
@@ -718,20 +718,39 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
   GoogleStyle.ObjCSpaceAfterProperty = false;
   GoogleStyle.ObjCSpaceBeforeProtocolList = true;
   GoogleStyle.PointerAlignment = FormatStyle::PAS_Left;
-  GoogleStyle.RawStringFormats = {{
-      FormatStyle::LK_TextProto,
-      /*Delimiters=*/
+  GoogleStyle.RawStringFormats = {
       {
-          "pb",
-          "PB",
-          "proto",
-          "PROTO",
+          FormatStyle::LK_Cpp,
+          /*Delimiters=*/
+          {
+              "cc",
+              "CC",
+              "cpp",
+              "Cpp",
+              "CPP",
+              "c++",
+              "C++",
+          },
+          /*EnclosingFunctionNames=*/
+          {},
+          /*CanonicalDelimiter=*/"",
+          /*BasedOnStyle=*/"google",
       },
-      /*EnclosingFunctionNames=*/
-      {},
-      /*CanonicalDelimiter=*/"",
-      /*BasedOnStyle=*/"google",
-  }};
+      {
+          FormatStyle::LK_TextProto,
+          /*Delimiters=*/
+          {
+              "pb",
+              "PB",
+              "proto",
+              "PROTO",
+          },
+          /*EnclosingFunctionNames=*/
+          {},
+          /*CanonicalDelimiter=*/"",
+          /*BasedOnStyle=*/"google",
+      },
+  };
   GoogleStyle.SpacesBeforeTrailingComments = 2;
   GoogleStyle.Standard = FormatStyle::LS_Auto;
 
@@ -766,6 +785,7 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.JavaScriptWrapImports = false;
   } else if (Language == FormatStyle::LK_Proto) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_None;
+    GoogleStyle.AlwaysBreakBeforeMultilineStrings = false;
     GoogleStyle.SpacesInContainerLiterals = false;
     GoogleStyle.Cpp11BracedListStyle = false;
     // This affects protocol buffer options specifications and text protos.
@@ -1005,8 +1025,7 @@ public:
   analyze(TokenAnnotator &Annotator,
           SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
           FormatTokenLexer &Tokens) override {
-    AffectedRangeMgr.computeAffectedLines(AnnotatedLines.begin(),
-                                          AnnotatedLines.end());
+    AffectedRangeMgr.computeAffectedLines(AnnotatedLines);
     tooling::Replacements Result;
     requoteJSStringLiteral(AnnotatedLines, Result);
     return {Result, 0};
@@ -1096,8 +1115,7 @@ public:
           FormatTokenLexer &Tokens) override {
     tooling::Replacements Result;
     deriveLocalStyle(AnnotatedLines);
-    AffectedRangeMgr.computeAffectedLines(AnnotatedLines.begin(),
-                                          AnnotatedLines.end());
+    AffectedRangeMgr.computeAffectedLines(AnnotatedLines);
     for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
       Annotator.calculateFormattingInformation(*AnnotatedLines[i]);
     }
@@ -1221,8 +1239,7 @@ public:
     // To determine if some redundant code is actually introduced by
     // replacements(e.g. deletions), we need to come up with a more
     // sophisticated way of computing affected ranges.
-    AffectedRangeMgr.computeAffectedLines(AnnotatedLines.begin(),
-                                          AnnotatedLines.end());
+    AffectedRangeMgr.computeAffectedLines(AnnotatedLines);
 
     checkEmptyNamespace(AnnotatedLines);
 
@@ -1448,9 +1465,23 @@ private:
     // Keep this array sorted, since we are binary searching over it.
     static constexpr llvm::StringLiteral FoundationIdentifiers[] = {
         "CGFloat",
+        "CGPoint",
+        "CGPointMake",
+        "CGPointZero",
+        "CGRect",
+        "CGRectEdge",
+        "CGRectInfinite",
+        "CGRectMake",
+        "CGRectNull",
+        "CGRectZero",
+        "CGSize",
+        "CGSizeMake",
+        "CGVector",
+        "CGVectorMake",
         "NSAffineTransform",
         "NSArray",
         "NSAttributedString",
+        "NSBlockOperation",
         "NSBundle",
         "NSCache",
         "NSCalendar",
@@ -1466,6 +1497,7 @@ private:
         "NSIndexPath",
         "NSIndexSet",
         "NSInteger",
+        "NSInvocationOperation",
         "NSLocale",
         "NSMapTable",
         "NSMutableArray",
@@ -1480,9 +1512,13 @@ private:
         "NSNumber",
         "NSNumberFormatter",
         "NSObject",
+        "NSOperation",
+        "NSOperationQueue",
+        "NSOperationQueuePriority",
         "NSOrderedSet",
         "NSPoint",
         "NSPointerArray",
+        "NSQualityOfService",
         "NSRange",
         "NSRect",
         "NSRegularExpression",
@@ -1496,16 +1532,15 @@ private:
         "NSURLQueryItem",
         "NSUUID",
         "NSValue",
+        "UIImage",
+        "UIView",
     };
 
-    for (auto &Line : AnnotatedLines) {
-      for (FormatToken *FormatTok = Line->First; FormatTok;
+    for (auto Line : AnnotatedLines) {
+      for (const FormatToken *FormatTok = Line->First; FormatTok;
            FormatTok = FormatTok->Next) {
         if ((FormatTok->Previous && FormatTok->Previous->is(tok::at) &&
-             (FormatTok->isObjCAtKeyword(tok::objc_interface) ||
-              FormatTok->isObjCAtKeyword(tok::objc_implementation) ||
-              FormatTok->isObjCAtKeyword(tok::objc_protocol) ||
-              FormatTok->isObjCAtKeyword(tok::objc_end) ||
+             (FormatTok->Tok.getObjCKeywordID() != tok::objc_not_keyword ||
               FormatTok->isOneOf(tok::numeric_constant, tok::l_square,
                                  tok::l_brace))) ||
             (FormatTok->Tok.isAnyIdentifier() &&
@@ -1519,6 +1554,8 @@ private:
                                TT_ObjCMethodSpecifier, TT_ObjCProperty)) {
           return true;
         }
+        if (guessIsObjC(Line->Children, Keywords))
+          return true;
       }
     }
     return false;

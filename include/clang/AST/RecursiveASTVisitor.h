@@ -146,7 +146,7 @@ namespace clang {
 /// from which they were produced.
 ///
 /// By default, this visitor preorder traverses the AST. If postorder traversal
-/// is needed, the \c shouldTraversePostOrder method needs to be overriden
+/// is needed, the \c shouldTraversePostOrder method needs to be overridden
 /// to return \c true.
 template <typename Derived> class RecursiveASTVisitor {
 public:
@@ -1721,6 +1721,13 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateInstantiations(
 DEF_TRAVERSE_TMPL_DECL(Class)
 DEF_TRAVERSE_TMPL_DECL(Var)
 DEF_TRAVERSE_TMPL_DECL(Function)
+
+DEF_TRAVERSE_DECL(ConceptDecl, {
+  TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters()));
+  TRY_TO(TraverseStmt(D->getConstraintExpr()));
+  // FIXME: Traverse all the concept specializations (once we implement forming
+  // template-ids with them).
+})
 
 DEF_TRAVERSE_DECL(TemplateTemplateParmDecl, {
   // D is the "T" in something like

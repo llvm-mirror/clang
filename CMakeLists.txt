@@ -212,6 +212,15 @@ set(ENABLE_LINKER_BUILD_ID OFF CACHE BOOL "pass --build-id to ld")
 set(ENABLE_X86_RELAX_RELOCATIONS OFF CACHE BOOL
     "enable x86 relax relocations by default")
 
+set(ENABLE_EXPERIMENTAL_NEW_PASS_MANAGER FALSE CACHE BOOL
+  "Enable the experimental new pass manager by default.")
+
+# TODO: verify the values against LangStandards.def?
+set(CLANG_DEFAULT_STD_C "" CACHE STRING
+  "Default standard to use for C/ObjC code (IDENT from LangStandards.def, empty for platform default)")
+set(CLANG_DEFAULT_STD_CXX "" CACHE STRING
+  "Default standard to use for C++/ObjC++ code (IDENT from LangStandards.def, empty for platform default)")
+
 set(CLANG_DEFAULT_LINKER "" CACHE STRING
   "Default linker to use (linker name or absolute path, empty for platform default)")
 
@@ -418,11 +427,11 @@ endif()
 
 # Clang version information
 set(CLANG_EXECUTABLE_VERSION
-     "${CLANG_VERSION_MAJOR}.${CLANG_VERSION_MINOR}" CACHE STRING
-    "Version number that will be placed into the clang executable, in the form XX.YY")
+    "${CLANG_VERSION_MAJOR}" CACHE STRING
+    "Major version number that will be appended to the clang executable name")
 set(LIBCLANG_LIBRARY_VERSION
-     "${CLANG_VERSION_MAJOR}.${CLANG_VERSION_MINOR}" CACHE STRING
-    "Version number that will be placed into the libclang library , in the form XX.YY")
+    "${CLANG_VERSION_MAJOR}" CACHE STRING
+    "Major version number that will be appended to the libclang library")
 mark_as_advanced(CLANG_EXECUTABLE_VERSION LIBCLANG_LIBRARY_VERSION)
 
 option(CLANG_INCLUDE_TESTS

@@ -167,6 +167,13 @@ public:
     return strchr(getRecord(ID).Type, '*') != nullptr;
   }
 
+  /// \brief Return true if this builtin has a result or any arguments which are
+  /// reference types.
+  bool hasReferenceArgsOrResult(unsigned ID) const {
+    return strchr(getRecord(ID).Type, '&') != nullptr ||
+           strchr(getRecord(ID).Type, 'A') != nullptr;
+  }
+
   /// \brief Completely forget that the given ID was ever considered a builtin,
   /// e.g., because the user provided a conflicting signature.
   void forgetBuiltin(unsigned ID, IdentifierTable &Table);
@@ -204,13 +211,17 @@ public:
     return ID >= (Builtin::FirstTSBuiltin + TSRecords.size());
   }
 
-  /// Return real buitin ID (i.e. ID it would have furing compilation
+  /// Return real builtin ID (i.e. ID it would have during compilation
   /// for AuxTarget).
   unsigned getAuxBuiltinID(unsigned ID) const { return ID - TSRecords.size(); }
 
   /// Returns true if this is a libc/libm function without the '__builtin_'
   /// prefix.
   static bool isBuiltinFunc(const char *Name);
+
+  /// Returns true if this is a builtin that can be redeclared.  Returns true
+  /// for non-builtins.
+  bool canBeRedeclared(unsigned ID) const;
 
 private:
   const Info &getRecord(unsigned ID) const;

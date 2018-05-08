@@ -27,6 +27,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "clang/AST/ODRHash.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/AST/Redeclarable.h"
 #include "clang/AST/Stmt.h"
@@ -74,6 +75,24 @@ using namespace clang;
 
 Decl *clang::getPrimaryMergedDecl(Decl *D) {
   return D->getASTContext().getPrimaryMergedDecl(D);
+}
+
+void PrettyDeclStackTraceEntry::print(raw_ostream &OS) const {
+  SourceLocation Loc = this->Loc;
+  if (!Loc.isValid() && TheDecl) Loc = TheDecl->getLocation();
+  if (Loc.isValid()) {
+    Loc.print(OS, Context.getSourceManager());
+    OS << ": ";
+  }
+  OS << Message;
+
+  if (auto *ND = dyn_cast_or_null<NamedDecl>(TheDecl)) {
+    OS << " '";
+    ND->getNameForDiagnostic(OS, Context.getPrintingPolicy(), true);
+    OS << "'";
+  }
+
+  OS << '\n';
 }
 
 // Defined here so that it can be inlined into its direct callers.
@@ -1073,9 +1092,18 @@ getExplicitVisibilityAux(const NamedDecl *ND,
   // If there wasn't explicit visibility there, and this is a
   // specialization of a class template, check for visibility
   // on the pattern.
-  if (const auto *spec = dyn_cast<ClassTemplateSpecializationDecl>(ND))
-    return getVisibilityOf(spec->getSpecializedTemplate()->getTemplatedDecl(),
-                           kind);
+  if (const auto *spec = dyn_cast<ClassTemplateSpecializationDecl>(ND)) {
+    // Walk all the template decl till this point to see if there are
+    // explicit visibility attributes.
+    const auto *TD = spec->getSpecializedTemplate()->getTemplatedDecl();
+    while (TD != nullptr) {
+      auto Vis = getVisibilityOf(TD, kind);
+      if (Vis != None)
+        return Vis;
+      TD = TD->getPreviousDecl();
+    }
+    return None;
+  }
 
   // Use the most recent declaration.
   if (!IsMostRecent && !isa<NamespaceDecl>(ND)) {
@@ -3672,6 +3700,11 @@ unsigned FieldDecl::getBitWidthValue(const ASTContext &Ctx) const {
   return getBitWidth()->EvaluateKnownConstInt(Ctx).getZExtValue();
 }
 
+bool FieldDecl::isZeroLengthBitField(const ASTContext &Ctx) const {
+  return isUnnamedBitfield() && !getBitWidth()->isValueDependent() &&
+         getBitWidthValue(Ctx) == 0;
+}
+
 unsigned FieldDecl::getFieldIndex() const {
   const FieldDecl *Canonical = getCanonicalDecl();
   if (Canonical != this)
@@ -3931,7 +3964,8 @@ RecordDecl::RecordDecl(Kind DK, TagKind TK, const ASTContext &C,
       HasObjectMember(false), HasVolatileMember(false),
       LoadedFieldsFromExternalStorage(false),
       NonTrivialToPrimitiveDefaultInitialize(false),
-      NonTrivialToPrimitiveCopy(false), NonTrivialToPrimitiveDestroy(false) {
+      NonTrivialToPrimitiveCopy(false), NonTrivialToPrimitiveDestroy(false),
+      ParamDestroyedInCallee(false), ArgPassingRestrictions(APK_CanPassInRegs) {
   assert(classof(static_cast<Decl*>(this)) && "Invalid Kind!");
 }
 

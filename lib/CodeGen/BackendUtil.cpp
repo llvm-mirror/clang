@@ -46,16 +46,18 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Coroutines.h"
-#include "llvm/Transforms/GCOVProfiler.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Instrumentation/BoundsChecking.h"
+#include "llvm/Transforms/Instrumentation/GCOVProfiler.h"
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
 #include <memory>
@@ -232,10 +234,9 @@ static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
 static void addKernelAddressSanitizerPasses(const PassManagerBuilder &Builder,
                                             legacy::PassManagerBase &PM) {
   PM.add(createAddressSanitizerFunctionPass(
-      /*CompileKernel*/ true,
-      /*Recover*/ true, /*UseAfterScope*/ false));
-  PM.add(createAddressSanitizerModulePass(/*CompileKernel*/true,
-                                          /*Recover*/true));
+      /*CompileKernel*/ true, /*Recover*/ true, /*UseAfterScope*/ false));
+  PM.add(createAddressSanitizerModulePass(
+      /*CompileKernel*/ true, /*Recover*/ true));
 }
 
 static void addHWAddressSanitizerPasses(const PassManagerBuilder &Builder,
@@ -244,7 +245,13 @@ static void addHWAddressSanitizerPasses(const PassManagerBuilder &Builder,
       static_cast<const PassManagerBuilderWrapper &>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   bool Recover = CGOpts.SanitizeRecover.has(SanitizerKind::HWAddress);
-  PM.add(createHWAddressSanitizerPass(Recover));
+  PM.add(createHWAddressSanitizerPass(/*CompileKernel*/ false, Recover));
+}
+
+static void addKernelHWAddressSanitizerPasses(const PassManagerBuilder &Builder,
+                                            legacy::PassManagerBase &PM) {
+  PM.add(createHWAddressSanitizerPass(
+      /*CompileKernel*/ true, /*Recover*/ true));
 }
 
 static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
@@ -540,6 +547,9 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
                            addObjCARCOptPass);
   }
 
+  if (LangOpts.CoroutinesTS)
+    addCoroutinePassesToExtensionPoints(PMBuilder);
+
   if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_ScalarOptimizerLate,
                            addBoundsCheckingPass);
@@ -577,6 +587,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
                            addHWAddressSanitizerPasses);
   }
 
+  if (LangOpts.Sanitize.has(SanitizerKind::KernelHWAddress)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addKernelHWAddressSanitizerPasses);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addKernelHWAddressSanitizerPasses);
+  }
+
   if (LangOpts.Sanitize.has(SanitizerKind::Memory)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addMemorySanitizerPass);
@@ -597,9 +614,6 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addDataFlowSanitizerPass);
   }
-
-  if (LangOpts.CoroutinesTS)
-    addCoroutinePassesToExtensionPoints(PMBuilder);
 
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Efficiency)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
@@ -657,8 +671,6 @@ static void setCommandLineOpts(const CodeGenOptions &CodeGenOpts) {
     BackendArgs.push_back("-limit-float-precision");
     BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
   }
-  for (const std::string &BackendOption : CodeGenOpts.BackendOptions)
-    BackendArgs.push_back(BackendOption.c_str());
   BackendArgs.push_back(nullptr);
   llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1,
                                     BackendArgs.data());
@@ -717,7 +729,7 @@ bool EmitAssemblyHelper::AddEmitPasses(legacy::PassManager &CodeGenPasses,
 
 void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
                                       std::unique_ptr<raw_pwrite_stream> OS) {
-  TimeRegion Region(llvm::TimePassesIsEnabled ? &CodeGenerationTime : nullptr);
+  TimeRegion Region(FrontendTimesIsEnabled ? &CodeGenerationTime : nullptr);
 
   setCommandLineOpts(CodeGenOpts);
 
@@ -820,7 +832,7 @@ static PassBuilder::OptimizationLevel mapToLevel(const CodeGenOptions &Opts) {
   case 2:
     switch (Opts.OptimizeSize) {
     default:
-      llvm_unreachable("Invalide optimization level for size!");
+      llvm_unreachable("Invalid optimization level for size!");
 
     case 0:
       return PassBuilder::O2;
@@ -847,7 +859,7 @@ static PassBuilder::OptimizationLevel mapToLevel(const CodeGenOptions &Opts) {
 /// `EmitAssembly` at some point in the future when the default switches.
 void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> OS) {
-  TimeRegion Region(llvm::TimePassesIsEnabled ? &CodeGenerationTime : nullptr);
+  TimeRegion Region(FrontendTimesIsEnabled ? &CodeGenerationTime : nullptr);
   setCommandLineOpts(CodeGenOpts);
 
   // The new pass manager always makes a target machine available to passes
@@ -1106,6 +1118,15 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
     return llvm::make_unique<lto::NativeObjectStream>(std::move(OS));
   };
   lto::Config Conf;
+  if (CGOpts.SaveTempsFilePrefix != "") {
+    if (Error E = Conf.addSaveTemps(CGOpts.SaveTempsFilePrefix + ".",
+                                    /* UseInputModulePath */ false)) {
+      handleAllErrors(std::move(E), [&](ErrorInfoBase &EIB) {
+        errs() << "Error setting up ThinLTO save-temps: " << EIB.message()
+               << '\n';
+      });
+    }
+  }
   Conf.CPU = TOpts.CPU;
   Conf.CodeModel = getCodeModel(CGOpts);
   Conf.MAttrs = TOpts.Features;

@@ -35,7 +35,7 @@ private:
   class WorkerFunctionState {
   public:
     llvm::Function *WorkerFn;
-    const CGFunctionInfo *CGFI;
+    const CGFunctionInfo &CGFI;
     SourceLocation Loc;
 
     WorkerFunctionState(CodeGenModule &CGM, SourceLocation Loc);
@@ -61,6 +61,12 @@ private:
   /// function.
   void emitGenericEntryFooter(CodeGenFunction &CGF, EntryFunctionState &EST);
 
+  /// Helper for generic variables globalization prolog.
+  void emitGenericVarsProlog(CodeGenFunction &CGF, SourceLocation Loc);
+
+  /// Helper for generic variables globalization epilog.
+  void emitGenericVarsEpilog(CodeGenFunction &CGF);
+
   /// \brief Helper for Spmd mode target directive's entry function.
   void emitSpmdEntryHeader(CodeGenFunction &CGF, EntryFunctionState &EST,
                            const OMPExecutableDirective &D);
@@ -75,7 +81,8 @@ private:
   /// \brief Creates offloading entry for the provided entry ID \a ID,
   /// address \a Addr, size \a Size, and flags \a Flags.
   void createOffloadEntry(llvm::Constant *ID, llvm::Constant *Addr,
-                          uint64_t Size, int32_t Flags = 0) override;
+                          uint64_t Size, int32_t Flags,
+                          llvm::GlobalValue::LinkageTypes Linkage) override;
 
   /// \brief Emit outlined function specialized for the Fork-Join
   /// programming model for applicable target directives on the NVPTX device.
@@ -271,7 +278,7 @@ public:
 
   /// Translates the native parameter of outlined function if this is required
   /// for target.
-  /// \param FD Field decl from captured record for the paramater.
+  /// \param FD Field decl from captured record for the parameter.
   /// \param NativeParam Parameter itself.
   const VarDecl *translateParameter(const FieldDecl *FD,
                                     const VarDecl *NativeParam) const override;
@@ -289,6 +296,14 @@ public:
       CodeGenFunction &CGF, SourceLocation Loc, llvm::Value *OutlinedFn,
       ArrayRef<llvm::Value *> Args = llvm::None) const override;
 
+  /// Emits OpenMP-specific function prolog.
+  /// Required for device constructs.
+  void emitFunctionProlog(CodeGenFunction &CGF, const Decl *D) override;
+
+  /// Gets the OpenMP-specific address of the local variable.
+  Address getAddressOfLocalVariable(CodeGenFunction &CGF,
+                                    const VarDecl *VD) override;
+
   /// Target codegen is specialized based on two programming models: the
   /// 'generic' fork-join model of OpenMP, and a more GPU efficient 'spmd'
   /// model for constructs like 'target parallel' that support it.
@@ -299,6 +314,10 @@ public:
     Generic,
     Unknown,
   };
+
+  /// Cleans up references to the objects in finished function.
+  ///
+  void functionFinished(CodeGenFunction &CGF) override;
 
 private:
   // Track the execution mode when codegening directives within a target
@@ -314,9 +333,26 @@ private:
   /// and controls the parameters which are passed to this function.
   /// The wrapper ensures that the outlined function is called
   /// with the correct arguments when data is shared.
-  llvm::Function *
-  createDataSharingWrapper(llvm::Function *OutlinedParallelFn,
-      const OMPExecutableDirective &D);
+  llvm::Function *createParallelDataSharingWrapper(
+      llvm::Function *OutlinedParallelFn, const OMPExecutableDirective &D);
+
+  /// The map of local variables to their addresses in the global memory.
+  using DeclToAddrMapTy = llvm::MapVector<const Decl *,
+      std::pair<const FieldDecl *, Address>>;
+  /// Set of the parameters passed by value escaping OpenMP context.
+  using EscapedParamsTy = llvm::SmallPtrSet<const Decl *, 4>;
+  struct FunctionData {
+    DeclToAddrMapTy LocalVarData;
+    EscapedParamsTy EscapedParameters;
+    llvm::SmallVector<const ValueDecl*, 4> EscapedVariableLengthDecls;
+    llvm::SmallVector<llvm::Value *, 4> EscapedVariableLengthDeclsAddrs;
+    const RecordDecl *GlobalRecord = nullptr;
+    llvm::Value *GlobalRecordAddr = nullptr;
+    std::unique_ptr<CodeGenFunction::OMPMapVars> MappedParams;
+  };
+  /// Maps the function to the list of the globalized variables with their
+  /// addresses.
+  llvm::SmallDenseMap<llvm::Function *, FunctionData> FunctionGlobalizedDecls;
 };
 
 } // CodeGen namespace.

@@ -232,9 +232,11 @@ TemplateNameKind Sema::isTemplateName(Scope *S,
     } else {
       assert(isa<ClassTemplateDecl>(TD) || isa<TemplateTemplateParmDecl>(TD) ||
              isa<TypeAliasTemplateDecl>(TD) || isa<VarTemplateDecl>(TD) ||
-             isa<BuiltinTemplateDecl>(TD));
+             isa<BuiltinTemplateDecl>(TD) || isa<ConceptDecl>(TD));
       TemplateKind =
-          isa<VarTemplateDecl>(TD) ? TNK_Var_template : TNK_Type_template;
+          isa<VarTemplateDecl>(TD) ? TNK_Var_template :
+          isa<ConceptDecl>(TD) ? TNK_Concept_template :
+          TNK_Type_template;
     }
   }
 
@@ -1262,7 +1264,7 @@ Sema::CheckClassTemplate(Scope *S, unsigned TagSpec, TagUseKind TUK,
       if (RebuildTemplateParamsInCurrentInstantiation(TemplateParams))
         Invalid = true;
     } else if (TUK != TUK_Friend && TUK != TUK_Reference)
-      diagnoseQualifiedDeclaration(SS, SemanticContext, Name, NameLoc);
+      diagnoseQualifiedDeclaration(SS, SemanticContext, Name, NameLoc, false);
 
     LookupQualifiedName(Previous, SemanticContext);
   } else {
@@ -3034,7 +3036,8 @@ QualType Sema::CheckTemplateIdType(TemplateName Name,
 
   TemplateDecl *Template = Name.getAsTemplateDecl();
   if (!Template || isa<FunctionTemplateDecl>(Template) ||
-      isa<VarTemplateDecl>(Template)) {
+      isa<VarTemplateDecl>(Template) ||
+      isa<ConceptDecl>(Template)) {
     // We might have a substituted template template parameter pack. If so,
     // build a template specialization type for it.
     if (Name.getAsSubstTemplateTemplateParmPack())
@@ -3988,6 +3991,18 @@ Sema::CheckVarTemplateId(const CXXScopeSpec &SS,
                                   /*FoundD=*/nullptr, TemplateArgs);
 }
 
+ExprResult
+Sema::CheckConceptTemplateId(const CXXScopeSpec &SS,
+                             const DeclarationNameInfo &NameInfo,
+                             ConceptDecl *Template,
+                             SourceLocation TemplateLoc,
+                             const TemplateArgumentListInfo *TemplateArgs) {
+  // TODO: Do concept specialization here.
+  Diag(Template->getLocation(), diag::err_concept_feature_unimplemented)
+      << "can not form concept template-id";
+  return ExprError();
+}
+
 ExprResult Sema::BuildTemplateIdExpr(const CXXScopeSpec &SS,
                                      SourceLocation TemplateKWLoc,
                                      LookupResult &R,
@@ -4009,12 +4024,19 @@ ExprResult Sema::BuildTemplateIdExpr(const CXXScopeSpec &SS,
 
   // In C++1y, check variable template ids.
   bool InstantiationDependent;
-  if (R.getAsSingle<VarTemplateDecl>() &&
-      !TemplateSpecializationType::anyDependentTemplateArguments(
-           *TemplateArgs, InstantiationDependent)) {
+  const bool DependentArguments =
+    TemplateSpecializationType::anyDependentTemplateArguments(
+      *TemplateArgs, InstantiationDependent);
+  if (R.getAsSingle<VarTemplateDecl>() && !DependentArguments) {
     return CheckVarTemplateId(SS, R.getLookupNameInfo(),
                               R.getAsSingle<VarTemplateDecl>(),
                               TemplateKWLoc, TemplateArgs);
+  }
+
+  if (R.getAsSingle<ConceptDecl>() && !DependentArguments) {
+    return CheckConceptTemplateId(SS, R.getLookupNameInfo(),
+                                  R.getAsSingle<ConceptDecl>(),
+                                  TemplateKWLoc, TemplateArgs);
   }
 
   // We don't want lookup warnings at this point.
@@ -4617,6 +4639,8 @@ bool Sema::CheckTemplateArgument(NamedDecl *Param,
     if (NTTP->isParameterPack() && NTTP->isExpandedParameterPack())
       NTTPType = NTTP->getExpansionType(ArgumentPackIndex);
 
+    // FIXME: Do we need to substitute into parameters here if they're
+    // instantiation-dependent but not dependent?
     if (NTTPType->isDependentType() &&
         !isa<TemplateTemplateParmDecl>(Template) &&
         !Template->getDeclContext()->isDependentContext()) {
@@ -4756,9 +4780,15 @@ bool Sema::CheckTemplateArgument(NamedDecl *Param,
   // Check template template parameters.
   TemplateTemplateParmDecl *TempParm = cast<TemplateTemplateParmDecl>(Param);
 
+  TemplateParameterList *Params = TempParm->getTemplateParameters();
+  if (TempParm->isExpandedParameterPack())
+    Params = TempParm->getExpansionTemplateParameters(ArgumentPackIndex);
+
   // Substitute into the template parameter list of the template
   // template parameter, since previously-supplied template arguments
   // may appear within the template template parameter.
+  //
+  // FIXME: Skip this if the parameters aren't instantiation-dependent.
   {
     // Set up a template instantiation context.
     LocalInstantiationScope Scope(*this);
@@ -4769,10 +4799,9 @@ bool Sema::CheckTemplateArgument(NamedDecl *Param,
       return true;
 
     TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack, Converted);
-    TempParm = cast_or_null<TemplateTemplateParmDecl>(
-                      SubstDecl(TempParm, CurContext,
-                                MultiLevelTemplateArgumentList(TemplateArgs)));
-    if (!TempParm)
+    Params = SubstTemplateParams(Params, CurContext,
+                                 MultiLevelTemplateArgumentList(TemplateArgs));
+    if (!Params)
       return true;
   }
 
@@ -4793,7 +4822,7 @@ bool Sema::CheckTemplateArgument(NamedDecl *Param,
 
   case TemplateArgument::Template:
   case TemplateArgument::TemplateExpansion:
-    if (CheckTemplateArgument(TempParm, Arg, ArgumentPackIndex))
+    if (CheckTemplateTemplateArgument(Params, Arg))
       return true;
 
     Converted.push_back(Arg.getArgument());
@@ -6536,9 +6565,8 @@ static void DiagnoseTemplateParameterListArityMismatch(
 ///
 /// This routine implements the semantics of C++ [temp.arg.template].
 /// It returns true if an error occurred, and false otherwise.
-bool Sema::CheckTemplateArgument(TemplateTemplateParmDecl *Param,
-                                 TemplateArgumentLoc &Arg,
-                                 unsigned ArgumentPackIndex) {
+bool Sema::CheckTemplateTemplateArgument(TemplateParameterList *Params,
+                                         TemplateArgumentLoc &Arg) {
   TemplateName Name = Arg.getArgument().getAsTemplateOrTemplatePattern();
   TemplateDecl *Template = Name.getAsTemplateDecl();
   if (!Template) {
@@ -6572,10 +6600,6 @@ bool Sema::CheckTemplateArgument(TemplateTemplateParmDecl *Param,
     Diag(Template->getLocation(), diag::note_template_arg_refers_here_func)
       << Template;
   }
-
-  TemplateParameterList *Params = Param->getTemplateParameters();
-  if (Param->isExpandedParameterPack())
-    Params = Param->getExpansionTemplateParameters(ArgumentPackIndex);
 
   // C++1z [temp.arg.template]p3: (DR 150)
   //   A template-argument matches a template template-parameter P when P
@@ -7122,120 +7146,43 @@ static bool CheckTemplateSpecializationScope(Sema &S,
   }
 
   // C++ [temp.expl.spec]p2:
-  //   An explicit specialization shall be declared in the namespace
-  //   of which the template is a member, or, for member templates, in
-  //   the namespace of which the enclosing class or enclosing class
-  //   template is a member. An explicit specialization of a member
-  //   function, member class or static data member of a class
-  //   template shall be declared in the namespace of which the class
-  //   template is a member. Such a declaration may also be a
-  //   definition. If the declaration is not a definition, the
-  //   specialization may be defined later in the name- space in which
-  //   the explicit specialization was declared, or in a namespace
-  //   that encloses the one in which the explicit specialization was
-  //   declared.
+  //   An explicit specialization may be declared in any scope in which
+  //   the corresponding primary template may be defined.
   if (S.CurContext->getRedeclContext()->isFunctionOrMethod()) {
     S.Diag(Loc, diag::err_template_spec_decl_function_scope)
       << Specialized;
     return true;
   }
 
-  if (S.CurContext->isRecord() && !IsPartialSpecialization) {
-    if (S.getLangOpts().MicrosoftExt) {
-      // Do not warn for class scope explicit specialization during
-      // instantiation, warning was already emitted during pattern
-      // semantic analysis.
-      if (!S.inTemplateInstantiation())
-        S.Diag(Loc, diag::ext_function_specialization_in_class)
-          << Specialized;
-    } else {
-      S.Diag(Loc, diag::err_template_spec_decl_class_scope)
-        << Specialized;
-      return true;
-    }
-  }
-
-  if (S.CurContext->isRecord() &&
-      !S.CurContext->Equals(Specialized->getDeclContext())) {
-    // Make sure that we're specializing in the right record context.
-    // Otherwise, things can go horribly wrong.
-    S.Diag(Loc, diag::err_template_spec_decl_class_scope)
-      << Specialized;
-    return true;
-  }
-
   // C++ [temp.class.spec]p6:
-  //   A class template partial specialization may be declared or redeclared
-  //   in any namespace scope in which its definition may be defined (14.5.1
-  //   and 14.5.2).
-  DeclContext *SpecializedContext
-    = Specialized->getDeclContext()->getEnclosingNamespaceContext();
-  DeclContext *DC = S.CurContext->getEnclosingNamespaceContext();
+  //   A class template partial specialization may be declared in any
+  //   scope in which the primary template may be defined.
+  DeclContext *SpecializedContext =
+      Specialized->getDeclContext()->getRedeclContext();
+  DeclContext *DC = S.CurContext->getRedeclContext();
 
-  // Make sure that this redeclaration (or definition) occurs in an enclosing
-  // namespace.
-  // Note that HandleDeclarator() performs this check for explicit
-  // specializations of function templates, static data members, and member
-  // functions, so we skip the check here for those kinds of entities.
-  // FIXME: HandleDeclarator's diagnostics aren't quite as good, though.
-  // Should we refactor that check, so that it occurs later?
-  if (!DC->Encloses(SpecializedContext) &&
-      !(isa<FunctionTemplateDecl>(Specialized) ||
-        isa<FunctionDecl>(Specialized) ||
-        isa<VarTemplateDecl>(Specialized) ||
-        isa<VarDecl>(Specialized))) {
+  // Make sure that this redeclaration (or definition) occurs in the same
+  // scope or an enclosing namespace.
+  if (!(DC->isFileContext() ? DC->Encloses(SpecializedContext)
+                            : DC->Equals(SpecializedContext))) {
     if (isa<TranslationUnitDecl>(SpecializedContext))
       S.Diag(Loc, diag::err_template_spec_redecl_global_scope)
         << EntityKind << Specialized;
-    else if (isa<NamespaceDecl>(SpecializedContext)) {
+    else {
+      auto *ND = cast<NamedDecl>(SpecializedContext);
       int Diag = diag::err_template_spec_redecl_out_of_scope;
-      if (S.getLangOpts().MicrosoftExt)
+      if (S.getLangOpts().MicrosoftExt && !DC->isRecord())
         Diag = diag::ext_ms_template_spec_redecl_out_of_scope;
       S.Diag(Loc, Diag) << EntityKind << Specialized
-                        << cast<NamedDecl>(SpecializedContext);
-    } else
-      llvm_unreachable("unexpected namespace context for specialization");
+                        << ND << isa<CXXRecordDecl>(ND);
+    }
 
     S.Diag(Specialized->getLocation(), diag::note_specialized_entity);
-  } else if ((!PrevDecl ||
-              getTemplateSpecializationKind(PrevDecl) == TSK_Undeclared ||
-              getTemplateSpecializationKind(PrevDecl) ==
-                  TSK_ImplicitInstantiation)) {
-    // C++ [temp.exp.spec]p2:
-    //   An explicit specialization shall be declared in the namespace of which
-    //   the template is a member, or, for member templates, in the namespace
-    //   of which the enclosing class or enclosing class template is a member.
-    //   An explicit specialization of a member function, member class or
-    //   static data member of a class template shall be declared in the
-    //   namespace of which the class template is a member.
-    //
-    // C++11 [temp.expl.spec]p2:
-    //   An explicit specialization shall be declared in a namespace enclosing
-    //   the specialized template.
-    // C++11 [temp.explicit]p3:
-    //   An explicit instantiation shall appear in an enclosing namespace of its
-    //   template.
-    if (!DC->InEnclosingNamespaceSetOf(SpecializedContext)) {
-      bool IsCPlusPlus11Extension = DC->Encloses(SpecializedContext);
-      if (isa<TranslationUnitDecl>(SpecializedContext)) {
-        assert(!IsCPlusPlus11Extension &&
-               "DC encloses TU but isn't in enclosing namespace set");
-        S.Diag(Loc, diag::err_template_spec_decl_out_of_scope_global)
-          << EntityKind << Specialized;
-      } else if (isa<NamespaceDecl>(SpecializedContext)) {
-        int Diag;
-        if (!IsCPlusPlus11Extension)
-          Diag = diag::err_template_spec_decl_out_of_scope;
-        else if (!S.getLangOpts().CPlusPlus11)
-          Diag = diag::ext_template_spec_decl_out_of_scope;
-        else
-          Diag = diag::warn_cxx98_compat_template_spec_decl_out_of_scope;
-        S.Diag(Loc, Diag)
-          << EntityKind << Specialized << cast<NamedDecl>(SpecializedContext);
-      }
 
-      S.Diag(Specialized->getLocation(), diag::note_specialized_entity);
-    }
+    // Don't allow specializing in the wrong class during error recovery.
+    // Otherwise, things can go horribly wrong.
+    if (DC->isRecord())
+      return true;
   }
 
   return false;
@@ -7636,10 +7583,6 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
       ClassTemplate->AddSpecialization(Specialization, InsertPos);
 
     if (CurContext->isDependentContext()) {
-      // -fms-extensions permits specialization of nested classes without
-      // fully specializing the outer class(es).
-      assert(getLangOpts().MicrosoftExt &&
-             "Only possible with -fms-extensions!");
       TemplateName CanonTemplate = Context.getCanonicalTemplateName(Name);
       CanonType = Context.getTemplateSpecializationType(
           CanonTemplate, Converted);
@@ -7764,6 +7707,61 @@ Decl *Sema::ActOnTemplateDeclarator(Scope *S,
                                     Declarator &D) {
   Decl *NewDecl = HandleDeclarator(S, D, TemplateParameterLists);
   ActOnDocumentableDecl(NewDecl);
+  return NewDecl;
+}
+
+ConceptDecl *Sema::ActOnConceptDefinition(Scope *S,
+    MultiTemplateParamsArg TemplateParameterLists, IdentifierInfo *Name,
+    SourceLocation NameLoc, Expr *ConstraintExpr) {
+  // C++2a [temp.concept]p3:
+  // A concept-definition shall appear in the global scope or in a namespace
+  // scope.
+  assert(
+      CurContext->isFileContext() &&
+      "We check during parsing that 'concept's only occur at namespace scope");
+
+  // Forbid any prior declaration of this name within the current namespace.
+  LookupResult Previous(*this,
+                        DeclarationNameInfo(DeclarationName(Name), NameLoc),
+                        LookupOrdinaryName);
+  LookupName(Previous, S);
+  if (!Previous.empty()) {
+    const NamedDecl *PrevDecl = Previous.getRepresentativeDecl();
+    if (PrevDecl->getDeclContext()->Equals(CurContext)) {
+      if (Previous.isSingleResult() &&
+          isa<ConceptDecl>(Previous.getFoundDecl())) {
+        Diag(NameLoc, diag::err_redefinition) << Name;
+      } else {
+        Diag(NameLoc, diag::err_redefinition_different_kind) << Name;
+      }
+      Diag(PrevDecl->getLocation(), diag::note_previous_decl) << PrevDecl;
+      return nullptr;
+    }
+  }
+
+  ConceptDecl *NewDecl = ConceptDecl::Create(Context, CurContext, NameLoc,
+                                             Name, TemplateParameterLists[0],
+                                             ConstraintExpr);
+
+  if (!NewDecl)
+    return nullptr;
+
+  if (NewDecl->getAssociatedConstraints()) {
+    // C++2a [temp.concept]p4:
+    // A concept shall not have associated constraints.
+    // TODO: Make a test once we have actual associated constraints.
+    Diag(NameLoc, diag::err_concept_no_associated_constraints);
+    NewDecl->setInvalidDecl();
+  }
+
+  assert((S->isTemplateParamScope() || !TemplateParameterLists[0]->size()) &&
+         "Not in template param scope?");
+  assert(S->getParent() && !S->getParent()->isTemplateParamScope() &&
+         "Parent scope should exist and not be template parameter.");
+
+  ActOnDocumentableDecl(NewDecl);
+  PushOnScopeChains(NewDecl, S->getParent(), /*AddToContext=*/true);
+
   return NewDecl;
 }
 
@@ -7940,7 +7938,7 @@ Sema::CheckSpecializationInstantiationRedecl(SourceLocation NewLoc,
       return false;
 
     case TSK_ExplicitInstantiationDeclaration:
-      // We're explicity instantiating a definition for something for which we
+      // We're explicitly instantiating a definition for something for which we
       // were previously asked to suppress instantiations. That's fine.
 
       // C++0x [temp.explicit]p4:

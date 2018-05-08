@@ -53,7 +53,11 @@ struct UnwrappedLine {
   /// \c MatchingOpeningBlockLineIndex stores the index of the corresponding
   /// opening line. Otherwise, \c MatchingOpeningBlockLineIndex must be
   /// \c kInvalidIndex.
-  size_t MatchingOpeningBlockLineIndex;
+  size_t MatchingOpeningBlockLineIndex = kInvalidIndex;
+
+  /// \brief If this \c UnwrappedLine opens a block, stores the index of the
+  /// line with the corresponding closing brace.
+  size_t MatchingClosingBlockLineIndex = kInvalidIndex;
 
   static const size_t kInvalidIndex = -1;
 
@@ -141,7 +145,7 @@ private:
   // token.
   //
   // NextTok specifies the next token. A null pointer NextTok is supported, and
-  // signifies either the absense of a next token, or that the next token
+  // signifies either the absence of a next token, or that the next token
   // shouldn't be taken into accunt for the analysis.
   void distributeComments(const SmallVectorImpl<FormatToken *> &Comments,
                           const FormatToken *NextTok);

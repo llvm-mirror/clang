@@ -104,6 +104,7 @@ static std::string ReadPCHRecord(StringRef type) {
     .Case("Expr *", "Record.readExpr()")
     .Case("IdentifierInfo *", "Record.getIdentifierInfo()")
     .Case("StringRef", "Record.readString()")
+    .Case("ParamIdx", "ParamIdx::deserialize(Record.readInt())")
     .Default("Record.readInt()");
 }
 
@@ -122,6 +123,7 @@ static std::string WritePCHRecord(StringRef type, StringRef name) {
     .Case("Expr *", "AddStmt(" + std::string(name) + ");\n")
     .Case("IdentifierInfo *", "AddIdentifierRef(" + std::string(name) + ");\n")
     .Case("StringRef", "AddString(" + std::string(name) + ");\n")
+    .Case("ParamIdx", "push_back(" + std::string(name) + ".serialize());\n")
     .Default("push_back(" + std::string(name) + ");\n");
 }
 
@@ -302,6 +304,8 @@ namespace {
     std::string getIsOmitted() const override {
       if (type == "IdentifierInfo *")
         return "!get" + getUpperName().str() + "()";
+      if (type == "ParamIdx")
+        return "!get" + getUpperName().str() + "().isValid()";
       return "false";
     }
 
@@ -316,6 +320,8 @@ namespace {
            << "()->getName() : \"\") << \"";
       else if (type == "TypeSourceInfo *")
         OS << "\" << get" << getUpperName() << "().getAsString() << \"";
+      else if (type == "ParamIdx")
+        OS << "\" << get" << getUpperName() << "().getSourceIndex() << \"";
       else
         OS << "\" << get" << getUpperName() << "() << \"";
     }
@@ -338,6 +344,11 @@ namespace {
            << getUpperName() << "\";\n";
       } else if (type == "int" || type == "unsigned") {
         OS << "    OS << \" \" << SA->get" << getUpperName() << "();\n";
+      } else if (type == "ParamIdx") {
+        if (isOptional())
+          OS << "    if (SA->get" << getUpperName() << "().isValid())\n  ";
+        OS << "    OS << \" \" << SA->get" << getUpperName()
+           << "().getSourceIndex();\n";
       } else {
         llvm_unreachable("Unknown SimpleArgument type!");
       }
@@ -615,6 +626,10 @@ namespace {
     virtual void writeValueImpl(raw_ostream &OS) const {
       OS << "    OS << Val;\n";
     }
+    // Assumed to receive a parameter: raw_ostream OS.
+    virtual void writeDumpImpl(raw_ostream &OS) const {
+      OS << "      OS << \" \" << Val;\n";
+    }
 
   public:
     VariadicArgument(const Record &Arg, StringRef Attr, std::string T)
@@ -741,7 +756,7 @@ namespace {
 
     void writeDump(raw_ostream &OS) const override {
       OS << "    for (const auto &Val : SA->" << RangeName << "())\n";
-      OS << "      OS << \" \" << Val;\n";
+      writeDumpImpl(OS);
     }
   };
 
@@ -751,129 +766,12 @@ namespace {
         : VariadicArgument(Arg, Attr, "ParamIdx") {}
 
   public:
-    void writeCtorBody(raw_ostream &OS) const override {
-      VariadicArgument::writeCtorBody(OS);
-      OS << "    #ifndef NDEBUG\n"
-         << "    if (" << getLowerName() << "_size()) {\n"
-         << "      bool HasThis = " << getLowerName()
-         << "_begin()->hasThis();\n"
-         << "      for (const auto Idx : " << getLowerName() << "()) {\n"
-         << "        assert(Idx.isValid() && \"ParamIdx must be valid\");\n"
-         << "        assert(HasThis == Idx.hasThis() && "
-         << "\"HasThis must be consistent\");\n"
-         << "      }\n"
-         << "    }\n"
-         << "    #endif\n";
-    }
-
-    void writePCHReadDecls(raw_ostream &OS) const override {
-      OS << "    unsigned " << getUpperName() << "Size = Record.readInt();\n";
-      OS << "    bool " << getUpperName() << "HasThis = " << getUpperName()
-         << "Size ? Record.readInt() : false;\n";
-      OS << "    SmallVector<ParamIdx, 4> " << getUpperName() << ";\n"
-         << "    " << getUpperName() << ".reserve(" << getUpperName()
-         << "Size);\n"
-         << "    for (unsigned i = 0; i != " << getUpperName()
-         << "Size; ++i) {\n"
-         << "      " << getUpperName()
-         << ".push_back(ParamIdx(Record.readInt(), " << getUpperName()
-         << "HasThis));\n"
-         << "    }\n";
-    }
-
-    void writePCHReadArgs(raw_ostream &OS) const override {
-      OS << getUpperName() << ".data(), " << getUpperName() << "Size";
-    }
-
-    void writePCHWrite(raw_ostream &OS) const override {
-      OS << "    Record.push_back(SA->" << getLowerName() << "_size());\n";
-      OS << "    if (SA->" << getLowerName() << "_size())\n"
-         << "      Record.push_back(SA->" << getLowerName()
-         << "_begin()->hasThis());\n";
-      OS << "    for (auto Idx : SA->" << getLowerName() << "())\n"
-         << "      Record.push_back(Idx.getSourceIndex());\n";
-    }
-
     void writeValueImpl(raw_ostream &OS) const override {
       OS << "    OS << Val.getSourceIndex();\n";
     }
 
-    void writeDump(raw_ostream &OS) const override {
-      OS << "    for (auto Idx : SA->" << getLowerName() << "())\n";
-      OS << "      OS << \" \" << Idx.getSourceIndex();\n";
-    }
-  };
-
-  class ParamIdxArgument : public Argument {
-    std::string IdxName;
-
-  public:
-    ParamIdxArgument(const Record &Arg, StringRef Attr)
-        : Argument(Arg, Attr), IdxName(getUpperName()) {}
-
-    void writeDeclarations(raw_ostream &OS) const override {
-      OS << "ParamIdx " << IdxName << ";\n";
-    }
-
-    void writeAccessors(raw_ostream &OS) const override {
-      OS << "\n"
-         << "  ParamIdx " << getLowerName() << "() const {"
-         << " return " << IdxName << "; }\n";
-    }
-
-    void writeCtorParameters(raw_ostream &OS) const override {
-      OS << "ParamIdx " << IdxName;
-    }
-
-    void writeCloneArgs(raw_ostream &OS) const override { OS << IdxName; }
-
-    void writeTemplateInstantiationArgs(raw_ostream &OS) const override {
-      OS << "A->" << getLowerName() << "()";
-    }
-
-    void writeImplicitCtorArgs(raw_ostream &OS) const override {
-      OS << IdxName;
-    }
-
-    void writeCtorInitializers(raw_ostream &OS) const override {
-      OS << IdxName << "(" << IdxName << ")";
-    }
-
-    void writeCtorDefaultInitializers(raw_ostream &OS) const override {
-      OS << IdxName << "()";
-    }
-
-    void writePCHReadDecls(raw_ostream &OS) const override {
-      OS << "    unsigned " << IdxName << "Src = Record.readInt();\n";
-      OS << "    bool " << IdxName << "HasThis = Record.readInt();\n";
-    }
-
-    void writePCHReadArgs(raw_ostream &OS) const override {
-      OS << "ParamIdx(" << IdxName << "Src, " << IdxName << "HasThis)";
-    }
-
-    void writePCHWrite(raw_ostream &OS) const override {
-      OS << "    Record.push_back(SA->" << getLowerName()
-         << "().isValid() ? SA->" << getLowerName()
-         << "().getSourceIndex() : 0);\n";
-      OS << "    Record.push_back(SA->" << getLowerName()
-         << "().isValid() ? SA->" << getLowerName()
-         << "().hasThis() : false);\n";
-    }
-
-    std::string getIsOmitted() const override {
-      return "!" + IdxName + ".isValid()";
-    }
-
-    void writeValue(raw_ostream &OS) const override {
-      OS << "\" << " << IdxName << ".getSourceIndex() << \"";
-    }
-
-    void writeDump(raw_ostream &OS) const override {
-      if (isOptional())
-        OS << "    if (SA->" << getLowerName() << "().isValid())\n  ";
-      OS << "    OS << \" \" << SA->" << getLowerName()
-         << "().getSourceIndex();\n";
+    void writeDumpImpl(raw_ostream &OS) const override {
+      OS << "      OS << \" \" << Val.getSourceIndex();\n";
     }
   };
 
@@ -1379,7 +1277,7 @@ createArgument(const Record &Arg, StringRef Attr,
   else if (ArgName == "VariadicParamIdxArgument")
     Ptr = llvm::make_unique<VariadicParamIdxArgument>(Arg, Attr);
   else if (ArgName == "ParamIdxArgument")
-    Ptr = llvm::make_unique<ParamIdxArgument>(Arg, Attr);
+    Ptr = llvm::make_unique<SimpleArgument>(Arg, Attr, "ParamIdx");
   else if (ArgName == "VersionArgument")
     Ptr = llvm::make_unique<VersionArgument>(Arg, Attr);
 
@@ -4010,9 +3908,9 @@ void EmitClangAttrDocs(RecordKeeper &Records, raw_ostream &OS) {
   for (auto &I : SplitDocs) {
     WriteCategoryHeader(I.first, OS);
 
-    std::sort(I.second.begin(), I.second.end(),
-              [](const DocumentationData &D1, const DocumentationData &D2) {
-                return D1.Heading < D2.Heading;
+    llvm::sort(I.second.begin(), I.second.end(),
+               [](const DocumentationData &D1, const DocumentationData &D2) {
+                 return D1.Heading < D2.Heading;
               });
 
     // Walk over each of the attributes in the category and write out their

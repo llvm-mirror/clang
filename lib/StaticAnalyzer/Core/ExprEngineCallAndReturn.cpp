@@ -121,7 +121,7 @@ static std::pair<const Stmt*,
 
 /// Adjusts a return value when the called function's return type does not
 /// match the caller's expression type. This can happen when a dynamic call
-/// is devirtualized, and the overridding method has a covariant (more specific)
+/// is devirtualized, and the overriding method has a covariant (more specific)
 /// return type than the parent's method. For C++ objects, this means we need
 /// to add base casts.
 static SVal adjustReturnValue(SVal V, QualType ExpectedTy, QualType ActualTy,
@@ -581,23 +581,39 @@ ProgramStateRef ExprEngine::bindReturnValue(const CallEvent &Call,
     return State->BindExpr(E, LCtx, ThisV);
   }
 
-  // Conjure a symbol if the return value is unknown.
+  SVal R;
   QualType ResultTy = Call.getResultType();
-  SValBuilder &SVB = getSValBuilder();
   unsigned Count = currBldrCtx->blockCount();
+  if (auto RTC = getCurrentCFGElement().getAs<CFGCXXRecordTypedCall>()) {
+    // Conjure a temporary if the function returns an object by value.
+    MemRegionManager &MRMgr = svalBuilder.getRegionManager();
+    const CXXTempObjectRegion *TR = MRMgr.getCXXTempObjectRegion(E, LCtx);
+    State = addAllNecessaryTemporaryInfo(State, RTC->getConstructionContext(),
+                                         LCtx, TR);
 
-  // See if we need to conjure a heap pointer instead of
-  // a regular unknown pointer.
-  bool IsHeapPointer = false;
-  if (const auto *CNE = dyn_cast<CXXNewExpr>(E))
-    if (CNE->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
-      // FIXME: Delegate this to evalCall in MallocChecker?
-      IsHeapPointer = true;
-    }
+    // Invalidate the region so that it didn't look uninitialized. Don't notify
+    // the checkers.
+    State = State->invalidateRegions(TR, E, Count, LCtx,
+                                     /* CausedByPointerEscape=*/false, nullptr,
+                                     &Call, nullptr);
 
-  SVal R = IsHeapPointer
-               ? SVB.getConjuredHeapSymbolVal(E, LCtx, Count)
-               : SVB.conjureSymbolVal(nullptr, E, LCtx, ResultTy, Count);
+    R = State->getSVal(TR, E->getType());
+  } else {
+    // Conjure a symbol if the return value is unknown.
+
+    // See if we need to conjure a heap pointer instead of
+    // a regular unknown pointer.
+    bool IsHeapPointer = false;
+    if (const auto *CNE = dyn_cast<CXXNewExpr>(E))
+      if (CNE->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
+        // FIXME: Delegate this to evalCall in MallocChecker?
+        IsHeapPointer = true;
+      }
+
+    R = IsHeapPointer ? svalBuilder.getConjuredHeapSymbolVal(E, LCtx, Count)
+                      : svalBuilder.conjureSymbolVal(nullptr, E, LCtx, ResultTy,
+                                                     Count);
+  }
   return State->BindExpr(E, LCtx, R);
 }
 

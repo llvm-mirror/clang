@@ -524,7 +524,7 @@ void Parser::addExpressionCompletions() {
   }
 }
 
-/// \brief Parse an <Expresssion>
+/// \brief Parse an <Expression>
 bool Parser::parseExpressionImpl(VariantValue *Value) {
   switch (Tokenizer->nextTokenKind()) {
   case TokenInfo::TK_Literal:
@@ -619,8 +619,8 @@ Parser::completeExpression(StringRef Code, unsigned CompletionOffset, Sema *S,
   P.parseExpressionImpl(&Dummy);
 
   // Sort by specificity, then by name.
-  std::sort(P.Completions.begin(), P.Completions.end(),
-            [](const MatcherCompletion &A, const MatcherCompletion &B) {
+  llvm::sort(P.Completions.begin(), P.Completions.end(),
+             [](const MatcherCompletion &A, const MatcherCompletion &B) {
     if (A.Specificity != B.Specificity)
       return A.Specificity > B.Specificity;
     return A.TypedText < B.TypedText;

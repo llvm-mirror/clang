@@ -38,7 +38,7 @@ FormatTokenLexer::FormatTokenLexer(const SourceManager &SourceMgr, FileID ID,
 
   for (const std::string &ForEachMacro : Style.ForEachMacros)
     ForEachMacros.push_back(&IdentTable.get(ForEachMacro));
-  std::sort(ForEachMacros.begin(), ForEachMacros.end());
+  llvm::sort(ForEachMacros.begin(), ForEachMacros.end());
 }
 
 ArrayRef<FormatToken *> FormatTokenLexer::lex() {
@@ -691,7 +691,9 @@ void FormatTokenLexer::readRawToken(FormatToken &Tok) {
     }
   }
 
-  if (Style.Language == FormatStyle::LK_JavaScript &&
+  if ((Style.Language == FormatStyle::LK_JavaScript ||
+       Style.Language == FormatStyle::LK_Proto ||
+       Style.Language == FormatStyle::LK_TextProto) &&
       Tok.is(tok::char_constant)) {
     Tok.Tok.setKind(tok::string_literal);
   }

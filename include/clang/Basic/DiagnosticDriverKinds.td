@@ -203,6 +203,9 @@ def err_drv_expecting_fopenmp_with_fopenmp_targets : Error<
 def warn_drv_omp_offload_target_duplicate : Warning<
   "The OpenMP offloading target '%0' is similar to target '%1' already specified - will be ignored.">, 
   InGroup<OpenMPTarget>;
+def warn_drv_omp_offload_target_missingbcruntime : Warning<
+  "No library '%0' found in the default clang lib directory or in LIBRARY_PATH. Expect degraded performance due to no inlining of runtime functions on target devices.">,
+  InGroup<OpenMPTarget>;
 def err_drv_bitcode_unsupported_on_toolchain : Error<
   "-fembed-bitcode is not supported on versions of iOS prior to 6.0">;
 
@@ -285,6 +288,9 @@ def err_analyzer_config_multiple_values : Error<
 
 def err_drv_invalid_hvx_length : Error<
   "-mhvx-length is not supported without a -mhvx/-mhvx= flag">;
+def warn_drv_vectorize_needs_hvx : Warning<
+  "auto-vectorization requires HVX, use -mhvx to enable it">,
+  InGroup<OptionIgnored>;
 
 def err_drv_modules_validate_once_requires_timestamp : Error<
   "option '-fmodules-validate-once-per-build-session' requires "

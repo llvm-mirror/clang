@@ -23,20 +23,21 @@ void IndexDataConsumer::_anchor() {}
 
 bool IndexDataConsumer::handleDeclOccurence(const Decl *D, SymbolRoleSet Roles,
                                             ArrayRef<SymbolRelation> Relations,
-                                            FileID FID, unsigned Offset,
+                                            SourceLocation Loc,
                                             ASTNodeInfo ASTNode) {
   return true;
 }
 
 bool IndexDataConsumer::handleMacroOccurence(const IdentifierInfo *Name,
-                                             const MacroInfo *MI, SymbolRoleSet Roles,
-                                             FileID FID, unsigned Offset) {
+                                             const MacroInfo *MI,
+                                             SymbolRoleSet Roles,
+                                             SourceLocation Loc) {
   return true;
 }
 
 bool IndexDataConsumer::handleModuleOccurence(const ImportDecl *ImportD,
                                               SymbolRoleSet Roles,
-                                              FileID FID, unsigned Offset) {
+                                              SourceLocation Loc) {
   return true;
 }
 
@@ -172,40 +173,38 @@ static void indexTranslationUnit(ASTUnit &Unit, IndexingContext &IndexCtx) {
   Unit.visitLocalTopLevelDecls(&IndexCtx, topLevelDeclVisitor);
 }
 
-void index::indexASTUnit(ASTUnit &Unit,
-                         std::shared_ptr<IndexDataConsumer> DataConsumer,
+void index::indexASTUnit(ASTUnit &Unit, IndexDataConsumer &DataConsumer,
                          IndexingOptions Opts) {
-  IndexingContext IndexCtx(Opts, *DataConsumer);
+  IndexingContext IndexCtx(Opts, DataConsumer);
   IndexCtx.setASTContext(Unit.getASTContext());
-  DataConsumer->initialize(Unit.getASTContext());
-  DataConsumer->setPreprocessor(Unit.getPreprocessorPtr());
+  DataConsumer.initialize(Unit.getASTContext());
+  DataConsumer.setPreprocessor(Unit.getPreprocessorPtr());
   indexTranslationUnit(Unit, IndexCtx);
-  DataConsumer->finish();
+  DataConsumer.finish();
 }
 
 void index::indexTopLevelDecls(ASTContext &Ctx, ArrayRef<const Decl *> Decls,
-                               std::shared_ptr<IndexDataConsumer> DataConsumer,
+                               IndexDataConsumer &DataConsumer,
                                IndexingOptions Opts) {
-  IndexingContext IndexCtx(Opts, *DataConsumer);
+  IndexingContext IndexCtx(Opts, DataConsumer);
   IndexCtx.setASTContext(Ctx);
 
-  DataConsumer->initialize(Ctx);
+  DataConsumer.initialize(Ctx);
   for (const Decl *D : Decls)
     IndexCtx.indexTopLevelDecl(D);
-  DataConsumer->finish();
+  DataConsumer.finish();
 }
 
-void index::indexModuleFile(serialization::ModuleFile &Mod,
-                            ASTReader &Reader,
-                            std::shared_ptr<IndexDataConsumer> DataConsumer,
+void index::indexModuleFile(serialization::ModuleFile &Mod, ASTReader &Reader,
+                            IndexDataConsumer &DataConsumer,
                             IndexingOptions Opts) {
   ASTContext &Ctx = Reader.getContext();
-  IndexingContext IndexCtx(Opts, *DataConsumer);
+  IndexingContext IndexCtx(Opts, DataConsumer);
   IndexCtx.setASTContext(Ctx);
-  DataConsumer->initialize(Ctx);
+  DataConsumer.initialize(Ctx);
 
   for (const Decl *D : Reader.getModuleFileLevelDecls(Mod)) {
     IndexCtx.indexTopLevelDecl(D);
   }
-  DataConsumer->finish();
+  DataConsumer.finish();
 }

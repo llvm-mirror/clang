@@ -38,6 +38,7 @@ protected:
   }
 
   static void verifyFormat(llvm::StringRef Code) {
+    EXPECT_EQ(Code.str(), format(Code)) << "Expected code is not stable";
     EXPECT_EQ(Code.str(), format(test::messUp(Code)));
   }
 };
@@ -158,9 +159,8 @@ TEST_F(FormatTestProto, MessageFieldAttributes) {
                "    key: 'a'  //\n"
                "  }\n"
                "];");
-  verifyFormat("optional string test = 1 [default =\n"
-               "                              \"test\"\n"
-               "                              \"test\"];");
+  verifyFormat("optional string test = 1 [default = \"test\"\n"
+               "                                    \"test\"];");
   verifyFormat("optional Aaaaaaaa aaaaaaaa = 12 [\n"
                "  (aaa) = aaaa,\n"
                "  (bbbbbbbbbbbbbbbbbbbbbbbbbb) = {\n"
@@ -442,9 +442,11 @@ TEST_F(FormatTestProto, FormatsOptionsExtensions) {
                "};");
 }
 
-TEST_F(FormatTestProto, NoSpaceAfterPercent) {
+TEST_F(FormatTestProto, SpacesAroundPercents) {
   verifyFormat("option (MyProto.options) = {\n"
                "  key: %lld\n"
+               "  key: 0x%04x\n"
+               "  key: \"%d %d\"\n"
                "};");
 }
 

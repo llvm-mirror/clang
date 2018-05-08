@@ -105,6 +105,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::OMPThreadPrivate:
   case Decl::OMPCapturedExpr:
   case Decl::Empty:
+  case Decl::Concept:
     // None of these decls require codegen support.
     return;
 
@@ -229,12 +230,14 @@ llvm::Constant *CodeGenModule::getOrCreateStaticVarDecl(
   LangAS AS = GetGlobalVarAddressSpace(&D);
   unsigned TargetAS = getContext().getTargetAddressSpace(AS);
 
-  // Local address space cannot have an initializer.
+  // OpenCL variables in local address space and CUDA shared
+  // variables cannot have an initializer.
   llvm::Constant *Init = nullptr;
-  if (Ty.getAddressSpace() != LangAS::opencl_local)
-    Init = EmitNullConstant(Ty);
-  else
+  if (Ty.getAddressSpace() == LangAS::opencl_local ||
+      D.hasAttr<CUDASharedAttr>())
     Init = llvm::UndefValue::get(LTy);
+  else
+    Init = EmitNullConstant(Ty);
 
   llvm::GlobalVariable *GV = new llvm::GlobalVariable(
       getModule(), LTy, Ty.isConstant(getContext()), Linkage, Init, Name,
@@ -285,8 +288,11 @@ llvm::Constant *CodeGenModule::getOrCreateStaticVarDecl(
     // never defer them.
     assert(isa<ObjCMethodDecl>(DC) && "unexpected parent code decl");
   }
-  if (GD.getDecl())
+  if (GD.getDecl()) {
+    // Disable emission of the parent function for the OpenMP device codegen.
+    CGOpenMPRuntime::DisableAutoDeclareTargetRAII NoDeclTarget(*this);
     (void)GetAddrOfGlobal(GD);
+  }
 
   return Addr;
 }
@@ -464,13 +470,11 @@ namespace {
     }
   };
 
-  struct DestroyNRVOVariable final : EHScopeStack::Cleanup {
-    DestroyNRVOVariable(Address addr,
-                        const CXXDestructorDecl *Dtor,
-                        llvm::Value *NRVOFlag)
-      : Dtor(Dtor), NRVOFlag(NRVOFlag), Loc(addr) {}
+  template <class Derived>
+  struct DestroyNRVOVariable : EHScopeStack::Cleanup {
+    DestroyNRVOVariable(Address addr, llvm::Value *NRVOFlag)
+        : NRVOFlag(NRVOFlag), Loc(addr) {}
 
-    const CXXDestructorDecl *Dtor;
     llvm::Value *NRVOFlag;
     Address Loc;
 
@@ -489,12 +493,39 @@ namespace {
         CGF.EmitBlock(RunDtorBB);
       }
 
-      CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete,
-                                /*ForVirtualBase=*/false,
-                                /*Delegating=*/false,
-                                Loc);
+      static_cast<Derived *>(this)->emitDestructorCall(CGF);
 
       if (NRVO) CGF.EmitBlock(SkipDtorBB);
+    }
+
+    virtual ~DestroyNRVOVariable() = default;
+  };
+
+  struct DestroyNRVOVariableCXX final
+      : DestroyNRVOVariable<DestroyNRVOVariableCXX> {
+    DestroyNRVOVariableCXX(Address addr, const CXXDestructorDecl *Dtor,
+                           llvm::Value *NRVOFlag)
+      : DestroyNRVOVariable<DestroyNRVOVariableCXX>(addr, NRVOFlag),
+        Dtor(Dtor) {}
+
+    const CXXDestructorDecl *Dtor;
+
+    void emitDestructorCall(CodeGenFunction &CGF) {
+      CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete,
+                                /*ForVirtualBase=*/false,
+                                /*Delegating=*/false, Loc);
+    }
+  };
+
+  struct DestroyNRVOVariableC final
+      : DestroyNRVOVariable<DestroyNRVOVariableC> {
+    DestroyNRVOVariableC(Address addr, llvm::Value *NRVOFlag, QualType Ty)
+        : DestroyNRVOVariable<DestroyNRVOVariableC>(addr, NRVOFlag), Ty(Ty) {}
+
+    QualType Ty;
+
+    void emitDestructorCall(CodeGenFunction &CGF) {
+      CGF.destroyNonTrivialCStruct(CGF, Loc, Ty);
     }
   };
 
@@ -1068,16 +1099,27 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
     }
 
     // A normal fixed sized variable becomes an alloca in the entry block,
-    // unless it's an NRVO variable.
+    // unless:
+    // - it's an NRVO variable.
+    // - we are compiling OpenMP and it's an OpenMP local variable.
 
-    if (NRVO) {
+    Address OpenMPLocalAddr =
+        getLangOpts().OpenMP
+            ? CGM.getOpenMPRuntime().getAddressOfLocalVariable(*this, &D)
+            : Address::invalid();
+    if (getLangOpts().OpenMP && OpenMPLocalAddr.isValid()) {
+      address = OpenMPLocalAddr;
+    } else if (NRVO) {
       // The named return value optimization: allocate this variable in the
       // return slot, so that we can elide the copy when returning this
       // variable (C++0x [class.copy]p34).
       address = ReturnValue;
 
       if (const RecordType *RecordTy = Ty->getAs<RecordType>()) {
-        if (!cast<CXXRecordDecl>(RecordTy->getDecl())->hasTrivialDestructor()) {
+        const auto *RD = RecordTy->getDecl();
+        const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
+        if ((CXXRD && !CXXRD->hasTrivialDestructor()) ||
+            RD->isNonTrivialToPrimitiveDestroy()) {
           // Create a flag that is used to indicate when the NRVO was applied
           // to this variable. Set it to zero to indicate that NRVO was not
           // applied.
@@ -1375,17 +1417,17 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   }
 }
 
-/// Emit an expression as an initializer for a variable at the given
-/// location.  The expression is not necessarily the normal
-/// initializer for the variable, and the address is not necessarily
+/// Emit an expression as an initializer for an object (variable, field, etc.)
+/// at the given location.  The expression is not necessarily the normal
+/// initializer for the object, and the address is not necessarily
 /// its normal location.
 ///
 /// \param init the initializing expression
-/// \param var the variable to act as if we're initializing
+/// \param D the object to act as if we're initializing
 /// \param loc the address to initialize; its type is a pointer
-///   to the LLVM mapping of the variable's type
+///   to the LLVM mapping of the object's type
 /// \param alignment the alignment of the address
-/// \param capturedByInit true if the variable is a __block variable
+/// \param capturedByInit true if \p D is a __block variable
 ///   whose address is potentially changed by the initializer
 void CodeGenFunction::EmitExprAsInit(const Expr *init, const ValueDecl *D,
                                      LValue lvalue, bool capturedByInit) {
@@ -1413,11 +1455,17 @@ void CodeGenFunction::EmitExprAsInit(const Expr *init, const ValueDecl *D,
     if (type->isAtomicType()) {
       EmitAtomicInit(const_cast<Expr*>(init), lvalue);
     } else {
+      AggValueSlot::Overlap_t Overlap = AggValueSlot::MayOverlap;
+      if (isa<VarDecl>(D))
+        Overlap = AggValueSlot::DoesNotOverlap;
+      else if (auto *FD = dyn_cast<FieldDecl>(D))
+        Overlap = overlapForFieldInit(FD);
       // TODO: how can we delay here if D is captured by its initializer?
       EmitAggExpr(init, AggValueSlot::forLValue(lvalue,
                                               AggValueSlot::IsDestructed,
                                          AggValueSlot::DoesNotNeedGCBarriers,
-                                              AggValueSlot::IsNotAliased));
+                                              AggValueSlot::IsNotAliased,
+                                              Overlap));
     }
     return;
   }
@@ -1450,8 +1498,8 @@ void CodeGenFunction::emitAutoVarTypeCleanup(
     if (emission.NRVOFlag) {
       assert(!type->isArrayType());
       CXXDestructorDecl *dtor = type->getAsCXXRecordDecl()->getDestructor();
-      EHStack.pushCleanup<DestroyNRVOVariable>(cleanupKind, addr,
-                                               dtor, emission.NRVOFlag);
+      EHStack.pushCleanup<DestroyNRVOVariableCXX>(cleanupKind, addr, dtor,
+                                                  emission.NRVOFlag);
       return;
     }
     break;
@@ -1473,6 +1521,12 @@ void CodeGenFunction::emitAutoVarTypeCleanup(
 
   case QualType::DK_nontrivial_c_struct:
     destroyer = CodeGenFunction::destroyNonTrivialCStruct;
+    if (emission.NRVOFlag) {
+      assert(!type->isArrayType());
+      EHStack.pushCleanup<DestroyNRVOVariableC>(cleanupKind, addr,
+                                                emission.NRVOFlag, type);
+      return;
+    }
     break;
   }
 
@@ -1882,6 +1936,22 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
     llvm::Type *IRTy = ConvertTypeForMem(Ty)->getPointerTo(AS);
     if (DeclPtr.getType() != IRTy)
       DeclPtr = Builder.CreateBitCast(DeclPtr, IRTy, D.getName());
+    // Indirect argument is in alloca address space, which may be different
+    // from the default address space.
+    auto AllocaAS = CGM.getASTAllocaAddressSpace();
+    auto *V = DeclPtr.getPointer();
+    auto SrcLangAS = getLangOpts().OpenCL ? LangAS::opencl_private : AllocaAS;
+    auto DestLangAS =
+        getLangOpts().OpenCL ? LangAS::opencl_private : LangAS::Default;
+    if (SrcLangAS != DestLangAS) {
+      assert(getContext().getTargetAddressSpace(SrcLangAS) ==
+             CGM.getDataLayout().getAllocaAddrSpace());
+      auto DestAS = getContext().getTargetAddressSpace(DestLangAS);
+      auto *T = V->getType()->getPointerElementType()->getPointerTo(DestAS);
+      DeclPtr = Address(getTargetHooks().performAddrSpaceCast(
+                            *this, V, SrcLangAS, DestLangAS, T, true),
+                        DeclPtr.getAlignment());
+    }
 
     // Push a destructor cleanup for this parameter if the ABI requires it.
     // Don't push a cleanup in a thunk for a method that will also emit a
@@ -1896,9 +1966,18 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
       }
     }
   } else {
-    // Otherwise, create a temporary to hold the value.
-    DeclPtr = CreateMemTemp(Ty, getContext().getDeclAlign(&D),
-                            D.getName() + ".addr");
+    // Check if the parameter address is controlled by OpenMP runtime.
+    Address OpenMPLocalAddr =
+        getLangOpts().OpenMP
+            ? CGM.getOpenMPRuntime().getAddressOfLocalVariable(*this, &D)
+            : Address::invalid();
+    if (getLangOpts().OpenMP && OpenMPLocalAddr.isValid()) {
+      DeclPtr = OpenMPLocalAddr;
+    } else {
+      // Otherwise, create a temporary to hold the value.
+      DeclPtr = CreateMemTemp(Ty, getContext().getDeclAlign(&D),
+                              D.getName() + ".addr");
+    }
     DoStore = true;
   }
 

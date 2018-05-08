@@ -39,7 +39,7 @@ def ext_empty_translation_unit : Extension<
   InGroup<DiagGroup<"empty-translation-unit">>;
 def warn_cxx98_compat_top_level_semi : Warning<
   "extra ';' outside of a function is incompatible with C++98">,
-  InGroup<CXX98CompatPedantic>, DefaultIgnore;
+  InGroup<CXX98CompatExtraSemi>, DefaultIgnore;
 def ext_extra_semi : Extension<
   "extra ';' %select{"
   "outside of a function|"
@@ -575,7 +575,7 @@ def err_cxx11_attribute_forbids_arguments : Error<
 def err_attribute_requires_arguments : Error<
   "parentheses must be omitted if %0 attribute's argument list is empty">;
 def err_cxx11_attribute_forbids_ellipsis : Error<
-  "attribute '%0' cannot be used as an attribute pack">;
+  "attribute %0 cannot be used as an attribute pack">;
 def err_cxx11_attribute_repeated : Error<
   "attribute %0 cannot appear multiple times in an attribute specifier">;
 def warn_cxx14_compat_using_attribute_ns : Warning<
@@ -895,6 +895,12 @@ def warn_pragma_expected_rparen : Warning<
   "missing ')' after '#pragma %0' - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_expected_identifier : Warning<
   "expected identifier in '#pragma %0' - ignored">, InGroup<IgnoredPragmas>;
+def warn_pragma_expected_string : Warning<
+  "expected string literal in '#pragma %0' - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pragma_missing_argument : Warning<
+  "missing argument to '#pragma %0'%select{|; expected %2}1">, InGroup<IgnoredPragmas>;
+def warn_pragma_invalid_argument : Warning<
+  "unexpected argument '%0' to '#pragma %1'%select{|; expected %3}2">, InGroup<IgnoredPragmas>;
 
 // '#pragma clang section' related errors
 def err_pragma_expected_clang_section_name : Error<
@@ -923,6 +929,8 @@ def warn_pragma_ms_struct : Warning<
 def warn_pragma_extra_tokens_at_eol : Warning<
   "extra tokens at end of '#pragma %0' - ignored">,
   InGroup<IgnoredPragmas>;
+def warn_pragma_expected_comma : Warning<
+  "expected ',' in '#pragma %0'">, InGroup<IgnoredPragmas>;
 def warn_pragma_expected_punc : Warning<
   "expected ')' or ',' in '#pragma %0'">, InGroup<IgnoredPragmas>;
 def warn_pragma_expected_non_wide_string : Warning<
@@ -960,6 +968,10 @@ def warn_pragma_pack_malformed : Warning<
 def warn_pragma_intrinsic_builtin : Warning<
   "%0 is not a recognized builtin%select{|; consider including <intrin.h> to access non-builtin intrinsics}1">,
   InGroup<IgnoredPragmaIntrinsic>;
+// - #pragma optimize
+def warn_pragma_optimize : Warning<
+  "'#pragma optimize' is not supported">,
+  InGroup<IgnoredPragmaOptimize>;
 // - #pragma unused
 def warn_pragma_unused_expected_var : Warning<
   "expected '#pragma unused' argument to be a variable name">,
@@ -1061,6 +1073,10 @@ def err_opencl_taking_function_address_parser : Error<
 def err_opencl_logical_exclusive_or : Error<
   "^^ is a reserved operator in OpenCL">;
 
+// OpenCL C++.
+def err_openclcxx_virtual_function : Error<
+  "virtual functions are not supported in OpenCL C++">;
+
 // OpenMP support.
 def warn_pragma_omp_ignored : Warning<
   "unexpected '#pragma omp ...' in program">, InGroup<SourceUsesOpenMP>, DefaultIgnore;
@@ -1133,6 +1149,24 @@ def err_pragma_cannot_end_force_cuda_host_device : Error<
   "force_cuda_host_device end pragma without matching "
   "force_cuda_host_device begin">;
 } // end of Parse Issue category.
+
+let CategoryName = "Concepts Issue" in {
+def err_concept_at_non_namespace_scope : Error<
+  "'concept' can only appear in namespace scope">;
+
+def err_concept_extra_headers : Error<
+  "extraneous template parameter list in concept definition">;
+def err_concept_unexpected_scope_spec : Error<
+  "invalid nested name specifier; concepts must be defined in their own namespace">;
+def err_concept_nontemplate : Error<"concept definition must be a template; "
+                                    "missing template parameter list">;
+def err_concept_specialized : Error<
+  "'concept' cannot be "
+  "%select{explicitly specialized|partially specialized}0">;
+def note_concept_specialized : Note<
+  "'concept' cannot be "
+  "%select{explicitly specialized|partially specialized}0">;
+}
 
 let CategoryName = "Modules Issue" in {
 def err_unexpected_module_decl : Error<

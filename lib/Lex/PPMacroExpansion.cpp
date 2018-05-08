@@ -1105,7 +1105,8 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
             LangOpts.Sanitize.hasOneOf(SanitizerKind::Address |
                                        SanitizerKind::KernelAddress))
       .Case("hwaddress_sanitizer",
-            LangOpts.Sanitize.hasOneOf(SanitizerKind::HWAddress))
+            LangOpts.Sanitize.hasOneOf(SanitizerKind::HWAddress |
+                                       SanitizerKind::KernelHWAddress))
       .Case("assume_nonnull", true)
       .Case("attribute_analyzer_noreturn", true)
       .Case("attribute_availability", true)
@@ -1275,6 +1276,8 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       .Case("is_union", LangOpts.CPlusPlus)
       .Case("modules", LangOpts.Modules)
       .Case("safe_stack", LangOpts.Sanitize.has(SanitizerKind::SafeStack))
+      .Case("shadow_call_stack",
+            LangOpts.Sanitize.has(SanitizerKind::ShadowCallStack))
       .Case("tls", PP.getTargetInfo().isTLSSupported())
       .Case("underlying_type", LangOpts.CPlusPlus)
       .Default(false);
@@ -1344,7 +1347,7 @@ static bool EvaluateHasIncludeCommon(Token &Tok,
 
   // These expressions are only allowed within a preprocessor directive.
   if (!PP.isParsingIfOrElifDirective()) {
-    PP.Diag(LParenLoc, diag::err_pp_directive_required) << II->getName();
+    PP.Diag(LParenLoc, diag::err_pp_directive_required) << II;
     // Return a valid identifier token.
     assert(Tok.is(tok::identifier));
     Tok.setIdentifierInfo(II);
@@ -1801,12 +1804,21 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
       [this](Token &Tok, bool &HasLexedNextToken) -> int {
         IdentifierInfo *II = ExpectFeatureIdentifierInfo(Tok, *this,
                                            diag::err_feature_check_malformed);
+        const LangOptions &LangOpts = getLangOpts();
         if (!II)
           return false;
-        else if (II->getBuiltinID() != 0)
+        else if (II->getBuiltinID() != 0) {
+          switch (II->getBuiltinID()) {
+          case Builtin::BI__builtin_operator_new:
+          case Builtin::BI__builtin_operator_delete:
+            // denotes date of behavior change to support calling arbitrary
+            // usual allocation and deallocation functions. Required by libc++
+            return 201802;
+          default:
+            return true;
+          }
           return true;
-        else {
-          const LangOptions &LangOpts = getLangOpts();
+        } else {
           return llvm::StringSwitch<bool>(II->getName())
                       .Case("__make_integer_seq", LangOpts.CPlusPlus)
                       .Case("__type_pack_element", LangOpts.CPlusPlus)

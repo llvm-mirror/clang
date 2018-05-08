@@ -133,7 +133,7 @@ private:
   /// Base declarations for the reduction items.
   SmallVector<const VarDecl *, 4> BaseDecls;
 
-  /// Emits lvalue for shared expresion.
+  /// Emits lvalue for shared expression.
   LValue emitSharedLValue(CodeGenFunction &CGF, const Expr *E);
   /// Emits upper bound for shared expression (if array section).
   LValue emitSharedLValueUB(CodeGenFunction &CGF, const Expr *E);
@@ -199,13 +199,26 @@ public:
 };
 
 class CGOpenMPRuntime {
+public:
+  /// Allows to disable automatic handling of functions used in target regions
+  /// as those marked as `omp declare target`.
+  class DisableAutoDeclareTargetRAII {
+    CodeGenModule &CGM;
+    bool SavedShouldMarkAsGlobal;
+
+  public:
+    DisableAutoDeclareTargetRAII(CodeGenModule &CGM);
+    ~DisableAutoDeclareTargetRAII();
+  };
+
 protected:
   CodeGenModule &CGM;
 
   /// \brief Creates offloading entry for the provided entry ID \a ID,
   /// address \a Addr, size \a Size, and flags \a Flags.
   virtual void createOffloadEntry(llvm::Constant *ID, llvm::Constant *Addr,
-                                  uint64_t Size, int32_t Flags = 0);
+                                  uint64_t Size, int32_t Flags,
+                                  llvm::GlobalValue::LinkageTypes Linkage);
 
   /// \brief Helper to emit outlined function for 'target' directive.
   /// \param D Directive to emit.
@@ -256,6 +269,10 @@ protected:
   void emitCall(CodeGenFunction &CGF, SourceLocation Loc, llvm::Value *Callee,
                 ArrayRef<llvm::Value *> Args = llvm::None) const;
 
+  /// \brief Emits address of the word in a memory where current thread id is
+  /// stored.
+  virtual Address emitThreadIDAddress(CodeGenFunction &CGF, SourceLocation Loc);
+
 private:
   /// \brief Default const ident_t object used for initialization of all other
   /// ident_t objects.
@@ -265,6 +282,7 @@ private:
   OpenMPDefaultLocMapTy OpenMPDefaultLocMap;
   Address getOrCreateDefaultLocation(unsigned Flags);
 
+  QualType IdentQTy;
   llvm::StructType *IdentTy = nullptr;
   /// \brief Map for SourceLocation and OpenMP runtime library debug locations.
   typedef llvm::DenseMap<unsigned, llvm::Value *> OpenMPDebugLocMapTy;
@@ -372,105 +390,186 @@ private:
     CodeGenModule &CGM;
 
     /// \brief Number of entries registered so far.
-    unsigned OffloadingEntriesNum;
+    unsigned OffloadingEntriesNum = 0;
 
   public:
     /// Base class of the entries info.
     class OffloadEntryInfo {
     public:
-      /// Kind of a given entry. Currently, only target regions are
-      /// supported.
+      /// Kind of a given entry.
       enum OffloadingEntryInfoKinds : unsigned {
-        // Entry is a target region.
-        OFFLOAD_ENTRY_INFO_TARGET_REGION = 0,
-        // Invalid entry info.
-        OFFLOAD_ENTRY_INFO_INVALID = ~0u
+        /// Entry is a target region.
+        OffloadingEntryInfoTargetRegion = 0,
+        /// Entry is a declare target variable.
+        OffloadingEntryInfoDeviceGlobalVar = 1,
+        /// Invalid entry info.
+        OffloadingEntryInfoInvalid = ~0u
       };
 
-      OffloadEntryInfo()
-          : Flags(0), Order(~0u), Kind(OFFLOAD_ENTRY_INFO_INVALID) {}
+    protected:
+      OffloadEntryInfo() = delete;
+      explicit OffloadEntryInfo(OffloadingEntryInfoKinds Kind) : Kind(Kind) {}
       explicit OffloadEntryInfo(OffloadingEntryInfoKinds Kind, unsigned Order,
-                                int32_t Flags)
+                                uint32_t Flags)
           : Flags(Flags), Order(Order), Kind(Kind) {}
+      ~OffloadEntryInfo() = default;
 
+    public:
       bool isValid() const { return Order != ~0u; }
       unsigned getOrder() const { return Order; }
       OffloadingEntryInfoKinds getKind() const { return Kind; }
-      int32_t getFlags() const { return Flags; }
-      void setFlags(int32_t NewFlags) { Flags = NewFlags; }
+      uint32_t getFlags() const { return Flags; }
+      void setFlags(uint32_t NewFlags) { Flags = NewFlags; }
+      llvm::Constant *getAddress() const {
+        return cast_or_null<llvm::Constant>(Addr);
+      }
+      void setAddress(llvm::Constant *V) {
+        assert(!Addr.pointsToAliveValue() && "Address has been set before!");
+        Addr = V;
+      }
       static bool classof(const OffloadEntryInfo *Info) { return true; }
 
     private:
+      /// Address of the entity that has to be mapped for offloading.
+      llvm::WeakTrackingVH Addr;
+
       /// Flags associated with the device global.
-      int32_t Flags;
+      uint32_t Flags = 0u;
 
       /// Order this entry was emitted.
-      unsigned Order;
+      unsigned Order = ~0u;
 
-      OffloadingEntryInfoKinds Kind;
+      OffloadingEntryInfoKinds Kind = OffloadingEntryInfoInvalid;
     };
 
-    /// \brief Return true if a there are no entries defined.
+    /// Return true if a there are no entries defined.
     bool empty() const;
-    /// \brief Return number of entries defined so far.
+    /// Return number of entries defined so far.
     unsigned size() const { return OffloadingEntriesNum; }
-    OffloadEntriesInfoManagerTy(CodeGenModule &CGM)
-        : CGM(CGM), OffloadingEntriesNum(0) {}
+    OffloadEntriesInfoManagerTy(CodeGenModule &CGM) : CGM(CGM) {}
 
-    ///
-    /// Target region entries related.
-    ///
-    /// \brief Target region entries info.
-    class OffloadEntryInfoTargetRegion : public OffloadEntryInfo {
-      // \brief Address of the entity that has to be mapped for offloading.
-      llvm::Constant *Addr;
-      // \brief Address that can be used as the ID of the entry.
-      llvm::Constant *ID;
+    //
+    // Target region entries related.
+    //
+
+    /// Kind of the target registry entry.
+    enum OMPTargetRegionEntryKind : uint32_t {
+      /// Mark the entry as target region.
+      OMPTargetRegionEntryTargetRegion = 0x0,
+      /// Mark the entry as a global constructor.
+      OMPTargetRegionEntryCtor = 0x02,
+      /// Mark the entry as a global destructor.
+      OMPTargetRegionEntryDtor = 0x04,
+    };
+
+    /// Target region entries info.
+    class OffloadEntryInfoTargetRegion final : public OffloadEntryInfo {
+      /// Address that can be used as the ID of the entry.
+      llvm::Constant *ID = nullptr;
 
     public:
       OffloadEntryInfoTargetRegion()
-          : OffloadEntryInfo(OFFLOAD_ENTRY_INFO_TARGET_REGION, ~0u,
-                             /*Flags=*/0),
-            Addr(nullptr), ID(nullptr) {}
+          : OffloadEntryInfo(OffloadingEntryInfoTargetRegion) {}
       explicit OffloadEntryInfoTargetRegion(unsigned Order,
                                             llvm::Constant *Addr,
-                                            llvm::Constant *ID, int32_t Flags)
-          : OffloadEntryInfo(OFFLOAD_ENTRY_INFO_TARGET_REGION, Order, Flags),
-            Addr(Addr), ID(ID) {}
-
-      llvm::Constant *getAddress() const { return Addr; }
-      llvm::Constant *getID() const { return ID; }
-      void setAddress(llvm::Constant *V) {
-        assert(!Addr && "Address as been set before!");
-        Addr = V;
+                                            llvm::Constant *ID,
+                                            OMPTargetRegionEntryKind Flags)
+          : OffloadEntryInfo(OffloadingEntryInfoTargetRegion, Order, Flags),
+            ID(ID) {
+        setAddress(Addr);
       }
+
+      llvm::Constant *getID() const { return ID; }
       void setID(llvm::Constant *V) {
-        assert(!ID && "ID as been set before!");
+        assert(!ID && "ID has been set before!");
         ID = V;
       }
       static bool classof(const OffloadEntryInfo *Info) {
-        return Info->getKind() == OFFLOAD_ENTRY_INFO_TARGET_REGION;
+        return Info->getKind() == OffloadingEntryInfoTargetRegion;
       }
     };
-    /// \brief Initialize target region entry.
+
+    /// Initialize target region entry.
     void initializeTargetRegionEntryInfo(unsigned DeviceID, unsigned FileID,
                                          StringRef ParentName, unsigned LineNum,
                                          unsigned Order);
-    /// \brief Register target region entry.
+    /// Register target region entry.
     void registerTargetRegionEntryInfo(unsigned DeviceID, unsigned FileID,
                                        StringRef ParentName, unsigned LineNum,
                                        llvm::Constant *Addr, llvm::Constant *ID,
-                                       int32_t Flags);
-    /// \brief Return true if a target region entry with the provided
-    /// information exists.
+                                       OMPTargetRegionEntryKind Flags);
+    /// Return true if a target region entry with the provided information
+    /// exists.
     bool hasTargetRegionEntryInfo(unsigned DeviceID, unsigned FileID,
                                   StringRef ParentName, unsigned LineNum) const;
     /// brief Applies action \a Action on all registered entries.
     typedef llvm::function_ref<void(unsigned, unsigned, StringRef, unsigned,
-                                    OffloadEntryInfoTargetRegion &)>
+                                    const OffloadEntryInfoTargetRegion &)>
         OffloadTargetRegionEntryInfoActTy;
     void actOnTargetRegionEntriesInfo(
         const OffloadTargetRegionEntryInfoActTy &Action);
+
+    //
+    // Device global variable entries related.
+    //
+
+    /// Kind of the global variable entry..
+    enum OMPTargetGlobalVarEntryKind : uint32_t {
+      /// Mark the entry as a to declare target.
+      OMPTargetGlobalVarEntryTo = 0x0,
+    };
+
+    /// Device global variable entries info.
+    class OffloadEntryInfoDeviceGlobalVar final : public OffloadEntryInfo {
+      /// Type of the global variable.
+     CharUnits VarSize;
+     llvm::GlobalValue::LinkageTypes Linkage;
+
+   public:
+     OffloadEntryInfoDeviceGlobalVar()
+         : OffloadEntryInfo(OffloadingEntryInfoDeviceGlobalVar) {}
+     explicit OffloadEntryInfoDeviceGlobalVar(unsigned Order,
+                                              OMPTargetGlobalVarEntryKind Flags)
+         : OffloadEntryInfo(OffloadingEntryInfoDeviceGlobalVar, Order, Flags) {}
+     explicit OffloadEntryInfoDeviceGlobalVar(
+         unsigned Order, llvm::Constant *Addr, CharUnits VarSize,
+         OMPTargetGlobalVarEntryKind Flags,
+         llvm::GlobalValue::LinkageTypes Linkage)
+         : OffloadEntryInfo(OffloadingEntryInfoDeviceGlobalVar, Order, Flags),
+           VarSize(VarSize), Linkage(Linkage) {
+       setAddress(Addr);
+      }
+
+      CharUnits getVarSize() const { return VarSize; }
+      void setVarSize(CharUnits Size) { VarSize = Size; }
+      llvm::GlobalValue::LinkageTypes getLinkage() const { return Linkage; }
+      void setLinkage(llvm::GlobalValue::LinkageTypes LT) { Linkage = LT; }
+      static bool classof(const OffloadEntryInfo *Info) {
+        return Info->getKind() == OffloadingEntryInfoDeviceGlobalVar;
+      }
+    };
+
+    /// Initialize device global variable entry.
+    void initializeDeviceGlobalVarEntryInfo(StringRef Name,
+                                            OMPTargetGlobalVarEntryKind Flags,
+                                            unsigned Order);
+
+    /// Register device global variable entry.
+    void
+    registerDeviceGlobalVarEntryInfo(StringRef VarName, llvm::Constant *Addr,
+                                     CharUnits VarSize,
+                                     OMPTargetGlobalVarEntryKind Flags,
+                                     llvm::GlobalValue::LinkageTypes Linkage);
+    /// Checks if the variable with the given name has been registered already.
+    bool hasDeviceGlobalVarEntryInfo(StringRef VarName) const {
+      return OffloadEntriesDeviceGlobalVar.count(VarName) > 0;
+    }
+    /// Applies action \a Action on all registered entries.
+    typedef llvm::function_ref<void(StringRef,
+                                    const OffloadEntryInfoDeviceGlobalVar &)>
+        OffloadDeviceGlobalVarEntryInfoActTy;
+    void actOnDeviceGlobalVarEntriesInfo(
+        const OffloadDeviceGlobalVarEntryInfoActTy &Action);
 
   private:
     // Storage for target region entries kind. The storage is to be indexed by
@@ -485,8 +584,16 @@ private:
         OffloadEntriesTargetRegionPerDevice;
     typedef OffloadEntriesTargetRegionPerDevice OffloadEntriesTargetRegionTy;
     OffloadEntriesTargetRegionTy OffloadEntriesTargetRegion;
+    /// Storage for device global variable entries kind. The storage is to be
+    /// indexed by mangled name.
+    typedef llvm::StringMap<OffloadEntryInfoDeviceGlobalVar>
+        OffloadEntriesDeviceGlobalVarTy;
+    OffloadEntriesDeviceGlobalVarTy OffloadEntriesDeviceGlobalVar;
   };
   OffloadEntriesInfoManagerTy OffloadEntriesInfoManager;
+
+  bool ShouldMarkAsGlobal = true;
+  llvm::SmallDenseSet<const FunctionDecl *> AlreadyEmittedTargetFunctions;
 
   /// \brief Creates and registers offloading binary descriptor for the current
   /// compilation unit. The function that does the registration is returned.
@@ -549,10 +656,6 @@ private:
   /// \return Cache variable for the specified threadprivate.
   llvm::Constant *getOrCreateThreadPrivateCache(const VarDecl *VD);
 
-  /// \brief Emits address of the word in a memory where current thread id is
-  /// stored.
-  virtual Address emitThreadIDAddress(CodeGenFunction &CGF, SourceLocation Loc);
-
   /// \brief Gets (if variable with the given name already exist) or creates
   /// internal global variable with the specified Name. The created variable has
   /// linkage CommonLinkage by default and is initialized by null value.
@@ -564,6 +667,9 @@ private:
 
   /// \brief Set of threadprivate variables with the generated initializer.
   llvm::SmallPtrSet<const VarDecl *, 4> ThreadPrivateWithDefinition;
+
+  /// Set of declare target variables with the generated initializer.
+  llvm::SmallPtrSet<const VarDecl *, 4> DeclareTargetWithDefinition;
 
   /// \brief Emits initialization code for the threadprivate variables.
   /// \param VDAddr Address of the global variable \a VD.
@@ -587,7 +693,7 @@ private:
     llvm::Value *TaskEntry = nullptr;
     llvm::Value *NewTaskNewTaskTTy = nullptr;
     LValue TDBase;
-    RecordDecl *KmpTaskTQTyRD = nullptr;
+    const RecordDecl *KmpTaskTQTyRD = nullptr;
     llvm::Value *TaskDupFn = nullptr;
   };
   /// Emit task region for the task directive. The task region is emitted in
@@ -676,7 +782,7 @@ public:
 
   /// \brief Cleans up references to the objects in finished function.
   ///
-  void functionFinished(CodeGenFunction &CGF);
+  virtual void functionFinished(CodeGenFunction &CGF);
 
   /// \brief Emits code for parallel or serial call of the \a OutlinedFn with
   /// variables captured in a record which address is stored in \a
@@ -937,6 +1043,10 @@ public:
                                          Address VDAddr,
                                          SourceLocation Loc);
 
+  /// Returns the address of the variable marked as declare target with link
+  /// clause.
+  virtual Address getAddrOfDeclareTargetLink(const VarDecl *VD);
+
   /// \brief Emit a code for initialization of threadprivate variable. It emits
   /// a call to runtime library which adds initial value to the newly created
   /// threadprivate variable (if it is not constant) and registers destructor
@@ -949,6 +1059,14 @@ public:
   emitThreadPrivateVarDefinition(const VarDecl *VD, Address VDAddr,
                                  SourceLocation Loc, bool PerformInit,
                                  CodeGenFunction *CGF = nullptr);
+
+  /// \brief Emit a code for initialization of declare target variable.
+  /// \param VD Declare target variable.
+  /// \param Addr Address of the global variable \a VD.
+  /// \param PerformInit true if initialization expression is not constant.
+  virtual bool emitDeclareTargetVarDefinition(const VarDecl *VD,
+                                              llvm::GlobalVariable *Addr,
+                                              bool PerformInit);
 
   /// Creates artificial threadprivate variable with name \p Name and type \p
   /// VarType.
@@ -1225,6 +1343,11 @@ public:
   /// \param GD Variable declaration to emit.
   virtual bool emitTargetGlobalVariable(GlobalDecl GD);
 
+  /// Checks if the provided global decl \a GD is a declare target variable and
+  /// registers it when emitting code for the host.
+  virtual void registerTargetGlobalVariable(const VarDecl *VD,
+                                            llvm::Constant *Addr);
+
   /// \brief Emit the global \a GD if it is meaningful for the target. Returns
   /// if it was emitted successfully.
   /// \param GD Global to scan.
@@ -1341,7 +1464,7 @@ public:
 
   /// Translates the native parameter of outlined function if this is required
   /// for target.
-  /// \param FD Field decl from captured record for the paramater.
+  /// \param FD Field decl from captured record for the parameter.
   /// \param NativeParam Parameter itself.
   virtual const VarDecl *translateParameter(const FieldDecl *FD,
                                             const VarDecl *NativeParam) const {
@@ -1362,6 +1485,19 @@ public:
   emitOutlinedFunctionCall(CodeGenFunction &CGF, SourceLocation Loc,
                            llvm::Value *OutlinedFn,
                            ArrayRef<llvm::Value *> Args = llvm::None) const;
+
+  /// Emits OpenMP-specific function prolog.
+  /// Required for device constructs.
+  virtual void emitFunctionProlog(CodeGenFunction &CGF, const Decl *D) {}
+
+  /// Gets the OpenMP-specific address of the local variable.
+  virtual Address getAddressOfLocalVariable(CodeGenFunction &CGF,
+                                            const VarDecl *VD);
+
+  /// Marks the declaration as alread emitted for the device code and returns
+  /// true, if it was marked already, and false, otherwise.
+  bool markAsGlobalTarget(const FunctionDecl *D);
+
 };
 
 /// Class supports emissionof SIMD-only code.
@@ -1914,7 +2050,7 @@ public:
 
   /// Translates the native parameter of outlined function if this is required
   /// for target.
-  /// \param FD Field decl from captured record for the paramater.
+  /// \param FD Field decl from captured record for the parameter.
   /// \param NativeParam Parameter itself.
   const VarDecl *translateParameter(const FieldDecl *FD,
                                     const VarDecl *NativeParam) const override;

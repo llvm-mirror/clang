@@ -51,10 +51,32 @@ Major New Features
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- ...
+- ``-Wc++98-compat-extra-semi`` is a new flag, which was previously inseparable
+  from ``-Wc++98-compat-pedantic``. The latter still controls the new flag.
+
+- ``-Wextra-semi`` now also controls ``-Wc++98-compat-extra-semi``.
+  Please do note that if you pass ``-Wno-c++98-compat-pedantic``, it implies
+  ``-Wno-c++98-compat-extra-semi``, so if you want that diagnostic, you need
+  to explicitly re-enable it (e.g. by appending ``-Wextra-semi``).
+
+- ``-Wself-assign`` and ``-Wself-assign-field`` were extended to diagnose
+  self-assignment operations using overloaded operators (i.e. classes).
+  If you are doing such an assignment intentionally, e.g. in a unit test for
+  a data structure, the first warning can be disabled by passing
+  ``-Wno-self-assign-overloaded``, also the warning can be suppressed by adding
+  ``*&`` to the right-hand side or casting it to the appropriate reference type.
 
 Non-comprehensive list of changes in this release
 -------------------------------------------------
+
+- Clang binary and libraries have been renamed from 7.0 to 7.
+  For example, the ``clang`` binary will be called ``clang-7``
+  instead of ``clang-7.0``.
+
+- Clang implements a collection of recent fixes to the C++ standard's definition
+  of "standard-layout". In particular, a class is only considered to be
+  standard-layout if all base classes and the first data member (or bit-field)
+  can be laid out at offset zero.
 
 - ...
 
@@ -71,6 +93,16 @@ future versions of Clang.
 
 - ...
 
+Modified Compiler Flags
+-----------------------
+
+- Before Clang 7, we prepended the `#` character to the `--autocomplete`
+  argument to enable cc1 flags. For example, when the `-cc1` or `-Xclang` flag
+  is in the :program:`clang` invocation, the shell executed
+  `clang --autocomplete=#-<flag to be completed>`. Clang 7 now requires the
+  whole invocation including all flags to be passed to the `--autocomplete` like
+  this: `clang --autocomplete=-cc1,-xc++,-fsyn`.
+
 New Pragmas in Clang
 -----------------------
 
@@ -86,6 +118,7 @@ Attribute Changes in Clang
   sanity, however it is otherwise compatible with existing code using this
   feature for GCC. Consult the documentation for the target attribute for more
   information.
+
 - ...
 
 Windows Support
@@ -130,6 +163,18 @@ OpenMP Support in Clang
 ----------------------------------
 
 - ...
+
+CUDA Support in Clang
+---------------------
+
+- Clang will now try to locate the CUDA installation next to :program:`ptxas`
+  in the `PATH` environment variable. This behavior can be turned off by passing
+  the new flag `--cuda-path-ignore-env`.
+
+- Clang now supports generating object files with relocatable device code. This
+  feature needs to be enabled with `-fcuda-rdc` and my result in performance
+  penalties compared to whole program compilation. Please note that NVIDIA's
+  :program:`nvcc` must be used for linking.
 
 Internal API Changes
 --------------------

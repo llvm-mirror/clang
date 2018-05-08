@@ -125,6 +125,7 @@ static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
   case AttributeList::AT_NoReturn: \
   case AttributeList::AT_Regparm: \
   case AttributeList::AT_AnyX86NoCallerSavedRegisters: \
+  case AttributeList::AT_AnyX86NoCfCheck: \
     CALLING_CONV_ATTRS_CASELIST
 
 // Microsoft-specific type qualifiers.
@@ -4860,8 +4861,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         if (Chunk.Fun.TypeQuals & Qualifiers::Restrict)
           RemovalLocs.push_back(Chunk.Fun.getRestrictQualifierLoc());
         if (!RemovalLocs.empty()) {
-          std::sort(RemovalLocs.begin(), RemovalLocs.end(),
-                    BeforeThanCompare<SourceLocation>(S.getSourceManager()));
+          llvm::sort(RemovalLocs.begin(), RemovalLocs.end(),
+                     BeforeThanCompare<SourceLocation>(S.getSourceManager()));
           RemovalRange = SourceRange(RemovalLocs.front(), RemovalLocs.back());
           Loc = RemovalLocs.front();
         }
@@ -5144,6 +5145,8 @@ static AttributeList::Kind getAttrListKind(AttributedType::Kind kind) {
     return AttributeList::AT_ObjCOwnership;
   case AttributedType::attr_noreturn:
     return AttributeList::AT_NoReturn;
+  case AttributedType::attr_nocf_check:
+    return AttributeList::AT_AnyX86NoCfCheck;
   case AttributedType::attr_cdecl:
     return AttributeList::AT_CDecl;
   case AttributedType::attr_fastcall:
@@ -6609,7 +6612,7 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
   FunctionTypeUnwrapper unwrapped(S, type);
 
   if (attr.getKind() == AttributeList::AT_NoReturn) {
-    if (S.CheckNoReturnAttr(attr))
+    if (S.CheckAttrNoArgs(attr))
       return true;
 
     // Delay if this is not a function type.
@@ -6649,7 +6652,7 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
   }
 
   if (attr.getKind() == AttributeList::AT_AnyX86NoCallerSavedRegisters) {
-    if (S.CheckNoCallerSavedRegsAttr(attr))
+    if (S.CheckAttrTarget(attr) || S.CheckAttrNoArgs(attr))
       return true;
 
     // Delay if this is not a function type.
@@ -6658,6 +6661,27 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
 
     FunctionType::ExtInfo EI =
         unwrapped.get()->getExtInfo().withNoCallerSavedRegs(true);
+    type = unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
+    return true;
+  }
+
+  if (attr.getKind() == AttributeList::AT_AnyX86NoCfCheck) {
+    if (!S.getLangOpts().CFProtectionBranch) {
+      S.Diag(attr.getLoc(), diag::warn_nocf_check_attribute_ignored);
+      attr.setInvalid();
+      return true;
+    }
+
+    if (S.CheckAttrTarget(attr) || S.CheckAttrNoArgs(attr))
+      return true;
+
+    // If this is not a function type, warning will be asserted by subject 
+    // check.
+    if (!unwrapped.isFunctionType())
+      return true;
+
+    FunctionType::ExtInfo EI =
+      unwrapped.get()->getExtInfo().withNoCfCheck(true);
     type = unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
     return true;
   }
@@ -7056,12 +7080,12 @@ static void deduceOpenCLImplicitAddrSpace(TypeProcessingState &State,
 
   // Handle the cases where address space should not be deduced.
   //
-  // The pointee type of a pointer type is alwasy deduced since a pointer always
+  // The pointee type of a pointer type is always deduced since a pointer always
   // points to some memory location which should has an address space.
   //
   // There are situations that at the point of certain declarations, the address
   // space may be unknown and better to be left as default. For example, when
-  // definining a typedef or struct type, they are not associated with any
+  // defining a typedef or struct type, they are not associated with any
   // specific address space. Later on, they may be used with any address space
   // to declare a variable.
   //

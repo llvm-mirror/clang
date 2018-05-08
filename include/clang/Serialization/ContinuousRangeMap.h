@@ -16,6 +16,7 @@
 #define LLVM_CLANG_SERIALIZATION_CONTINUOUSRANGEMAP_H
 
 #include "clang/Basic/LLVM.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cassert>
@@ -117,7 +118,7 @@ public:
     Builder &operator=(const Builder&) = delete;
     
     ~Builder() {
-      std::sort(Self.Rep.begin(), Self.Rep.end(), Compare());
+      llvm::sort(Self.Rep.begin(), Self.Rep.end(), Compare());
       std::unique(Self.Rep.begin(), Self.Rep.end(),
                   [](const_reference A, const_reference B) {
         // FIXME: we should not allow any duplicate keys, but there are a lot of

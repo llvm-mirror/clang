@@ -19,6 +19,8 @@ if(NOT APPLE)
   set(CLANG_DEFAULT_LINKER lld CACHE STRING "")
   set(CLANG_DEFAULT_OBJCOPY llvm-objcopy CACHE STRING "")
 endif()
+set(CLANG_DEFAULT_CXX_STDLIB libc++ CACHE STRING "")
+set(CLANG_DEFAULT_RTLIB compiler-rt CACHE STRING "")
 
 set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
 set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "")
@@ -26,25 +28,42 @@ set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -gline-tables-only -DNDEBUG" CACHE STRING 
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -gline-tables-only -DNDEBUG" CACHE STRING "")
 
 set(LLVM_BUILTIN_TARGETS "default;x86_64-fuchsia;aarch64-fuchsia" CACHE STRING "")
+
+# Set the per-target builtins options.
 foreach(target x86_64;aarch64)
   set(BUILTINS_${target}-fuchsia_CMAKE_SYSROOT ${FUCHSIA_${target}_SYSROOT} CACHE PATH "")
   set(BUILTINS_${target}-fuchsia_CMAKE_SYSTEM_NAME Fuchsia CACHE STRING "")
 endforeach()
 
 set(LLVM_RUNTIME_TARGETS "default;x86_64-fuchsia;aarch64-fuchsia;x86_64-fuchsia-asan:x86_64-fuchsia;aarch64-fuchsia-asan:aarch64-fuchsia" CACHE STRING "")
+
+# Set the default target runtimes options.
+if(NOT APPLE)
+  set(LIBUNWIND_ENABLE_SHARED OFF CACHE BOOL "")
+  set(LIBUNWIND_USE_COMPILER_RT ON CACHE BOOL "")
+  set(LIBUNWIND_INSTALL_LIBRARY OFF CACHE BOOL "")
+  set(LIBCXXABI_USE_COMPILER_RT ON CACHE BOOL "")
+  set(LIBCXXABI_ENABLE_SHARED OFF CACHE BOOL "")
+  set(LIBCXXABI_USE_LLVM_UNWINDER ON CACHE BOOL "")
+  set(LIBCXXABI_ENABLE_STATIC_UNWINDER ON CACHE BOOL "")
+  set(LIBCXXABI_INSTALL_LIBRARY OFF CACHE BOOL "")
+  set(LIBCXX_USE_COMPILER_RT ON CACHE BOOL "")
+  set(LIBCXX_ENABLE_SHARED OFF CACHE BOOL "")
+  set(LIBCXX_ENABLE_STATIC_ABI_LIBRARY ON CACHE BOOL "")
+endif()
+
+# Set the per-target runtimes options.
 foreach(target x86_64;aarch64)
   set(RUNTIMES_${target}-fuchsia_CMAKE_BUILD_WITH_INSTALL_RPATH ON CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_CMAKE_SYSROOT ${FUCHSIA_${target}_SYSROOT} CACHE PATH "")
   set(RUNTIMES_${target}-fuchsia_CMAKE_SYSTEM_NAME Fuchsia CACHE STRING "")
   set(RUNTIMES_${target}-fuchsia_UNIX 1 CACHE BOOL "")
-  set(RUNTIMES_${target}-fuchsia_LLVM_ENABLE_LIBCXX ON CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBUNWIND_USE_COMPILER_RT ON CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBUNWIND_ENABLE_STATIC OFF CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBCXXABI_USE_COMPILER_RT ON CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBCXXABI_USE_LLVM_UNWINDER ON CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBCXXABI_ENABLE_STATIC OFF CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_LIBCXX_USE_COMPILER_RT ON CACHE BOOL "")
-  set(RUNTIMES_${target}-fuchsia_LIBCXX_ABI_VERSION 2 CACHE STRING "")
   set(RUNTIMES_${target}-fuchsia_LIBCXX_ENABLE_STATIC OFF CACHE BOOL "")
   set(RUNTIMES_${target}-fuchsia_SANITIZER_USE_COMPILER_RT ON CACHE BOOL "")
 
@@ -57,12 +76,12 @@ endforeach()
 # Setup toolchain.
 set(LLVM_INSTALL_TOOLCHAIN_ONLY ON CACHE BOOL "")
 set(LLVM_TOOLCHAIN_TOOLS
+  dsymutil
   llc
   llvm-ar
   llvm-cov
   llvm-cxxfilt
   llvm-dwarfdump
-  llvm-dsymutil
   llvm-lib
   llvm-nm
   llvm-objcopy

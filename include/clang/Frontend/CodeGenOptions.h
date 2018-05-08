@@ -16,6 +16,7 @@
 
 #include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Basic/Sanitizers.h"
+#include "clang/Basic/XRayInstr.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Target/TargetOptions.h"
@@ -177,9 +178,6 @@ public:
   /// function instead of to trap instructions.
   std::string TrapFuncName;
 
-  /// A list of command-line options to forward to the LLVM backend.
-  std::vector<std::string> BackendOptions;
-
   /// A list of dependent libraries.
   std::vector<std::string> DependentLibraries;
 
@@ -204,6 +202,9 @@ public:
   /// to be used as input for the ThinLTO thin link step, which only needs
   /// the summary and module symbol table (and not, e.g. any debug metadata).
   std::string ThinLinkBitcodeFile;
+
+  /// Prefix to use for -save-temps output.
+  std::string SaveTempsFilePrefix;
 
   /// Name of file passed with -fcuda-include-gpubinary option to forward to
   /// CUDA runtime back-end for incorporating them into host-side object file.
@@ -257,6 +258,9 @@ public:
   /// override default transforms based on the width of the architected vector
   /// registers.
   std::string PreferVectorWidth;
+
+  /// Set of XRay instrumentation kinds to emit.
+  XRayInstrSet XRayInstrumentationBundle;
 
 public:
   // Define accessors/mutators for code generation options of enumeration type.

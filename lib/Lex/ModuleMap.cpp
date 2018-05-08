@@ -54,6 +54,24 @@
 
 using namespace clang;
 
+void ModuleMap::resolveLinkAsDependencies(Module *Mod) {
+  auto PendingLinkAs = PendingLinkAsModule.find(Mod->Name);
+  if (PendingLinkAs != PendingLinkAsModule.end()) {
+    for (auto &Name : PendingLinkAs->second) {
+      auto *M = findModule(Name.getKey());
+      if (M)
+        M->UseExportAsModuleLinkName = true;
+    }
+  }
+}
+
+void ModuleMap::addLinkAsDependency(Module *Mod) {
+  if (findModule(Mod->ExportAsModule))
+    Mod->UseExportAsModuleLinkName = true;
+  else
+    PendingLinkAsModule[Mod->ExportAsModule].insert(Mod->Name);
+}
+
 Module::HeaderKind ModuleMap::headerRoleToKind(ModuleHeaderRole Role) {
   switch ((int)Role) {
   default: llvm_unreachable("unknown header role");
@@ -1630,14 +1648,15 @@ namespace {
 /// in other ways (FooPrivate and Foo.Private), providing notes and fixits.
 static void diagnosePrivateModules(const ModuleMap &Map,
                                    DiagnosticsEngine &Diags,
-                                   const Module *ActiveModule) {
+                                   const Module *ActiveModule,
+                                   SourceLocation InlineParent) {
 
   auto GenNoteAndFixIt = [&](StringRef BadName, StringRef Canonical,
-                             const Module *M) {
+                             const Module *M, SourceRange ReplLoc) {
     auto D = Diags.Report(ActiveModule->DefinitionLoc,
                           diag::note_mmap_rename_top_level_private_module);
     D << BadName << M->Name;
-    D << FixItHint::CreateReplacement(ActiveModule->DefinitionLoc, Canonical);
+    D << FixItHint::CreateReplacement(ReplLoc, Canonical);
   };
 
   for (auto E = Map.module_begin(); E != Map.module_end(); ++E) {
@@ -1657,7 +1676,8 @@ static void diagnosePrivateModules(const ModuleMap &Map,
       Diags.Report(ActiveModule->DefinitionLoc,
                    diag::warn_mmap_mismatched_private_submodule)
           << FullName;
-      GenNoteAndFixIt(FullName, Canonical, M);
+      GenNoteAndFixIt(FullName, Canonical, M,
+                      SourceRange(InlineParent, ActiveModule->DefinitionLoc));
       continue;
     }
 
@@ -1667,7 +1687,8 @@ static void diagnosePrivateModules(const ModuleMap &Map,
       Diags.Report(ActiveModule->DefinitionLoc,
                    diag::warn_mmap_mismatched_private_module_name)
           << ActiveModule->Name;
-      GenNoteAndFixIt(ActiveModule->Name, Canonical, M);
+      GenNoteAndFixIt(ActiveModule->Name, Canonical, M,
+                      SourceRange(ActiveModule->DefinitionLoc));
     }
   }
 }
@@ -1753,6 +1774,7 @@ void ModuleMapParser::parseModuleDecl() {
   }
   
   Module *PreviousActiveModule = ActiveModule;  
+  SourceLocation LastInlineParentLoc = SourceLocation();
   if (Id.size() > 1) {
     // This module map defines a submodule. Go find the module of which it
     // is a submodule.
@@ -1763,6 +1785,7 @@ void ModuleMapParser::parseModuleDecl() {
         if (I == 0)
           TopLevelModule = Next;
         ActiveModule = Next;
+        LastInlineParentLoc = Id[I].second;
         continue;
       }
       
@@ -1868,21 +1891,24 @@ void ModuleMapParser::parseModuleDecl() {
     ActiveModule->NoUndeclaredIncludes = true;
   ActiveModule->Directory = Directory;
 
+  StringRef MapFileName(ModuleMapFile->getName());
+  if (MapFileName.endswith("module.private.modulemap") ||
+      MapFileName.endswith("module_private.map")) {
+    ActiveModule->ModuleMapIsPrivate = true;
+  }
 
   // Private modules named as FooPrivate, Foo.Private or similar are likely a
   // user error; provide warnings, notes and fixits to direct users to use
   // Foo_Private instead.
   SourceLocation StartLoc =
       SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
-  StringRef MapFileName(ModuleMapFile->getName());
   if (Map.HeaderInfo.getHeaderSearchOpts().ImplicitModuleMaps &&
       !Diags.isIgnored(diag::warn_mmap_mismatched_private_submodule,
                        StartLoc) &&
       !Diags.isIgnored(diag::warn_mmap_mismatched_private_module_name,
                        StartLoc) &&
-      (MapFileName.endswith("module.private.modulemap") ||
-       MapFileName.endswith("module_private.map")))
-    diagnosePrivateModules(Map, Diags, ActiveModule);
+      ActiveModule->ModuleMapIsPrivate)
+    diagnosePrivateModules(Map, Diags, ActiveModule, LastInlineParentLoc);
 
   bool Done = false;
   do {
@@ -2407,6 +2433,8 @@ void ModuleMapParser::parseExportAsDecl() {
   }
   
   ActiveModule->ExportAsModule = Tok.getString();
+  Map.addLinkAsDependency(ActiveModule);
+
   consumeToken();
 }
 

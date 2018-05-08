@@ -396,8 +396,8 @@ static bool checkTargetOptions(const TargetOptions &TargetOpts,
                                              ExistingTargetOpts.FeaturesAsWritten.end());
   SmallVector<StringRef, 4> ReadFeatures(TargetOpts.FeaturesAsWritten.begin(),
                                          TargetOpts.FeaturesAsWritten.end());
-  std::sort(ExistingFeatures.begin(), ExistingFeatures.end());
-  std::sort(ReadFeatures.begin(), ReadFeatures.end());
+  llvm::sort(ExistingFeatures.begin(), ExistingFeatures.end());
+  llvm::sort(ReadFeatures.begin(), ReadFeatures.end());
 
   // We compute the set difference in both directions explicitly so that we can
   // diagnose the differences differently.
@@ -2137,7 +2137,7 @@ InputFile ASTReader::getInputFile(ModuleFile &F, unsigned ID, bool Complain) {
   }
 
   // Check if there was a request to override the contents of the file
-  // that was part of the precompiled header. Overridding such a file
+  // that was part of the precompiled header. Overriding such a file
   // can lead to problems when lexing using the source locations from the
   // PCH.
   SourceManager &SM = getSourceManager();
@@ -4980,7 +4980,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       break;
 
     case SUBMODULE_DEFINITION: {
-      if (Record.size() < 8) {
+      if (Record.size() < 12) {
         Error("malformed module definition");
         return Failure;
       }
@@ -4998,6 +4998,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       bool InferExplicitSubmodules = Record[Idx++];
       bool InferExportWildcard = Record[Idx++];
       bool ConfigMacrosExhaustive = Record[Idx++];
+      bool ModuleMapIsPrivate = Record[Idx++];
 
       Module *ParentModule = nullptr;
       if (Parent)
@@ -5045,6 +5046,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       CurrentModule->InferExplicitSubmodules = InferExplicitSubmodules;
       CurrentModule->InferExportWildcard = InferExportWildcard;
       CurrentModule->ConfigMacrosExhaustive = ConfigMacrosExhaustive;
+      CurrentModule->ModuleMapIsPrivate = ModuleMapIsPrivate;
       if (DeserializationListener)
         DeserializationListener->ModuleRead(GlobalID, CurrentModule);
 
@@ -5171,6 +5173,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       break;
 
     case SUBMODULE_LINK_LIBRARY:
+      ModMap.resolveLinkAsDependencies(CurrentModule);
       CurrentModule->LinkLibraries.push_back(
                                          Module::LinkLibrary(Blob, Record[0]));
       break;
@@ -5203,6 +5206,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
 
     case SUBMODULE_EXPORT_AS:
       CurrentModule->ExportAsModule = Blob.str();
+      ModMap.addLinkAsDependency(CurrentModule);
       break;
     }
   }
@@ -6005,13 +6009,14 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
   }
 
   case TYPE_FUNCTION_NO_PROTO: {
-    if (Record.size() != 7) {
+    if (Record.size() != 8) {
       Error("incorrect encoding of no-proto function type");
       return QualType();
     }
     QualType ResultType = readType(*Loc.F, Record, Idx);
     FunctionType::ExtInfo Info(Record[1], Record[2], Record[3],
-                               (CallingConv)Record[4], Record[5], Record[6]);
+                               (CallingConv)Record[4], Record[5], Record[6], 
+                               Record[7]);
     return Context.getFunctionNoProtoType(ResultType, Info);
   }
 
@@ -6024,9 +6029,10 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
                                         /*regparm*/ Record[3],
                                         static_cast<CallingConv>(Record[4]),
                                         /*produces*/ Record[5],
-                                        /*nocallersavedregs*/ Record[6]);
+                                        /*nocallersavedregs*/ Record[6],
+                                        /*nocfcheck*/ Record[7]);
 
-    unsigned Idx = 7;
+    unsigned Idx = 8;
 
     EPI.Variadic = Record[Idx++];
     EPI.HasTrailingReturn = Record[Idx++];
@@ -9076,8 +9082,8 @@ void ASTReader::ReadComments() {
   NextCursor:
     // De-serialized SourceLocations get negative FileIDs for other modules,
     // potentially invalidating the original order. Sort it again.
-    std::sort(Comments.begin(), Comments.end(),
-              BeforeThanCompare<RawComment>(SourceMgr));
+    llvm::sort(Comments.begin(), Comments.end(),
+               BeforeThanCompare<RawComment>(SourceMgr));
     Context.Comments.addDeserializedComments(Comments);
   }
 }
@@ -9441,6 +9447,12 @@ void ASTReader::diagnoseOdrViolations() {
     assert(D);
     Hash.clear();
     Hash.AddSubDecl(D);
+    return Hash.CalculateHash();
+  };
+
+  auto ComputeTemplateArgumentODRHash = [&Hash](const TemplateArgument &TA) {
+    Hash.clear();
+    Hash.AddTemplateArgument(TA);
     return Hash.CalculateHash();
   };
 
@@ -9942,6 +9954,9 @@ void ASTReader::diagnoseOdrViolations() {
         MethodParameterName,
         MethodParameterSingleDefaultArgument,
         MethodParameterDifferentDefaultArgument,
+        MethodNoTemplateArguments,
+        MethodDifferentNumberTemplateArguments,
+        MethodDifferentTemplateArgument,
         TypedefName,
         TypedefType,
         VarName,
@@ -10364,6 +10379,89 @@ void ASTReader::diagnoseOdrViolations() {
           break;
         }
 
+        const auto *FirstTemplateArgs =
+            FirstMethod->getTemplateSpecializationArgs();
+        const auto *SecondTemplateArgs =
+            SecondMethod->getTemplateSpecializationArgs();
+
+        if ((FirstTemplateArgs && !SecondTemplateArgs) ||
+            (!FirstTemplateArgs && SecondTemplateArgs)) {
+          ODRDiagError(FirstMethod->getLocation(),
+                       FirstMethod->getSourceRange(), MethodNoTemplateArguments)
+              << FirstMethodType << FirstName << (FirstTemplateArgs != nullptr);
+          ODRDiagNote(SecondMethod->getLocation(),
+                      SecondMethod->getSourceRange(), MethodNoTemplateArguments)
+              << SecondMethodType << SecondName
+              << (SecondTemplateArgs != nullptr);
+
+          Diagnosed = true;
+          break;
+        }
+
+        if (FirstTemplateArgs && SecondTemplateArgs) {
+          // Remove pack expansions from argument list.
+          auto ExpandTemplateArgumentList =
+              [](const TemplateArgumentList *TAL) {
+                llvm::SmallVector<const TemplateArgument *, 8> ExpandedList;
+                for (const TemplateArgument &TA : TAL->asArray()) {
+                  if (TA.getKind() != TemplateArgument::Pack) {
+                    ExpandedList.push_back(&TA);
+                    continue;
+                  }
+                  for (const TemplateArgument &PackTA : TA.getPackAsArray()) {
+                    ExpandedList.push_back(&PackTA);
+                  }
+                }
+                return ExpandedList;
+              };
+          llvm::SmallVector<const TemplateArgument *, 8> FirstExpandedList =
+              ExpandTemplateArgumentList(FirstTemplateArgs);
+          llvm::SmallVector<const TemplateArgument *, 8> SecondExpandedList =
+              ExpandTemplateArgumentList(SecondTemplateArgs);
+
+          if (FirstExpandedList.size() != SecondExpandedList.size()) {
+            ODRDiagError(FirstMethod->getLocation(),
+                         FirstMethod->getSourceRange(),
+                         MethodDifferentNumberTemplateArguments)
+                << FirstMethodType << FirstName
+                << (unsigned)FirstExpandedList.size();
+            ODRDiagNote(SecondMethod->getLocation(),
+                        SecondMethod->getSourceRange(),
+                        MethodDifferentNumberTemplateArguments)
+                << SecondMethodType << SecondName
+                << (unsigned)SecondExpandedList.size();
+
+            Diagnosed = true;
+            break;
+          }
+
+          bool TemplateArgumentMismatch = false;
+          for (unsigned i = 0, e = FirstExpandedList.size(); i != e; ++i) {
+            const TemplateArgument &FirstTA = *FirstExpandedList[i],
+                                   &SecondTA = *SecondExpandedList[i];
+            if (ComputeTemplateArgumentODRHash(FirstTA) ==
+                ComputeTemplateArgumentODRHash(SecondTA)) {
+              continue;
+            }
+
+            ODRDiagError(FirstMethod->getLocation(),
+                         FirstMethod->getSourceRange(),
+                         MethodDifferentTemplateArgument)
+                << FirstMethodType << FirstName << FirstTA << i + 1;
+            ODRDiagNote(SecondMethod->getLocation(),
+                        SecondMethod->getSourceRange(),
+                        MethodDifferentTemplateArgument)
+                << SecondMethodType << SecondName << SecondTA << i + 1;
+
+            TemplateArgumentMismatch = true;
+            break;
+          }
+
+          if (TemplateArgumentMismatch) {
+            Diagnosed = true;
+            break;
+          }
+        }
         break;
       }
       case TypeAlias:

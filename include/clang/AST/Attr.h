@@ -227,27 +227,32 @@ public:
   /// determine if there is a C++ implicit this parameter.
   ParamIdx(unsigned Idx, const Decl *D)
       : Idx(Idx), HasThis(false), IsValid(true) {
+    assert(Idx >= 1 && "Idx must be one-origin");
     if (const auto *FD = dyn_cast<FunctionDecl>(D))
       HasThis = FD->isCXXInstanceMember();
   }
 
-  /// \param Idx is the parameter index as it is normally specified in
-  /// attributes in the source: one-origin including any C++ implicit this
-  /// parameter.
+  /// A type into which \c ParamIdx can be serialized.
   ///
-  /// \param HasThis specifies whether the function has a C++ implicit this
-  /// parameter.
-  ParamIdx(unsigned Idx, bool HasThis)
-      : Idx(Idx), HasThis(HasThis), IsValid(true) {}
+  /// A static assertion that it's of the correct size follows the \c ParamIdx
+  /// class definition.
+  typedef uint32_t SerialType;
+
+  /// Produce a representation that can later be passed to \c deserialize to
+  /// construct an equivalent \c ParamIdx.
+  SerialType serialize() const {
+    return *reinterpret_cast<const SerialType *>(this);
+  }
+
+  /// Construct from a result from \c serialize.
+  static ParamIdx deserialize(SerialType S) {
+    ParamIdx P(*reinterpret_cast<ParamIdx *>(&S));
+    assert((!P.IsValid || P.Idx >= 1) && "valid Idx must be one-origin");
+    return P;
+  }
 
   /// Is this parameter index valid?
   bool isValid() const { return IsValid; }
-
-  /// Is there a C++ implicit this parameter?
-  bool hasThis() const {
-    assert(isValid() && "ParamIdx must be valid");
-    return HasThis;
-  }
 
   /// Get the parameter index as it would normally be encoded for attributes at
   /// the source level of representation: one-origin including any C++ implicit
@@ -308,6 +313,9 @@ public:
     return Idx >= I.Idx;
   }
 };
+
+static_assert(sizeof(ParamIdx) == sizeof(ParamIdx::SerialType),
+              "ParamIdx does not fit its serialization type");
 
 #include "clang/AST/Attrs.inc"
 

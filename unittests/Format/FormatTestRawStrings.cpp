@@ -164,6 +164,20 @@ t = R"pb(item:1)pb";)test",
                    getRawStringPbStyleWithColumns(40)));
 }
 
+TEST_F(FormatTestRawStrings, RespectsClangFormatOff) {
+  expect_eq(R"test(
+// clang-format off
+s = R"pb(item:      1)pb";
+// clang-format on
+t = R"pb(item: 1)pb";)test",
+            format(R"test(
+// clang-format off
+s = R"pb(item:      1)pb";
+// clang-format on
+t = R"pb(item:      1)pb";)test",
+                   getRawStringPbStyleWithColumns(40)));
+}
+
 TEST_F(FormatTestRawStrings, ReformatsShortRawStringsOnSingleLine) {
   expect_eq(
       R"test(P p = TP(R"pb()pb");)test",
@@ -681,15 +695,14 @@ int s() {
 })test",
                    getRawStringPbStyleWithColumns(20)));
 
-  // Align the suffix with the surrounding FirstIndent if the prefix is not on
+  // Align the suffix with the surrounding indent if the prefix is not on
   // a line of its own.
   expect_eq(R"test(
 int s() {
-  auto S = PTP(
-      R"pb(
-        item_1: 1,
-        item_2: 2
-      )pb");
+  auto S = PTP(R"pb(
+    item_1: 1,
+    item_2: 2
+  )pb");
 })test",
             format(R"test(
 int s() {
@@ -779,6 +792,34 @@ TEST_F(FormatTestRawStrings, UpdatesToCanonicalDelimiters) {
   // the raw string content.
   expect_eq(R"test(a = R"pb(key: ")proto")pb";)test",
             format(R"test(a = R"pb(key:")proto")pb";)test", Style));
+}
+
+TEST_F(FormatTestRawStrings, PenalizesPrefixExcessChars) {
+  FormatStyle Style = getRawStringPbStyleWithColumns(60);
+
+  // The '(' in R"pb is at column 60, no break.
+  expect_eq(R"test(
+xxxxxxxaaaaax wwwwwww = _Verxrrrrrrrr(PARSE_TEXT_PROTO(R"pb(
+  Category: aaaaaaaaaaaaaaaaaaaaaaaaaa
+)pb"));
+)test",
+            format(R"test(
+xxxxxxxaaaaax wwwwwww = _Verxrrrrrrrr(PARSE_TEXT_PROTO(R"pb(
+  Category: aaaaaaaaaaaaaaaaaaaaaaaaaa
+)pb"));
+)test", Style));
+  // The '(' in R"pb is at column 61, break.
+  expect_eq(R"test(
+xxxxxxxaaaaax wwwwwww =
+    _Verxrrrrrrrrr(PARSE_TEXT_PROTO(R"pb(
+      Category: aaaaaaaaaaaaaaaaaaaaaaaaaa
+    )pb"));
+)test",
+            format(R"test(
+xxxxxxxaaaaax wwwwwww = _Verxrrrrrrrrr(PARSE_TEXT_PROTO(R"pb(
+      Category: aaaaaaaaaaaaaaaaaaaaaaaaaa
+)pb"));
+)test", Style));
 }
 
 } // end namespace

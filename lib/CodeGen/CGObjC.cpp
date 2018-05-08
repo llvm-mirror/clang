@@ -1013,8 +1013,9 @@ CodeGenFunction::generateObjCGetterBody(const ObjCImplementationDecl *classImpl,
       // that's not necessarily the same as "on the stack", so
       // we still potentially need objc_memmove_collectable.
       EmitAggregateCopy(/* Dest= */ MakeAddrLValue(ReturnValue, ivarType),
-                        /* Src= */ LV, ivarType);
-      return; }
+                        /* Src= */ LV, ivarType, overlapForReturnValue());
+      return;
+    }
     case TEK_Scalar: {
       llvm::Value *value;
       if (propType->isReferenceType()) {
@@ -1439,7 +1440,8 @@ void CodeGenFunction::GenerateObjCCtorDtorMethod(ObjCImplementationDecl *IMP,
       EmitAggExpr(IvarInit->getInit(),
                   AggValueSlot::forLValue(LV, AggValueSlot::IsDestructed,
                                           AggValueSlot::DoesNotNeedGCBarriers,
-                                          AggValueSlot::IsNotAliased));
+                                          AggValueSlot::IsNotAliased,
+                                          AggValueSlot::DoesNotOverlap));
     }
     // constructor returns 'self'.
     CodeGenTypes &Types = CGM.getTypes();
@@ -2034,7 +2036,7 @@ static void emitAutoreleasedReturnValueMarker(CodeGenFunction &CGF) {
 
   // Call the marker asm if we made one, which we do only at -O0.
   if (marker)
-    CGF.Builder.CreateCall(marker);
+    CGF.Builder.CreateCall(marker, None, CGF.getBundlesForFunclet(marker));
 }
 
 /// Retain the given object which is the result of a function call.
@@ -2305,6 +2307,21 @@ void CodeGenFunction::EmitARCCopyWeak(Address dst, Address src) {
   emitARCCopyOperation(*this, dst, src,
                        CGM.getObjCEntrypoints().objc_copyWeak,
                        "objc_copyWeak");
+}
+
+void CodeGenFunction::emitARCCopyAssignWeak(QualType Ty, Address DstAddr,
+                                            Address SrcAddr) {
+  llvm::Value *Object = EmitARCLoadWeakRetained(SrcAddr);
+  Object = EmitObjCConsumeObject(Ty, Object);
+  EmitARCStoreWeak(DstAddr, Object, false);
+}
+
+void CodeGenFunction::emitARCMoveAssignWeak(QualType Ty, Address DstAddr,
+                                            Address SrcAddr) {
+  llvm::Value *Object = EmitARCLoadWeakRetained(SrcAddr);
+  Object = EmitObjCConsumeObject(Ty, Object);
+  EmitARCStoreWeak(DstAddr, Object, false);
+  EmitARCDestroyWeak(SrcAddr);
 }
 
 /// Produce the code to do a objc_autoreleasepool_push.
@@ -3366,7 +3383,8 @@ CodeGenFunction::GenerateObjCAtomicGetterCopyHelperFunction(
                                     Qualifiers(),
                                     AggValueSlot::IsDestructed,
                                     AggValueSlot::DoesNotNeedGCBarriers,
-                                    AggValueSlot::IsNotAliased));
+                                    AggValueSlot::IsNotAliased,
+                                    AggValueSlot::DoesNotOverlap));
   
   FinishFunction();
   HelperFn = llvm::ConstantExpr::getBitCast(Fn, VoidPtrTy);

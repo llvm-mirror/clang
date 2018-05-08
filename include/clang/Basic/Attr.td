@@ -1889,7 +1889,7 @@ def Target : InheritableAttr {
     template<class Compare>
     ParsedTargetAttr parse(Compare cmp) const {
       ParsedTargetAttr Attrs = parse();
-      std::sort(std::begin(Attrs.Features), std::end(Attrs.Features), cmp);
+      llvm::sort(std::begin(Attrs.Features), std::end(Attrs.Features), cmp);
       return Attrs;
     }
 
@@ -2120,6 +2120,12 @@ def AnyX86NoCallerSavedRegisters : InheritableAttr,
                                    TargetSpecificAttr<TargetAnyX86> {
   let Spellings = [GCC<"no_caller_saved_registers">];
   let Documentation = [AnyX86NoCallerSavedRegistersDocs];
+}
+
+def AnyX86NoCfCheck : InheritableAttr, TargetSpecificAttr<TargetAnyX86>{
+  let Spellings = [GCC<"nocf_check">];
+  let Subjects = SubjectList<[FunctionLike]>;
+  let Documentation = [AnyX86NoCfCheckDocs];
 }
 
 def X86ForceAlignArgPointer : InheritableAttr, TargetSpecificAttr<TargetAnyX86> {
@@ -2655,7 +2661,7 @@ def LoopHint : Attr {
   /// vectorize: vectorizes loop operations if State == Enable.
   /// vectorize_width: vectorize loop operations with width 'Value'.
   /// interleave: interleave multiple loop iterations if State == Enable.
-  /// interleave_count: interleaves 'Value' loop interations.
+  /// interleave_count: interleaves 'Value' loop iterations.
   /// unroll: fully unroll loop if State == Enable.
   /// unroll_count: unrolls loop 'Value' times.
   /// distribute: attempt to distribute loop if State == Enable
@@ -2770,6 +2776,14 @@ def OMPCaptureKind : Attr {
   let Spellings = [];
   let SemaHandler = 0;
   let Args = [UnsignedArgument<"CaptureKind">];
+  let Documentation = [Undocumented];
+}
+
+def OMPReferencedVar : Attr {
+  // This attribute has no spellings as it is only ever created implicitly.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Args = [ExprArgument<"Ref">];
   let Documentation = [Undocumented];
 }
 

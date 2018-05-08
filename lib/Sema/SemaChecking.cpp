@@ -28,6 +28,7 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/ExprOpenMP.h"
 #include "clang/AST/NSAPI.h"
+#include "clang/AST/NonTrivialTypeVisitor.h"
 #include "clang/AST/OperationKinds.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/TemplateBase.h"
@@ -1097,19 +1098,70 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
       return ExprError();
     break;
   case Builtin::BI__builtin_operator_new:
-  case Builtin::BI__builtin_operator_delete:
-    if (!getLangOpts().CPlusPlus) {
-      Diag(TheCall->getExprLoc(), diag::err_builtin_requires_language)
-        << (BuiltinID == Builtin::BI__builtin_operator_new
-                ? "__builtin_operator_new"
-                : "__builtin_operator_delete")
-        << "C++";
+  case Builtin::BI__builtin_operator_delete: {
+    bool IsDelete = BuiltinID == Builtin::BI__builtin_operator_delete;
+    ExprResult Res =
+        SemaBuiltinOperatorNewDeleteOverloaded(TheCallResult, IsDelete);
+    if (Res.isInvalid())
+      CorrectDelayedTyposInExpr(TheCallResult.get());
+    return Res;
+  }
+  case Builtin::BI__builtin_dump_struct: {
+    // We first want to ensure we are called with 2 arguments
+    if (checkArgCount(*this, TheCall, 2))
+      return ExprError();
+    // Ensure that the first argument is of type 'struct XX *'
+    const Expr *PtrArg = TheCall->getArg(0)->IgnoreParenImpCasts();
+    const QualType PtrArgType = PtrArg->getType();
+    if (!PtrArgType->isPointerType() ||
+        !PtrArgType->getPointeeType()->isRecordType()) {
+      Diag(PtrArg->getLocStart(), diag::err_typecheck_convert_incompatible)
+          << PtrArgType << "structure pointer" << 1 << 0 << 3 << 1 << PtrArgType
+          << "structure pointer";
       return ExprError();
     }
-    // CodeGen assumes it can find the global new and delete to call,
-    // so ensure that they are declared.
-    DeclareGlobalNewDelete();
+
+    // Ensure that the second argument is of type 'FunctionType'
+    const Expr *FnPtrArg = TheCall->getArg(1)->IgnoreImpCasts();
+    const QualType FnPtrArgType = FnPtrArg->getType();
+    if (!FnPtrArgType->isPointerType()) {
+      Diag(FnPtrArg->getLocStart(), diag::err_typecheck_convert_incompatible)
+          << FnPtrArgType << "'int (*)(const char *, ...)'" << 1 << 0 << 3
+          << 2 << FnPtrArgType << "'int (*)(const char *, ...)'";
+      return ExprError();
+    }
+
+    const auto *FuncType =
+        FnPtrArgType->getPointeeType()->getAs<FunctionType>();
+
+    if (!FuncType) {
+      Diag(FnPtrArg->getLocStart(), diag::err_typecheck_convert_incompatible)
+          << FnPtrArgType << "'int (*)(const char *, ...)'" << 1 << 0 << 3
+          << 2 << FnPtrArgType << "'int (*)(const char *, ...)'";
+      return ExprError();
+    }
+
+    if (const auto *FT = dyn_cast<FunctionProtoType>(FuncType)) {
+      if (!FT->getNumParams()) {
+        Diag(FnPtrArg->getLocStart(), diag::err_typecheck_convert_incompatible)
+            << FnPtrArgType << "'int (*)(const char *, ...)'" << 1 << 0 << 3
+            << 2 << FnPtrArgType << "'int (*)(const char *, ...)'";
+        return ExprError();
+      }
+      QualType PT = FT->getParamType(0);
+      if (!FT->isVariadic() || FT->getReturnType() != Context.IntTy ||
+          !PT->isPointerType() || !PT->getPointeeType()->isCharType() ||
+          !PT->getPointeeType().isConstQualified()) {
+        Diag(FnPtrArg->getLocStart(), diag::err_typecheck_convert_incompatible)
+            << FnPtrArgType << "'int (*)(const char *, ...)'" << 1 << 0 << 3
+            << 2 << FnPtrArgType << "'int (*)(const char *, ...)'";
+        return ExprError();
+      }
+    }
+
+    TheCall->setType(Context.IntTy);
     break;
+  }
 
   // check secure string manipulation functions where overflows
   // are detectable at compile time
@@ -1214,7 +1266,6 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
   case Builtin::BIget_kernel_preferred_work_group_size_multiple:
     if (SemaOpenCLBuiltinKernelWorkGroupSize(*this, TheCall))
       return ExprError();
-    break;
     break;
   case Builtin::BIget_kernel_max_sub_group_size_for_ndrange:
   case Builtin::BIget_kernel_sub_group_count_for_ndrange:
@@ -1668,7 +1719,7 @@ bool Sema::CheckMipsBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case Mips::BI__builtin_msa_srlri_h: i = 1; l = 0; u = 15; break;
   case Mips::BI__builtin_msa_binsli_h:
   case Mips::BI__builtin_msa_binsri_h: i = 2; l = 0; u = 15; break;
-  // These intrinsics take an unsigned 5 bit immedate.
+  // These intrinsics take an unsigned 5 bit immediate.
   // The first block of intrinsics actually have an unsigned 5 bit field,
   // not a df/n field.
   case Mips::BI__builtin_msa_clei_u_b:
@@ -5003,7 +5054,7 @@ checkFormatStringExpr(Sema &S, const Expr *E, ArrayRef<const Expr *> Args,
     const CallExpr *CE = cast<CallExpr>(E);
     if (const NamedDecl *ND = dyn_cast_or_null<NamedDecl>(CE->getCalleeDecl())) {
       if (const FormatArgAttr *FA = ND->getAttr<FormatArgAttr>()) {
-        const Expr *Arg = CE->getArg(FA->formatIdx().getASTIndex());
+        const Expr *Arg = CE->getArg(FA->getFormatIdx().getASTIndex());
         return checkFormatStringExpr(S, Arg, Args,
                                      HasVAListArg, format_idx, firstDataArg,
                                      Type, CallType, InFunctionCall,
@@ -5028,7 +5079,7 @@ checkFormatStringExpr(Sema &S, const Expr *E, ArrayRef<const Expr *> Args,
     const auto *ME = cast<ObjCMessageExpr>(E);
     if (const auto *ND = ME->getMethodDecl()) {
       if (const auto *FA = ND->getAttr<FormatArgAttr>()) {
-        const Expr *Arg = ME->getArg(FA->formatIdx().getASTIndex());
+        const Expr *Arg = ME->getArg(FA->getFormatIdx().getASTIndex());
         return checkFormatStringExpr(
             S, Arg, Args, HasVAListArg, format_idx, firstDataArg, Type,
             CallType, InFunctionCall, CheckedVarArgs, UncoveredArg, Offset);
@@ -5632,7 +5683,7 @@ void CheckFormatHandler::EmitFormatDiagnostic(PartialDiagnostic PDiag,
                        Loc, IsStringLocation, StringRange, FixIt);
 }
 
-/// \brief If the format string is not within the funcion call, emit a note
+/// \brief If the format string is not within the function call, emit a note
 /// so that the function call and string are in diagnostic messages.
 ///
 /// \param InFunctionCall if true, the format string is within the function
@@ -7328,6 +7379,98 @@ static QualType getSizeOfArgType(const Expr *E) {
   return QualType();
 }
 
+namespace {
+
+struct SearchNonTrivialToInitializeField
+    : DefaultInitializedTypeVisitor<SearchNonTrivialToInitializeField> {
+  using Super =
+      DefaultInitializedTypeVisitor<SearchNonTrivialToInitializeField>;
+
+  SearchNonTrivialToInitializeField(const Expr *E, Sema &S) : E(E), S(S) {}
+
+  void visitWithKind(QualType::PrimitiveDefaultInitializeKind PDIK, QualType FT,
+                     SourceLocation SL) {
+    if (const auto *AT = asDerived().getContext().getAsArrayType(FT)) {
+      asDerived().visitArray(PDIK, AT, SL);
+      return;
+    }
+
+    Super::visitWithKind(PDIK, FT, SL);
+  }
+
+  void visitARCStrong(QualType FT, SourceLocation SL) {
+    S.DiagRuntimeBehavior(SL, E, S.PDiag(diag::note_nontrivial_field) << 1);
+  }
+  void visitARCWeak(QualType FT, SourceLocation SL) {
+    S.DiagRuntimeBehavior(SL, E, S.PDiag(diag::note_nontrivial_field) << 1);
+  }
+  void visitStruct(QualType FT, SourceLocation SL) {
+    for (const FieldDecl *FD : FT->castAs<RecordType>()->getDecl()->fields())
+      visit(FD->getType(), FD->getLocation());
+  }
+  void visitArray(QualType::PrimitiveDefaultInitializeKind PDIK,
+                  const ArrayType *AT, SourceLocation SL) {
+    visit(getContext().getBaseElementType(AT), SL);
+  }
+  void visitTrivial(QualType FT, SourceLocation SL) {}
+
+  static void diag(QualType RT, const Expr *E, Sema &S) {
+    SearchNonTrivialToInitializeField(E, S).visitStruct(RT, SourceLocation());
+  }
+
+  ASTContext &getContext() { return S.getASTContext(); }
+
+  const Expr *E;
+  Sema &S;
+};
+
+struct SearchNonTrivialToCopyField
+    : CopiedTypeVisitor<SearchNonTrivialToCopyField, false> {
+  using Super = CopiedTypeVisitor<SearchNonTrivialToCopyField, false>;
+
+  SearchNonTrivialToCopyField(const Expr *E, Sema &S) : E(E), S(S) {}
+
+  void visitWithKind(QualType::PrimitiveCopyKind PCK, QualType FT,
+                     SourceLocation SL) {
+    if (const auto *AT = asDerived().getContext().getAsArrayType(FT)) {
+      asDerived().visitArray(PCK, AT, SL);
+      return;
+    }
+
+    Super::visitWithKind(PCK, FT, SL);
+  }
+
+  void visitARCStrong(QualType FT, SourceLocation SL) {
+    S.DiagRuntimeBehavior(SL, E, S.PDiag(diag::note_nontrivial_field) << 0);
+  }
+  void visitARCWeak(QualType FT, SourceLocation SL) {
+    S.DiagRuntimeBehavior(SL, E, S.PDiag(diag::note_nontrivial_field) << 0);
+  }
+  void visitStruct(QualType FT, SourceLocation SL) {
+    for (const FieldDecl *FD : FT->castAs<RecordType>()->getDecl()->fields())
+      visit(FD->getType(), FD->getLocation());
+  }
+  void visitArray(QualType::PrimitiveCopyKind PCK, const ArrayType *AT,
+                  SourceLocation SL) {
+    visit(getContext().getBaseElementType(AT), SL);
+  }
+  void preVisit(QualType::PrimitiveCopyKind PCK, QualType FT,
+                SourceLocation SL) {}
+  void visitTrivial(QualType FT, SourceLocation SL) {}
+  void visitVolatileTrivial(QualType FT, SourceLocation SL) {}
+
+  static void diag(QualType RT, const Expr *E, Sema &S) {
+    SearchNonTrivialToCopyField(E, S).visitStruct(RT, SourceLocation());
+  }
+
+  ASTContext &getContext() { return S.getASTContext(); }
+
+  const Expr *E;
+  Sema &S;
+};
+
+}
+
 /// \brief Check for dangerous or invalid arguments to memset().
 ///
 /// This issues warnings on known problematic, dangerous or unspecified
@@ -7493,7 +7636,23 @@ void Sema::CheckMemaccessArguments(const CallExpr *Call,
         PDiag(diag::warn_arc_object_memaccess)
           << ArgIdx << FnName << PointeeTy
           << Call->getCallee()->getSourceRange());
-    else
+    else if (const auto *RT = PointeeTy->getAs<RecordType>()) {
+      if ((BId == Builtin::BImemset || BId == Builtin::BIbzero) &&
+          RT->getDecl()->isNonTrivialToPrimitiveDefaultInitialize()) {
+        DiagRuntimeBehavior(Dest->getExprLoc(), Dest,
+                            PDiag(diag::warn_cstruct_memaccess)
+                                << ArgIdx << FnName << PointeeTy << 0);
+        SearchNonTrivialToInitializeField::diag(PointeeTy, Dest, *this);
+      } else if ((BId == Builtin::BImemcpy || BId == Builtin::BImemmove) &&
+                 RT->getDecl()->isNonTrivialToPrimitiveCopy()) {
+        DiagRuntimeBehavior(Dest->getExprLoc(), Dest,
+                            PDiag(diag::warn_cstruct_memaccess)
+                                << ArgIdx << FnName << PointeeTy << 1);
+        SearchNonTrivialToCopyField::diag(PointeeTy, Dest, *this);
+      } else {
+        continue;
+      }
+    } else
       continue;
 
     DiagRuntimeBehavior(
@@ -9183,6 +9342,32 @@ static void DiagnoseImpCast(Sema &S, Expr *E, QualType T,
   DiagnoseImpCast(S, E, E->getType(), T, CContext, diag, pruneControlFlow);
 }
 
+/// Analyze the given compound assignment for the possible losing of
+/// floating-point precision.
+static void AnalyzeCompoundAssignment(Sema &S, BinaryOperator *E) {
+  assert(isa<CompoundAssignOperator>(E) &&
+         "Must be compound assignment operation");
+  // Recurse on the LHS and RHS in here
+  AnalyzeImplicitConversions(S, E->getLHS(), E->getOperatorLoc());
+  AnalyzeImplicitConversions(S, E->getRHS(), E->getOperatorLoc());
+
+  // Now check the outermost expression
+  const auto *ResultBT = E->getLHS()->getType()->getAs<BuiltinType>();
+  const auto *RBT = cast<CompoundAssignOperator>(E)
+                        ->getComputationResultType()
+                        ->getAs<BuiltinType>();
+
+  // If both source and target are floating points.
+  if (ResultBT && ResultBT->isFloatingPoint() && RBT && RBT->isFloatingPoint())
+    // Builtin FP kinds are ordered by increasing FP rank.
+    if (ResultBT->getKind() < RBT->getKind())
+      // We don't want to warn for system macro.
+      if (!S.SourceMgr.isInSystemMacro(E->getOperatorLoc()))
+        // warn about dropping FP rank.
+        DiagnoseImpCast(S, E->getRHS(), E->getLHS()->getType(),
+                        E->getOperatorLoc(),
+                        diag::warn_impcast_float_result_precision);
+}
 
 /// Diagnose an implicit cast from a floating point value to an integer value.
 static void DiagnoseFloatingImpCast(Sema &S, Expr *E, QualType T,
@@ -9550,7 +9735,7 @@ CheckImplicitConversion(Sema &S, Expr *E, QualType T, SourceLocation CC,
         return;
       return DiagnoseImpCast(S, E, T, CC, diag::warn_impcast_vector_scalar);
     }
-    
+
     // If the vector cast is cast between two vectors of the same size, it is
     // a bitcast, not a conversion.
     if (S.Context.getTypeSize(Source) == S.Context.getTypeSize(Target))
@@ -9827,7 +10012,7 @@ static void AnalyzeImplicitConversions(Sema &S, Expr *OrigE,
 
   if (E->isTypeDependent() || E->isValueDependent())
     return;
-  
+
   // For conditional operators, we analyze the arguments as if they
   // were being fed directly into the output.
   if (isa<ConditionalOperator>(E)) {
@@ -9871,6 +10056,9 @@ static void AnalyzeImplicitConversions(Sema &S, Expr *OrigE,
     // And with simple assignments.
     if (BO->getOpcode() == BO_Assign)
       return AnalyzeAssignment(S, BO);
+    // And with compound assignments.
+    if (BO->isAssignmentOp())
+      return AnalyzeCompoundAssignment(S, BO);
   }
 
   // These break the otherwise-useful invariant below.  Fortunately,
@@ -9914,7 +10102,7 @@ static void AnalyzeImplicitConversions(Sema &S, Expr *OrigE,
       ::CheckBoolLikeConversion(S, U->getSubExpr(), CC);
 }
 
-/// Diagnose integer type and any valid implicit convertion to it.
+/// Diagnose integer type and any valid implicit conversion to it.
 static bool checkOpenCLEnqueueIntType(Sema &S, Expr *E, const QualType &IntT) {
   // Taking into account implicit conversions,
   // allow any integer.
@@ -10203,18 +10391,22 @@ void Sema::CheckForIntOverflow (Expr *E) {
   SmallVector<Expr *, 2> Exprs(1, E);
 
   do {
-    Expr *E = Exprs.pop_back_val();
+    Expr *OriginalE = Exprs.pop_back_val();
+    Expr *E = OriginalE->IgnoreParenCasts();
 
-    if (isa<BinaryOperator>(E->IgnoreParenCasts())) {
-      E->IgnoreParenCasts()->EvaluateForOverflow(Context);
+    if (isa<BinaryOperator>(E)) {
+      E->EvaluateForOverflow(Context);
       continue;
     }
 
-    if (auto InitList = dyn_cast<InitListExpr>(E))
+    if (auto InitList = dyn_cast<InitListExpr>(OriginalE))
       Exprs.append(InitList->inits().begin(), InitList->inits().end());
-
-    if (isa<ObjCBoxedExpr>(E))
-      E->IgnoreParenCasts()->EvaluateForOverflow(Context);
+    else if (isa<ObjCBoxedExpr>(OriginalE))
+      E->EvaluateForOverflow(Context);
+    else if (auto Call = dyn_cast<CallExpr>(E))
+      Exprs.append(Call->arg_begin(), Call->arg_end());
+    else if (auto Message = dyn_cast<ObjCMessageExpr>(E))
+      Exprs.append(Message->arg_begin(), Message->arg_end());
   } while (!Exprs.empty());
 }
 
@@ -10818,7 +11010,7 @@ bool Sema::CheckParmsForFunctionDef(ArrayRef<ParmVarDecl *> Parameters,
 
     // If the parameter is a c++ class type and it has to be destructed in the
     // callee function, declare the destructor so that it can be called by the
-    // callee function. Do not perfom any direct access check on the dtor here.
+    // callee function. Do not perform any direct access check on the dtor here.
     if (!Param->isInvalidDecl()) {
       if (CXXRecordDecl *ClassDecl = Param->getType()->getAsCXXRecordDecl()) {
         if (!ClassDecl->isInvalidDecl() &&
@@ -11085,7 +11277,12 @@ void Sema::CheckArrayAccess(const Expr *expr) {
         const ArraySubscriptExpr *ASE = cast<ArraySubscriptExpr>(expr);
         CheckArrayAccess(ASE->getBase(), ASE->getIdx(), ASE,
                          AllowOnePastEnd > 0);
-        return;
+        expr = ASE->getBase();
+        break;
+      }
+      case Stmt::MemberExprClass: {
+        expr = cast<MemberExpr>(expr)->getBase();
+        break;
       }
       case Stmt::OMPArraySectionExprClass: {
         const OMPArraySectionExpr *ASE = cast<OMPArraySectionExpr>(expr);
@@ -11495,7 +11692,7 @@ void Sema::CheckObjCCircularContainer(ObjCMessageExpr *Message) {
       if (ArgRE->isObjCSelfExpr()) {
         Diag(Message->getSourceRange().getBegin(),
              diag::warn_objc_circular_container)
-          << ArgRE->getDecl()->getName() << StringRef("super");
+          << ArgRE->getDecl() << StringRef("'super'");
       }
     }
   } else {
@@ -11511,11 +11708,11 @@ void Sema::CheckObjCCircularContainer(ObjCMessageExpr *Message) {
           ValueDecl *Decl = ReceiverRE->getDecl();
           Diag(Message->getSourceRange().getBegin(),
                diag::warn_objc_circular_container)
-            << Decl->getName() << Decl->getName();
+            << Decl << Decl;
           if (!ArgRE->isObjCSelfExpr()) {
             Diag(Decl->getLocation(),
                  diag::note_objc_circular_container_declared_here)
-              << Decl->getName();
+              << Decl;
           }
         }
       }
@@ -11525,10 +11722,10 @@ void Sema::CheckObjCCircularContainer(ObjCMessageExpr *Message) {
           ObjCIvarDecl *Decl = IvarRE->getDecl();
           Diag(Message->getSourceRange().getBegin(),
                diag::warn_objc_circular_container)
-            << Decl->getName() << Decl->getName();
+            << Decl << Decl;
           Diag(Decl->getLocation(),
                diag::note_objc_circular_container_declared_here)
-            << Decl->getName();
+            << Decl;
         }
       }
     }
@@ -12237,10 +12434,10 @@ void Sema::CheckArgumentWithTypeTag(const ArgumentWithTypeTagAttr *Attr,
   bool IsPointerAttr = Attr->getIsPointer();
 
   // Retrieve the argument representing the 'type_tag'.
-  unsigned TypeTagIdxAST = Attr->typeTagIdx().getASTIndex();
+  unsigned TypeTagIdxAST = Attr->getTypeTagIdx().getASTIndex();
   if (TypeTagIdxAST >= ExprArgs.size()) {
     Diag(CallSiteLoc, diag::err_tag_index_out_of_range)
-        << 0 << Attr->typeTagIdx().getSourceIndex();
+        << 0 << Attr->getTypeTagIdx().getSourceIndex();
     return;
   }
   const Expr *TypeTagExpr = ExprArgs[TypeTagIdxAST];
@@ -12257,10 +12454,10 @@ void Sema::CheckArgumentWithTypeTag(const ArgumentWithTypeTagAttr *Attr,
   }
 
   // Retrieve the argument representing the 'arg_idx'.
-  unsigned ArgumentIdxAST = Attr->argumentIdx().getASTIndex();
+  unsigned ArgumentIdxAST = Attr->getArgumentIdx().getASTIndex();
   if (ArgumentIdxAST >= ExprArgs.size()) {
     Diag(CallSiteLoc, diag::err_tag_index_out_of_range)
-        << 1 << Attr->argumentIdx().getSourceIndex();
+        << 1 << Attr->getArgumentIdx().getSourceIndex();
     return;
   }
   const Expr *ArgumentExpr = ExprArgs[ArgumentIdxAST];

@@ -180,6 +180,7 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                             options::OPT_Z_Flag, options::OPT_r});
 
   bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
+  bool NeedsXRayDeps = addXRayRuntime(ToolChain, Args, CmdArgs);
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
@@ -194,6 +195,10 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     if (NeedsSanitizerDeps) {
       CmdArgs.push_back(ToolChain.getCompilerRTArgString(Args, "builtins", false));
       linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
+    }
+    if (NeedsXRayDeps) {
+      CmdArgs.push_back(ToolChain.getCompilerRTArgString(Args, "builtins", false));
+      linkXRayRuntimeDeps(ToolChain, CmdArgs);
     }
     // FIXME: For some reason GCC passes -lgcc before adding
     // the default system libraries. Just mimic this for now.
@@ -236,8 +241,11 @@ SanitizerMask OpenBSD::getSupportedSanitizers() const {
   // For future use, only UBsan at the moment
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
 
-  if (IsX86 || IsX86_64)
+  if (IsX86 || IsX86_64) {
     Res |= SanitizerKind::Vptr;
+    Res |= SanitizerKind::Fuzzer;
+    Res |= SanitizerKind::FuzzerNoLink;
+  }
 
   return Res;
 }
@@ -249,6 +257,14 @@ OpenBSD::OpenBSD(const Driver &D, const llvm::Triple &Triple,
     : Generic_ELF(D, Triple, Args) {
   getFilePaths().push_back(getDriver().Dir + "/../lib");
   getFilePaths().push_back("/usr/lib");
+}
+
+void OpenBSD::AddCXXStdlibLibArgs(const ArgList &Args,
+                                  ArgStringList &CmdArgs) const {
+  bool Profiling = Args.hasArg(options::OPT_pg);
+
+  CmdArgs.push_back(Profiling ? "-lc++_p" : "-lc++");
+  CmdArgs.push_back(Profiling ? "-lc++abi_p" : "-lc++abi");
 }
 
 Tool *OpenBSD::buildAssembler() const {

@@ -667,8 +667,7 @@ class QualType {
 
   const ExtQualsTypeCommonBase *getCommonPtr() const {
     assert(!isNull() && "Cannot retrieve a NULL type pointer");
-    uintptr_t CommonPtrVal
-      = reinterpret_cast<uintptr_t>(Value.getOpaqueValue());
+    auto CommonPtrVal = reinterpret_cast<uintptr_t>(Value.getOpaqueValue());
     CommonPtrVal &= ~(uintptr_t)((1 << TypeAlignmentInBits) - 1);
     return reinterpret_cast<ExtQualsTypeCommonBase*>(CommonPtrVal);
   }
@@ -799,7 +798,8 @@ public:
 
   /// Return true if this is a POD type according to the more relaxed rules
   /// of the C++11 standard, regardless of the current compilation's language.
-  /// (C++0x [basic.types]p9)
+  /// (C++0x [basic.types]p9). Note that, unlike
+  /// CXXRecordDecl::isCXX11StandardLayout, this takes DRs into account.
   bool isCXX11PODType(const ASTContext &Context) const;
 
   /// Return true if this is a trivial type per (C++0x [basic.types]p9)
@@ -807,11 +807,6 @@ public:
 
   /// Return true if this is a trivially copyable type (C++0x [basic.types]p9)
   bool isTriviallyCopyableType(const ASTContext &Context) const;
-
-  /// Determine whether this is a class whose triviality for the purpose of
-  /// calls is overridden to be trivial because the class or the type of one of
-  /// its subobjects has attribute "trivial_abi".
-  bool hasTrivialABIOverride() const;
 
   // Don't promise in the API that anything besides 'const' can be
   // easily added.
@@ -1097,6 +1092,10 @@ public:
     /// with the ARC __strong qualifier.
     PDIK_ARCStrong,
 
+    /// The type is an Objective-C retainable pointer type that is qualified
+    /// with the ARC __weak qualifier.
+    PDIK_ARCWeak,
+
     /// The type is a struct containing a field whose type is not PCK_Trivial.
     PDIK_Struct
   };
@@ -1123,6 +1122,10 @@ public:
     /// The type is an Objective-C retainable pointer type that is qualified
     /// with the ARC __strong qualifier.
     PCK_ARCStrong,
+
+    /// The type is an Objective-C retainable pointer type that is qualified
+    /// with the ARC __weak qualifier.
+    PCK_ARCWeak,
 
     /// The type is a struct containing a field whose type is neither
     /// PCK_Trivial nor PCK_VolatileTrivial.
@@ -1511,7 +1514,7 @@ protected:
 
     /// Extra information which affects how the function is called, like
     /// regparm and the calling convention.
-    unsigned ExtInfo : 11;
+    unsigned ExtInfo : 12;
 
     /// Used only by FunctionProtoType, put here to pack with the
     /// other bitfields.
@@ -2005,7 +2008,7 @@ public:
   TagDecl *getAsTagDecl() const;
 
   /// If this is a pointer or reference to a RecordType, return the
-  /// CXXRecordDecl that that type refers to.
+  /// CXXRecordDecl that the type refers to.
   ///
   /// If this is not a pointer or reference, or the type being pointed to does
   /// not refer to a CXXRecordDecl, returns NULL.
@@ -3147,24 +3150,24 @@ public:
   class ExtInfo {
     friend class FunctionType;
 
-    // Feel free to rearrange or add bits, but if you go over 11,
+    // Feel free to rearrange or add bits, but if you go over 12,
     // you'll need to adjust both the Bits field below and
     // Type::FunctionTypeBitfields.
 
-    //   |  CC  |noreturn|produces|nocallersavedregs|regparm|
-    //   |0 .. 4|   5    |    6   |       7         |8 .. 10|
+    //   |  CC  |noreturn|produces|nocallersavedregs|regparm|nocfcheck|
+    //   |0 .. 4|   5    |    6   |       7         |8 .. 10|    11   |
     //
     // regparm is either 0 (no regparm attribute) or the regparm value+1.
     enum { CallConvMask = 0x1F };
     enum { NoReturnMask = 0x20 };
     enum { ProducesResultMask = 0x40 };
     enum { NoCallerSavedRegsMask = 0x80 };
+    enum { NoCfCheckMask = 0x800 };
     enum {
       RegParmMask = ~(CallConvMask | NoReturnMask | ProducesResultMask |
-                      NoCallerSavedRegsMask),
+                      NoCallerSavedRegsMask | NoCfCheckMask),
       RegParmOffset = 8
     }; // Assumed to be the last field
-
     uint16_t Bits = CC_C;
 
     ExtInfo(unsigned Bits) : Bits(static_cast<uint16_t>(Bits)) {}
@@ -3173,12 +3176,13 @@ public:
      // Constructor with no defaults. Use this when you know that you
      // have all the elements (when reading an AST file for example).
      ExtInfo(bool noReturn, bool hasRegParm, unsigned regParm, CallingConv cc,
-             bool producesResult, bool noCallerSavedRegs) {
+             bool producesResult, bool noCallerSavedRegs, bool NoCfCheck) {
        assert((!hasRegParm || regParm < 7) && "Invalid regparm value");
        Bits = ((unsigned)cc) | (noReturn ? NoReturnMask : 0) |
               (producesResult ? ProducesResultMask : 0) |
               (noCallerSavedRegs ? NoCallerSavedRegsMask : 0) |
-              (hasRegParm ? ((regParm + 1) << RegParmOffset) : 0);
+              (hasRegParm ? ((regParm + 1) << RegParmOffset) : 0) | 
+              (NoCfCheck ? NoCfCheckMask : 0);
     }
 
     // Constructor with all defaults. Use when for example creating a
@@ -3192,10 +3196,11 @@ public:
     bool getNoReturn() const { return Bits & NoReturnMask; }
     bool getProducesResult() const { return Bits & ProducesResultMask; }
     bool getNoCallerSavedRegs() const { return Bits & NoCallerSavedRegsMask; }
+    bool getNoCfCheck() const { return Bits & NoCfCheckMask; }
     bool getHasRegParm() const { return (Bits >> RegParmOffset) != 0; }
 
     unsigned getRegParm() const {
-      unsigned RegParm = Bits >> RegParmOffset;
+      unsigned RegParm = (Bits & RegParmMask) >> RegParmOffset;
       if (RegParm > 0)
         --RegParm;
       return RegParm;
@@ -3232,6 +3237,13 @@ public:
         return ExtInfo(Bits | NoCallerSavedRegsMask);
       else
         return ExtInfo(Bits & ~NoCallerSavedRegsMask);
+    }
+
+    ExtInfo withNoCfCheck(bool noCfCheck) const {
+      if (noCfCheck)
+        return ExtInfo(Bits | NoCfCheckMask);
+      else
+        return ExtInfo(Bits & ~NoCfCheckMask);
     }
 
     ExtInfo withRegParm(unsigned RegParm) const {
@@ -3530,7 +3542,7 @@ private:
     assert(hasExtParameterInfos());
 
     // Find the end of the exception specification.
-    const char *ptr = reinterpret_cast<const char *>(exception_begin());
+    const auto *ptr = reinterpret_cast<const char *>(exception_begin());
     ptr += getExceptionSpecSize();
 
     return reinterpret_cast<const ExtParameterInfo *>(ptr);
@@ -4120,6 +4132,7 @@ public:
 
     // No operand.
     attr_noreturn,
+    attr_nocf_check,
     attr_cdecl,
     attr_fastcall,
     attr_stdcall,
@@ -5484,8 +5497,8 @@ public:
 
 inline ObjCInterfaceDecl *ObjCObjectType::getInterface() const {
   QualType baseType = getBaseType();
-  while (const ObjCObjectType *ObjT = baseType->getAs<ObjCObjectType>()) {
-    if (const ObjCInterfaceType *T = dyn_cast<ObjCInterfaceType>(ObjT))
+  while (const auto *ObjT = baseType->getAs<ObjCObjectType>()) {
+    if (const auto *T = dyn_cast<ObjCInterfaceType>(ObjT))
       return T->getDecl();
 
     baseType = ObjT->getBaseType();
@@ -5907,10 +5920,10 @@ inline Qualifiers::GC QualType::getObjCGCAttr() const {
 }
 
 inline FunctionType::ExtInfo getFunctionExtInfo(const Type &t) {
-  if (const PointerType *PT = t.getAs<PointerType>()) {
-    if (const FunctionType *FT = PT->getPointeeType()->getAs<FunctionType>())
+  if (const auto *PT = t.getAs<PointerType>()) {
+    if (const auto *FT = PT->getPointeeType()->getAs<FunctionType>())
       return FT->getExtInfo();
-  } else if (const FunctionType *FT = t.getAs<FunctionType>())
+  } else if (const auto *FT = t.getAs<FunctionType>())
     return FT->getExtInfo();
 
   return FunctionType::ExtInfo();
@@ -5955,7 +5968,7 @@ inline bool QualType::isAtLeastAsQualifiedAs(QualType other) const {
 ///   analysis, the expression designates the object or function
 ///   denoted by the reference, and the expression is an lvalue.
 inline QualType QualType::getNonReferenceType() const {
-  if (const ReferenceType *RefType = (*this)->getAs<ReferenceType>())
+  if (const auto *RefType = (*this)->getAs<ReferenceType>())
     return RefType->getPointeeType();
   else
     return *this;
@@ -6030,7 +6043,7 @@ inline bool Type::isRValueReferenceType() const {
 }
 
 inline bool Type::isFunctionPointerType() const {
-  if (const PointerType *T = getAs<PointerType>())
+  if (const auto *T = getAs<PointerType>())
     return T->getPointeeType()->isFunctionType();
   else
     return false;
@@ -6041,14 +6054,14 @@ inline bool Type::isMemberPointerType() const {
 }
 
 inline bool Type::isMemberFunctionPointerType() const {
-  if (const MemberPointerType* T = getAs<MemberPointerType>())
+  if (const auto *T = getAs<MemberPointerType>())
     return T->isMemberFunctionPointer();
   else
     return false;
 }
 
 inline bool Type::isMemberDataPointerType() const {
-  if (const MemberPointerType* T = getAs<MemberPointerType>())
+  if (const auto *T = getAs<MemberPointerType>())
     return T->isMemberDataPointer();
   else
     return false;
@@ -6120,31 +6133,31 @@ inline bool Type::isAtomicType() const {
 }
 
 inline bool Type::isObjCQualifiedIdType() const {
-  if (const ObjCObjectPointerType *OPT = getAs<ObjCObjectPointerType>())
+  if (const auto *OPT = getAs<ObjCObjectPointerType>())
     return OPT->isObjCQualifiedIdType();
   return false;
 }
 
 inline bool Type::isObjCQualifiedClassType() const {
-  if (const ObjCObjectPointerType *OPT = getAs<ObjCObjectPointerType>())
+  if (const auto *OPT = getAs<ObjCObjectPointerType>())
     return OPT->isObjCQualifiedClassType();
   return false;
 }
 
 inline bool Type::isObjCIdType() const {
-  if (const ObjCObjectPointerType *OPT = getAs<ObjCObjectPointerType>())
+  if (const auto *OPT = getAs<ObjCObjectPointerType>())
     return OPT->isObjCIdType();
   return false;
 }
 
 inline bool Type::isObjCClassType() const {
-  if (const ObjCObjectPointerType *OPT = getAs<ObjCObjectPointerType>())
+  if (const auto *OPT = getAs<ObjCObjectPointerType>())
     return OPT->isObjCClassType();
   return false;
 }
 
 inline bool Type::isObjCSelType() const {
-  if (const PointerType *OPT = getAs<PointerType>())
+  if (const auto *OPT = getAs<PointerType>())
     return OPT->getPointeeType()->isSpecificBuiltinType(BuiltinType::ObjCSel);
   return false;
 }
@@ -6207,13 +6220,13 @@ inline bool Type::isSpecificBuiltinType(unsigned K) const {
 }
 
 inline bool Type::isPlaceholderType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(this))
+  if (const auto *BT = dyn_cast<BuiltinType>(this))
     return BT->isPlaceholderType();
   return false;
 }
 
 inline const BuiltinType *Type::getAsPlaceholderType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(this))
+  if (const auto *BT = dyn_cast<BuiltinType>(this))
     if (BT->isPlaceholderType())
       return BT;
   return nullptr;
@@ -6221,38 +6234,38 @@ inline const BuiltinType *Type::getAsPlaceholderType() const {
 
 inline bool Type::isSpecificPlaceholderType(unsigned K) const {
   assert(BuiltinType::isPlaceholderTypeKind((BuiltinType::Kind) K));
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(this))
+  if (const auto *BT = dyn_cast<BuiltinType>(this))
     return (BT->getKind() == (BuiltinType::Kind) K);
   return false;
 }
 
 inline bool Type::isNonOverloadPlaceholderType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(this))
+  if (const auto *BT = dyn_cast<BuiltinType>(this))
     return BT->isNonOverloadPlaceholderType();
   return false;
 }
 
 inline bool Type::isVoidType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() == BuiltinType::Void;
   return false;
 }
 
 inline bool Type::isHalfType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() == BuiltinType::Half;
   // FIXME: Should we allow complex __fp16? Probably not.
   return false;
 }
 
 inline bool Type::isFloat16Type() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() == BuiltinType::Float16;
   return false;
 }
 
 inline bool Type::isNullPtrType() const {
-  if (const BuiltinType *BT = getAs<BuiltinType>())
+  if (const auto *BT = getAs<BuiltinType>())
     return BT->getKind() == BuiltinType::NullPtr;
   return false;
 }
@@ -6261,7 +6274,7 @@ bool IsEnumDeclComplete(EnumDecl *);
 bool IsEnumDeclScoped(EnumDecl *);
 
 inline bool Type::isIntegerType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() >= BuiltinType::Bool &&
            BT->getKind() <= BuiltinType::Int128;
   if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType)) {
@@ -6274,7 +6287,7 @@ inline bool Type::isIntegerType() const {
 }
 
 inline bool Type::isScalarType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() > BuiltinType::Void &&
            BT->getKind() <= BuiltinType::NullPtr;
   if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
@@ -6289,20 +6302,20 @@ inline bool Type::isScalarType() const {
 }
 
 inline bool Type::isIntegralOrEnumerationType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() >= BuiltinType::Bool &&
            BT->getKind() <= BuiltinType::Int128;
 
   // Check for a complete enum type; incomplete enum types are not properly an
   // enumeration type in the sense required here.
-  if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
+  if (const auto *ET = dyn_cast<EnumType>(CanonicalType))
     return IsEnumDeclComplete(ET->getDecl());
 
   return false;  
 }
 
 inline bool Type::isBooleanType() const {
-  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+  if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() == BuiltinType::Bool;
   return false;
 }
@@ -6379,7 +6392,7 @@ template <typename T> const T *Type::getAs() const {
                 "ArrayType cannot be used with getAs!");
 
   // If this is directly a T type, return it.
-  if (const T *Ty = dyn_cast<T>(this))
+  if (const auto *Ty = dyn_cast<T>(this))
     return Ty;
 
   // If the canonical form of this type isn't the right kind, reject it.
@@ -6395,7 +6408,7 @@ template <typename T> const T *Type::getAsAdjusted() const {
   static_assert(!TypeIsArrayType<T>::value, "ArrayType cannot be used with getAsAdjusted!");
 
   // If this is directly a T type, return it.
-  if (const T *Ty = dyn_cast<T>(this))
+  if (const auto *Ty = dyn_cast<T>(this))
     return Ty;
 
   // If the canonical form of this type isn't the right kind, reject it.
@@ -6425,7 +6438,7 @@ template <typename T> const T *Type::getAsAdjusted() const {
 
 inline const ArrayType *Type::getAsArrayTypeUnsafe() const {
   // If this is directly an array type, return it.
-  if (const ArrayType *arr = dyn_cast<ArrayType>(this))
+  if (const auto *arr = dyn_cast<ArrayType>(this))
     return arr;
 
   // If the canonical form of this type isn't the right kind, reject it.
@@ -6441,14 +6454,14 @@ template <typename T> const T *Type::castAs() const {
   static_assert(!TypeIsArrayType<T>::value,
                 "ArrayType cannot be used with castAs!");
 
-  if (const T *ty = dyn_cast<T>(this)) return ty;
+  if (const auto *ty = dyn_cast<T>(this)) return ty;
   assert(isa<T>(CanonicalType));
   return cast<T>(getUnqualifiedDesugaredType());
 }
 
 inline const ArrayType *Type::castAsArrayTypeUnsafe() const {
   assert(isa<ArrayType>(CanonicalType));
-  if (const ArrayType *arr = dyn_cast<ArrayType>(this)) return arr;
+  if (const auto *arr = dyn_cast<ArrayType>(this)) return arr;
   return cast<ArrayType>(getUnqualifiedDesugaredType());
 }
 

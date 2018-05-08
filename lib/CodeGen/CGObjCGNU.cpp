@@ -1441,7 +1441,7 @@ CGObjCGNU::GenerateMessageSend(CodeGenFunction &CGF,
   }
 
   // Reset the receiver in case the lookup modified it
-  ActualArgs[0] = CallArg(RValue::get(Receiver), ASTIdTy, false);
+  ActualArgs[0] = CallArg(RValue::get(Receiver), ASTIdTy);
 
   imp = EnforceType(Builder, imp, MSI.MessengerType);
 
@@ -1748,11 +1748,13 @@ CGObjCGNU::GenerateEmptyProtocol(const std::string &ProtocolName) {
           llvm::ConstantInt::get(Int32Ty, ProtocolVersion), IdTy));
 
   Elements.add(MakeConstantString(ProtocolName, ".objc_protocol_name"));
-  Elements.add(ProtocolList);
-  Elements.add(MethodList);
-  Elements.add(MethodList);
-  Elements.add(MethodList);
-  Elements.add(MethodList);
+  Elements.add(ProtocolList); /* .protocol_list */
+  Elements.add(MethodList);   /* .instance_methods */
+  Elements.add(MethodList);   /* .class_methods */
+  Elements.add(MethodList);   /* .optional_instance_methods */
+  Elements.add(MethodList);   /* .optional_class_methods */
+  Elements.add(NULLPtr);      /* .properties */
+  Elements.add(NULLPtr);      /* .optional_properties */
   return Elements.finishAndCreateGlobal(".objc_protocol",
                                         CGM.getPointerAlign());
 }

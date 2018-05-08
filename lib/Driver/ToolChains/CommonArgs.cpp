@@ -8,14 +8,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "CommonArgs.h"
-#include "InputInfo.h"
-#include "Hexagon.h"
 #include "Arch/AArch64.h"
 #include "Arch/ARM.h"
 #include "Arch/Mips.h"
 #include "Arch/PPC.h"
 #include "Arch/SystemZ.h"
 #include "Arch/X86.h"
+#include "Hexagon.h"
+#include "InputInfo.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/ObjCRuntime.h"
@@ -31,6 +31,7 @@
 #include "clang/Driver/SanitizerArgs.h"
 #include "clang/Driver/ToolChain.h"
 #include "clang/Driver/Util.h"
+#include "clang/Driver/XRayArgs.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
@@ -41,6 +42,7 @@
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Compression.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
@@ -369,8 +371,8 @@ bool tools::isUseSeparateSections(const llvm::Triple &Triple) {
 }
 
 void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
-                          ArgStringList &CmdArgs, bool IsThinLTO,
-                          const Driver &D) {
+                          ArgStringList &CmdArgs, const InputInfo &Output,
+                          const InputInfo &Input, bool IsThinLTO) {
   // Tell the linker to load the plugin. This has to come before AddLinkerInputs
   // as gold requires -plugin to come before any -plugin-opt that -Wl might
   // forward.
@@ -415,7 +417,7 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   if (IsThinLTO)
     CmdArgs.push_back("-plugin-opt=thinlto");
 
-  if (unsigned Parallelism = getLTOParallelism(Args, D))
+  if (unsigned Parallelism = getLTOParallelism(Args, ToolChain.getDriver()))
     CmdArgs.push_back(
         Args.MakeArgString("-plugin-opt=jobs=" + Twine(Parallelism)));
 
@@ -446,7 +448,7 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   if (Arg *A = getLastProfileSampleUseArg(Args)) {
     StringRef FName = A->getValue();
     if (!llvm::sys::fs::exists(FName))
-      D.Diag(diag::err_drv_no_such_file) << FName;
+      ToolChain.getDriver().Diag(diag::err_drv_no_such_file) << FName;
     else
       CmdArgs.push_back(
           Args.MakeArgString(Twine("-plugin-opt=sample-profile=") + FName));
@@ -455,14 +457,24 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   // Need this flag to turn on new pass manager via Gold plugin.
   if (Args.hasFlag(options::OPT_fexperimental_new_pass_manager,
                    options::OPT_fno_experimental_new_pass_manager,
-                   /* Default */ false)) {
+                   /* Default */ ENABLE_EXPERIMENTAL_NEW_PASS_MANAGER)) {
     CmdArgs.push_back("-plugin-opt=new-pass-manager");
   }
 
+  // Setup statistics file output.
+  SmallString<128> StatsFile =
+      getStatsFileName(Args, Output, Input, ToolChain.getDriver());
+  if (!StatsFile.empty())
+    CmdArgs.push_back(
+        Args.MakeArgString(Twine("-plugin-opt=stats-file=") + StatsFile));
 }
 
 void tools::addArchSpecificRPath(const ToolChain &TC, const ArgList &Args,
                                  ArgStringList &CmdArgs) {
+  if (!Args.hasFlag(options::OPT_frtlib_add_rpath,
+                    options::OPT_fno_rtlib_add_rpath, false))
+    return;
+
   std::string CandidateRPath = TC.getArchSpecificLibPath();
   if (TC.getVFS().exists(CandidateRPath)) {
     CmdArgs.push_back("-rpath");
@@ -699,6 +711,35 @@ bool tools::addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
     CmdArgs.push_back("-export-dynamic-symbol=__cfi_check");
 
   return !StaticRuntimes.empty() || !NonWholeStaticRuntimes.empty();
+}
+
+bool tools::addXRayRuntime(const ToolChain&TC, const ArgList &Args, ArgStringList &CmdArgs) {
+  if (Args.hasArg(options::OPT_shared))
+    return false;
+
+  if (TC.getXRayArgs().needsXRayRt()) {
+    CmdArgs.push_back("-whole-archive");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "xray", false));
+    for (const auto &Mode : TC.getXRayArgs().modeList())
+      CmdArgs.push_back(TC.getCompilerRTArgString(Args, Mode, false));
+    CmdArgs.push_back("-no-whole-archive");
+    return true;
+  }
+
+  return false;
+}
+
+void tools::linkXRayRuntimeDeps(const ToolChain &TC, ArgStringList &CmdArgs) {
+  CmdArgs.push_back("--no-as-needed");
+  CmdArgs.push_back("-lpthread");
+  if (TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+    CmdArgs.push_back("-lrt");
+  CmdArgs.push_back("-lm");
+
+  if (TC.getTriple().getOS() != llvm::Triple::FreeBSD &&
+      TC.getTriple().getOS() != llvm::Triple::NetBSD &&
+      TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+    CmdArgs.push_back("-ldl");
 }
 
 bool tools::areOptimizationsEnabled(const ArgList &Args) {
@@ -969,16 +1010,21 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
     RWPI = true;
   }
 
-  // ROPI and RWPI are not comaptible with PIC or PIE.
+  // ROPI and RWPI are not compatible with PIC or PIE.
   if ((ROPI || RWPI) && (PIC || PIE))
     ToolChain.getDriver().Diag(diag::err_drv_ropi_rwpi_incompatible_with_pic);
 
-  // When targettng MIPS64 with N64, the default is PIC, unless -mno-abicalls is
-  // used.
-  if ((Triple.getArch() == llvm::Triple::mips64 ||
-       Triple.getArch() == llvm::Triple::mips64el) &&
-      Args.hasArg(options::OPT_mno_abicalls))
-    return std::make_tuple(llvm::Reloc::Static, 0U, false);
+  if (Triple.getArch() == llvm::Triple::mips ||
+       Triple.getArch() == llvm::Triple::mipsel ||
+       Triple.getArch() == llvm::Triple::mips64 ||
+       Triple.getArch() == llvm::Triple::mips64el) {
+    // When targettng MIPS with -mno-abicalls, it's always static.
+    if(Args.hasArg(options::OPT_mno_abicalls))
+      return std::make_tuple(llvm::Reloc::Static, 0U, false);
+    // Unlike other architectures, MIPS, even with -fPIC/-mxgot/multigot,
+    // does not use PIC level 2 for historical reasons.
+    IsPICLevelTwo = false;
+  }
 
   if (PIC)
     return std::make_tuple(llvm::Reloc::PIC_, IsPICLevelTwo ? 2U : 1U, PIE);
@@ -992,6 +1038,40 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
     RelocM = llvm::Reloc::RWPI;
 
   return std::make_tuple(RelocM, 0U, false);
+}
+
+// `-falign-functions` indicates that the functions should be aligned to a
+// 16-byte boundary.
+//
+// `-falign-functions=1` is the same as `-fno-align-functions`.
+//
+// The scalar `n` in `-falign-functions=n` must be an integral value between
+// [0, 65536].  If the value is not a power-of-two, it will be rounded up to
+// the nearest power-of-two.
+//
+// If we return `0`, the frontend will default to the backend's preferred
+// alignment.
+//
+// NOTE: icc only allows values between [0, 4096].  icc uses `-falign-functions`
+// to mean `-falign-functions=16`.  GCC defaults to the backend's preferred
+// alignment.  For unaligned functions, we default to the backend's preferred
+// alignment.
+unsigned tools::ParseFunctionAlignment(const ToolChain &TC,
+                                       const ArgList &Args) {
+  const Arg *A = Args.getLastArg(options::OPT_falign_functions,
+                                 options::OPT_falign_functions_EQ,
+                                 options::OPT_fno_align_functions);
+  if (!A || A->getOption().matches(options::OPT_fno_align_functions))
+    return 0;
+
+  if (A->getOption().matches(options::OPT_falign_functions))
+    return 0;
+
+  unsigned Value = 0;
+  if (StringRef(A->getValue()).getAsInteger(10, Value) || Value > 65536)
+    TC.getDriver().Diag(diag::err_drv_invalid_int_value)
+        << A->getAsString(Args) << A->getValue();
+  return Value ? llvm::Log2_32_Ceil(std::min(Value, 65536u)) : Value;
 }
 
 void tools::AddAssemblerKPIC(const ToolChain &ToolChain, const ArgList &Args,
@@ -1193,4 +1273,28 @@ void tools::AddOpenMPLinkerScript(const ToolChain &TC, Compilation &C,
   }
 
   Lksf << LksBuffer;
+}
+
+SmallString<128> tools::getStatsFileName(const llvm::opt::ArgList &Args,
+                                         const InputInfo &Output,
+                                         const InputInfo &Input,
+                                         const Driver &D) {
+  const Arg *A = Args.getLastArg(options::OPT_save_stats_EQ);
+  if (!A)
+    return {};
+
+  StringRef SaveStats = A->getValue();
+  SmallString<128> StatsFile;
+  if (SaveStats == "obj" && Output.isFilename()) {
+    StatsFile.assign(Output.getFilename());
+    llvm::sys::path::remove_filename(StatsFile);
+  } else if (SaveStats != "cwd") {
+    D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << SaveStats;
+    return {};
+  }
+
+  StringRef BaseName = llvm::sys::path::filename(Input.getBaseInput());
+  llvm::sys::path::append(StatsFile, BaseName);
+  llvm::sys::path::replace_extension(StatsFile, "stats");
+  return StatsFile;
 }

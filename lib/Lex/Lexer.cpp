@@ -971,7 +971,7 @@ StringRef Lexer::getSourceText(CharSourceRange Range,
 StringRef Lexer::getImmediateMacroName(SourceLocation Loc,
                                        const SourceManager &SM,
                                        const LangOptions &LangOpts) {
-  assert(Loc.isMacroID() && "Only reasonble to call this on macros");
+  assert(Loc.isMacroID() && "Only reasonable to call this on macros");
 
   // Find the location of the immediate macro expansion.
   while (true) {
@@ -1017,7 +1017,7 @@ StringRef Lexer::getImmediateMacroName(SourceLocation Loc,
 
 StringRef Lexer::getImmediateMacroNameForDiagnostics(
     SourceLocation Loc, const SourceManager &SM, const LangOptions &LangOpts) {
-  assert(Loc.isMacroID() && "Only reasonble to call this on macros");
+  assert(Loc.isMacroID() && "Only reasonable to call this on macros");
   // Walk past macro argument expanions.
   while (SM.isMacroArgExpansion(Loc))
     Loc = SM.getImmediateExpansionRange(Loc).first;
@@ -1645,20 +1645,38 @@ FinishIdentifier:
     // Fill in Result.IdentifierInfo and update the token kind,
     // looking up the identifier in the identifier table.
     IdentifierInfo *II = PP->LookUpIdentifierInfo(Result);
+    // Note that we have to call PP->LookUpIdentifierInfo() even for code
+    // completion, it writes IdentifierInfo into Result, and callers rely on it.
+
+    // If the completion point is at the end of an identifier, we want to treat
+    // the identifier as incomplete even if it resolves to a macro or a keyword.
+    // This allows e.g. 'class^' to complete to 'classifier'.
+    if (isCodeCompletionPoint(CurPtr)) {
+      // Return the code-completion token.
+      Result.setKind(tok::code_completion);
+      // Skip the code-completion char and all immediate identifier characters.
+      // This ensures we get consistent behavior when completing at any point in
+      // an identifier (i.e. at the start, in the middle, at the end). Note that
+      // only simple cases (i.e. [a-zA-Z0-9_]) are supported to keep the code
+      // simpler.
+      assert(*CurPtr == 0 && "Completion character must be 0");
+      ++CurPtr;
+      // Note that code completion token is not added as a separate character
+      // when the completion point is at the end of the buffer. Therefore, we need
+      // to check if the buffer has ended.
+      if (CurPtr < BufferEnd) {
+        while (isIdentifierBody(*CurPtr))
+          ++CurPtr;
+      }
+      BufferPtr = CurPtr;
+      return true;
+    }
 
     // Finally, now that we know we have an identifier, pass this off to the
     // preprocessor, which may macro expand it or something.
     if (II->isHandleIdentifierCase())
       return PP->HandleIdentifier(Result);
 
-    if (II->getTokenID() == tok::identifier && isCodeCompletionPoint(CurPtr)
-        && II->getPPKeywordID() == tok::pp_not_keyword
-        && II->getObjCKeywordID() == tok::objc_not_keyword) {
-      // Return the code-completion token.
-      Result.setKind(tok::code_completion);
-      cutOffLexing();
-      return true;
-    }
     return true;
   }
 
@@ -2163,7 +2181,7 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr,
 }
 
 /// We have just read the // characters from input.  Skip until we find the
-/// newline character thats terminate the comment.  Then update BufferPtr and
+/// newline character that terminates the comment.  Then update BufferPtr and
 /// return.
 ///
 /// If we're in KeepCommentMode or any CommentHandler has inserted
@@ -3512,7 +3530,7 @@ LexNextToken:
       // want to lex this as a comment.  There is one problem with this though,
       // that in one particular corner case, this can change the behavior of the
       // resultant program.  For example, In  "foo //**/ bar", C89 would lex
-      // this as "foo / bar" and langauges with Line comments would lex it as
+      // this as "foo / bar" and languages with Line comments would lex it as
       // "foo".  Check to see if the character after the second slash is a '*'.
       // If so, we will lex that as a "/" instead of the start of a comment.
       // However, we never do this if we are just preprocessing.

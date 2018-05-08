@@ -302,11 +302,9 @@ CompilerInstance::createDiagnostics(DiagnosticOptions *Opts,
 
 FileManager *CompilerInstance::createFileManager() {
   if (!hasVirtualFileSystem()) {
-    if (IntrusiveRefCntPtr<vfs::FileSystem> VFS =
-            createVFSFromCompilerInvocation(getInvocation(), getDiagnostics()))
-      setVirtualFileSystem(VFS);
-    else
-      return nullptr;
+    IntrusiveRefCntPtr<vfs::FileSystem> VFS =
+        createVFSFromCompilerInvocation(getInvocation(), getDiagnostics());
+    setVirtualFileSystem(VFS);
   }
   FileMgr = new FileManager(getFileSystemOpts(), VirtualFileSystem);
   return FileMgr.get();
@@ -1090,6 +1088,10 @@ compileModuleImpl(CompilerInstance &ImportingInstance, SourceLocation ImportLoc,
       }),
       PPOpts.Macros.end());
 
+  // If the original compiler invocation had -fmodule-name, pass it through.
+  Invocation->getLangOpts()->ModuleName =
+      ImportingInstance.getInvocation().getLangOpts()->ModuleName;
+
   // Note the name of the module we're building.
   Invocation->getLangOpts()->CurrentModule = ModuleName;
 
@@ -1298,7 +1300,7 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
         // case of timeout, build it ourselves.
         Diags.Report(ModuleNameLoc, diag::remark_module_lock_timeout)
             << Module->Name;
-        // Clear the lock file so that future invokations can make progress.
+        // Clear the lock file so that future invocations can make progress.
         Locked.unsafeRemoveLockFile();
         continue;
       }
@@ -1976,6 +1978,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
     checkConfigMacro(getPreprocessor(), TopModule->ConfigMacros[I],
                      Module, ImportLoc);
   }
+
+  // Resolve any remaining module using export_as for this one.
+  getPreprocessor()
+      .getHeaderSearchInfo()
+      .getModuleMap()
+      .resolveLinkAsDependencies(TopModule);
 
   LastModuleImportLoc = ImportLoc;
   LastModuleImportResult = ModuleLoadResult(Module);

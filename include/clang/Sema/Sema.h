@@ -30,7 +30,6 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/TypeOrdering.h"
 #include "clang/Basic/ExpressionTraits.h"
-#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/PragmaKinds.h"
@@ -45,7 +44,6 @@
 #include "clang/Sema/ObjCMethodList.h"
 #include "clang/Sema/Ownership.h"
 #include "clang/Sema/Scope.h"
-#include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/TypoCorrection.h"
 #include "clang/Sema/Weak.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -201,6 +199,7 @@ namespace clang {
 namespace sema {
   class AccessedEntity;
   class BlockScopeInfo;
+  class Capture;
   class CapturedRegionScopeInfo;
   class CapturingScopeInfo;
   class CompoundScopeInfo;
@@ -529,12 +528,10 @@ public:
   ///  full expression.
   llvm::SmallPtrSet<Expr*, 2> MaybeODRUseExprs;
 
+  std::unique_ptr<sema::FunctionScopeInfo> PreallocatedFunctionScope;
+
   /// \brief Stack containing information about each of the nested
   /// function, block, and method scopes that are currently active.
-  ///
-  /// This array is never empty.  Clients should ignore the first
-  /// element, which is used to cache a single FunctionScopeInfo
-  /// that's used to parse every top-level function.
   SmallVector<sema::FunctionScopeInfo *, 4> FunctionScopes;
 
   typedef LazyVector<TypedefNameDecl *, ExternalSemaSource,
@@ -549,7 +546,7 @@ public:
   /// FieldCollector - Collects CXXFieldDecls during parsing of C++ classes.
   std::unique_ptr<CXXFieldCollector> FieldCollector;
 
-  typedef llvm::SmallSetVector<const NamedDecl*, 16> NamedDeclSetType;
+  typedef llvm::SmallSetVector<NamedDecl *, 16> NamedDeclSetType;
 
   /// \brief Set containing all declared private fields that are not used.
   NamedDeclSetType UnusedPrivateFields;
@@ -1319,26 +1316,14 @@ public:
                        const BlockExpr *blkExpr = nullptr);
 
   sema::FunctionScopeInfo *getCurFunction() const {
-    return FunctionScopes.back();
+    return FunctionScopes.empty() ? nullptr : FunctionScopes.back();
   }
 
-  sema::FunctionScopeInfo *getEnclosingFunction() const {
-    if (FunctionScopes.empty())
-      return nullptr;
+  sema::FunctionScopeInfo *getEnclosingFunction() const;
 
-    for (int e = FunctionScopes.size()-1; e >= 0; --e) {
-      if (isa<sema::BlockScopeInfo>(FunctionScopes[e]))
-        continue;
-      return FunctionScopes[e];
-    }
-    return nullptr;
-  }
-
-  template <typename ExprT>
-  void recordUseOfEvaluatedWeak(const ExprT *E, bool IsRead=true) {
-    if (!isUnevaluatedContext())
-      getCurFunction()->recordUseOfWeak(E, IsRead);
-  }
+  void setFunctionHasBranchIntoScope();
+  void setFunctionHasBranchProtectedScope();
+  void setFunctionHasIndirectGoto();
 
   void PushCompoundScope(bool IsStmtExpr);
   void PopCompoundScope();
@@ -1864,8 +1849,8 @@ public:
   void RegisterLocallyScopedExternCDecl(NamedDecl *ND, Scope *S);
   bool DiagnoseClassNameShadow(DeclContext *DC, DeclarationNameInfo Info);
   bool diagnoseQualifiedDeclaration(CXXScopeSpec &SS, DeclContext *DC,
-                                    DeclarationName Name,
-                                    SourceLocation Loc);
+                                    DeclarationName Name, SourceLocation Loc,
+                                    bool IsTemplateId);
   void
   diagnoseIgnoredQualifiers(unsigned DiagID, unsigned Quals,
                             SourceLocation FallbackLoc,
@@ -2141,6 +2126,7 @@ public:
 
   Decl *ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS, DeclSpec &DS,
                                    RecordDecl *&AnonRecord);
+
   Decl *ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS, DeclSpec &DS,
                                    MultiTemplateParamsArg TemplateParams,
                                    bool IsExplicitInstantiation,
@@ -3338,8 +3324,8 @@ public:
   bool CheckRegparmAttr(const AttributeList &attr, unsigned &value);
   bool CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC,
                             const FunctionDecl *FD = nullptr);
-  bool CheckNoReturnAttr(const AttributeList &attr);
-  bool CheckNoCallerSavedRegsAttr(const AttributeList &attr);
+  bool CheckAttrTarget(const AttributeList &CurrAttr);
+  bool CheckAttrNoArgs(const AttributeList &CurrAttr);
   bool checkStringLiteralArgumentAttr(const AttributeList &Attr,
                                       unsigned ArgNum, StringRef &Str,
                                       SourceLocation *ArgLocation = nullptr);
@@ -3810,10 +3796,22 @@ public:
   RecordDecl *CreateCapturedStmtRecordDecl(CapturedDecl *&CD,
                                            SourceLocation Loc,
                                            unsigned NumParams);
+
+  enum CopyElisionSemanticsKind {
+    CES_Strict = 0,
+    CES_AllowParameters = 1,
+    CES_AllowDifferentTypes = 2,
+    CES_AllowExceptionVariables = 4,
+    CES_FormerDefault = (CES_AllowParameters),
+    CES_Default = (CES_AllowParameters | CES_AllowDifferentTypes),
+    CES_AsIfByStdMove = (CES_AllowParameters | CES_AllowDifferentTypes |
+                         CES_AllowExceptionVariables),
+  };
+
   VarDecl *getCopyElisionCandidate(QualType ReturnType, Expr *E,
-                                   bool AllowParamOrMoveConstructible);
+                                   CopyElisionSemanticsKind CESK);
   bool isCopyElisionCandidate(QualType ReturnType, const VarDecl *VD,
-                              bool AllowParamOrMoveConstructible);
+                              CopyElisionSemanticsKind CESK);
 
   StmtResult ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp,
                              Scope *CurScope);
@@ -3954,7 +3952,7 @@ public:
 
   void redelayDiagnostics(sema::DelayedDiagnosticPool &pool);
 
-  void DiagnoseAvailabilityOfDecl(NamedDecl *D, SourceLocation Loc,
+  void DiagnoseAvailabilityOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
                                   const ObjCInterfaceDecl *UnknownObjCClass,
                                   bool ObjCPropertyAccess,
                                   bool AvoidPartialAvailabilityChecks = false);
@@ -3969,7 +3967,7 @@ public:
   // Expression Parsing Callbacks: SemaExpr.cpp.
 
   bool CanUseDecl(NamedDecl *D, bool TreatUnavailableAsInvalid);
-  bool DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
+  bool DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
                          const ObjCInterfaceDecl *UnknownObjCClass = nullptr,
                          bool ObjCPropertyAccess = false,
                          bool AvoidPartialAvailabilityChecks = false);
@@ -5147,8 +5145,25 @@ public:
 
   bool CheckAllocatedType(QualType AllocType, SourceLocation Loc,
                           SourceRange R);
+
+  /// \brief The scope in which to find allocation functions.
+  enum AllocationFunctionScope {
+    /// \brief Only look for allocation functions in the global scope.
+    AFS_Global,
+    /// \brief Only look for allocation functions in the scope of the
+    /// allocated class.
+    AFS_Class,
+    /// \brief Look for allocation functions in both the global scope
+    /// and in the scope of the allocated class.
+    AFS_Both
+  };
+
+  /// \brief Finds the overloads of operator new and delete that are appropriate
+  /// for the allocation.
   bool FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
-                               bool UseGlobal, QualType AllocType, bool IsArray,
+                               AllocationFunctionScope NewScope,
+                               AllocationFunctionScope DeleteScope,
+                               QualType AllocType, bool IsArray,
                                bool &PassAlignment, MultiExprArg PlaceArgs,
                                FunctionDecl *&OperatorNew,
                                FunctionDecl *&OperatorDelete,
@@ -5553,10 +5568,10 @@ public:
                              Scope *CurScope);
 
   /// \brief Does copying/destroying the captured variable have side effects?
-  bool CaptureHasSideEffects(const sema::LambdaScopeInfo::Capture &From);
+  bool CaptureHasSideEffects(const sema::Capture &From);
 
   /// \brief Diagnose if an explicit lambda capture is unused.
-  void DiagnoseUnusedLambdaCapture(const sema::LambdaScopeInfo::Capture &From);
+  void DiagnoseUnusedLambdaCapture(const sema::Capture &From);
 
   /// \brief Complete a lambda-expression having processed and attached the
   /// lambda body.
@@ -6215,6 +6230,13 @@ public:
                                 SourceLocation TemplateLoc,
                                 const TemplateArgumentListInfo *TemplateArgs);
 
+  ExprResult
+  CheckConceptTemplateId(const CXXScopeSpec &SS,
+                         const DeclarationNameInfo &NameInfo,
+                         ConceptDecl *Template,
+                         SourceLocation TemplateLoc,
+                         const TemplateArgumentListInfo *TemplateArgs);
+
   ExprResult BuildTemplateIdExpr(const CXXScopeSpec &SS,
                                  SourceLocation TemplateKWLoc,
                                  LookupResult &R,
@@ -6377,9 +6399,8 @@ public:
                                    QualType InstantiatedParamType, Expr *Arg,
                                    TemplateArgument &Converted,
                                CheckTemplateArgumentKind CTAK = CTAK_Specified);
-  bool CheckTemplateArgument(TemplateTemplateParmDecl *Param,
-                             TemplateArgumentLoc &Arg,
-                             unsigned ArgumentPackIndex);
+  bool CheckTemplateTemplateArgument(TemplateParameterList *Params,
+                                     TemplateArgumentLoc &Arg);
 
   ExprResult
   BuildExpressionFromDeclTemplateArgument(const TemplateArgument &Arg,
@@ -6493,6 +6514,13 @@ public:
   getTemplateArgumentBindingsText(const TemplateParameterList *Params,
                                   const TemplateArgument *Args,
                                   unsigned NumArgs);
+
+  // Concepts
+  ConceptDecl *ActOnConceptDefinition(
+      Scope *S,
+      MultiTemplateParamsArg TemplateParameterLists,
+      IdentifierInfo *Name, SourceLocation NameLoc,
+      Expr *ConstraintExpr);
 
   //===--------------------------------------------------------------------===//
   // C++ Variadic Templates (C++0x [temp.variadic])
@@ -7558,6 +7586,10 @@ public:
   /// but have not yet been performed.
   std::deque<PendingImplicitInstantiation> PendingInstantiations;
 
+  /// Queue of implicit template instantiations that cannot be performed
+  /// eagerly.
+  SmallVector<PendingImplicitInstantiation, 1> LateParsedInstantiations;
+
   class GlobalEagerInstantiationScope {
   public:
     GlobalEagerInstantiationScope(Sema &S, bool Enabled)
@@ -7714,6 +7746,10 @@ public:
 
   StmtResult SubstStmt(Stmt *S,
                        const MultiLevelTemplateArgumentList &TemplateArgs);
+
+  TemplateParameterList *
+  SubstTemplateParams(TemplateParameterList *Params, DeclContext *Owner,
+                      const MultiLevelTemplateArgumentList &TemplateArgs);
 
   Decl *SubstDecl(Decl *D, DeclContext *Owner,
                   const MultiLevelTemplateArgumentList &TemplateArgs);
@@ -8612,29 +8648,29 @@ public:
   /// reference.
   /// \param Level Relative level of nested OpenMP construct for that the check
   /// is performed.
-  bool IsOpenMPCapturedByRef(ValueDecl *D, unsigned Level);
+  bool isOpenMPCapturedByRef(const ValueDecl *D, unsigned Level) const;
 
   /// \brief Check if the specified variable is used in one of the private
   /// clauses (private, firstprivate, lastprivate, reduction etc.) in OpenMP
   /// constructs.
-  VarDecl *IsOpenMPCapturedDecl(ValueDecl *D);
+  VarDecl *isOpenMPCapturedDecl(ValueDecl *D) const;
   ExprResult getOpenMPCapturedExpr(VarDecl *Capture, ExprValueKind VK,
                                    ExprObjectKind OK, SourceLocation Loc);
 
   /// \brief Check if the specified variable is used in 'private' clause.
   /// \param Level Relative level of nested OpenMP construct for that the check
   /// is performed.
-  bool isOpenMPPrivateDecl(ValueDecl *D, unsigned Level);
+  bool isOpenMPPrivateDecl(const ValueDecl *D, unsigned Level) const;
 
   /// Sets OpenMP capture kind (OMPC_private, OMPC_firstprivate, OMPC_map etc.)
   /// for \p FD based on DSA for the provided corresponding captured declaration
   /// \p D.
-  void setOpenMPCaptureKind(FieldDecl *FD, ValueDecl *D, unsigned Level);
+  void setOpenMPCaptureKind(FieldDecl *FD, const ValueDecl *D, unsigned Level);
 
   /// \brief Check if the specified variable is captured  by 'target' directive.
   /// \param Level Relative level of nested OpenMP construct for that the check
   /// is performed.
-  bool isOpenMPTargetCapturedDecl(ValueDecl *D, unsigned Level);
+  bool isOpenMPTargetCapturedDecl(const ValueDecl *D, unsigned Level) const;
 
   ExprResult PerformOpenMPImplicitIntegerConversion(SourceLocation OpLoc,
                                                     Expr *Op);
@@ -8666,9 +8702,8 @@ public:
                                      SourceLocation Loc,
                                      ArrayRef<Expr *> VarList);
   /// \brief Builds a new OpenMPThreadPrivateDecl and checks its correctness.
-  OMPThreadPrivateDecl *CheckOMPThreadPrivateDecl(
-                                     SourceLocation Loc,
-                                     ArrayRef<Expr *> VarList);
+  OMPThreadPrivateDecl *CheckOMPThreadPrivateDecl(SourceLocation Loc,
+                                                  ArrayRef<Expr *> VarList);
   /// \brief Check if the specified type is allowed to be used in 'omp declare
   /// reduction' construct.
   QualType ActOnOpenMPDeclareReductionType(SourceLocation TyLoc,
@@ -8739,24 +8774,26 @@ public:
                                           Stmt *AStmt,
                                           SourceLocation StartLoc,
                                           SourceLocation EndLoc);
+  using VarsWithInheritedDSAType =
+      llvm::SmallDenseMap<const ValueDecl *, const Expr *, 4>;
   /// \brief Called on well-formed '\#pragma omp simd' after parsing
   /// of the associated statement.
-  StmtResult ActOnOpenMPSimdDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPSimdDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                           SourceLocation StartLoc, SourceLocation EndLoc,
+                           VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp for' after parsing
   /// of the associated statement.
-  StmtResult ActOnOpenMPForDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPForDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                          SourceLocation StartLoc, SourceLocation EndLoc,
+                          VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp for simd' after parsing
   /// of the associated statement.
-  StmtResult ActOnOpenMPForSimdDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPForSimdDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                              SourceLocation StartLoc, SourceLocation EndLoc,
+                              VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp sections' after parsing
   /// of the associated statement.
   StmtResult ActOnOpenMPSectionsDirective(ArrayRef<OMPClause *> Clauses,
@@ -8785,14 +8822,12 @@ public:
   /// of the  associated statement.
   StmtResult ActOnOpenMPParallelForDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp parallel for simd' after
   /// parsing of the  associated statement.
   StmtResult ActOnOpenMPParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp parallel sections' after
   /// parsing of the  associated statement.
   StmtResult ActOnOpenMPParallelSectionsDirective(ArrayRef<OMPClause *> Clauses,
@@ -8863,8 +8898,7 @@ public:
   /// parsing of the  associated statement.
   StmtResult ActOnOpenMPTargetParallelForDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp teams' after parsing of the
   /// associated statement.
   StmtResult ActOnOpenMPTeamsDirective(ArrayRef<OMPClause *> Clauses,
@@ -8882,22 +8916,21 @@ public:
                                         OpenMPDirectiveKind CancelRegion);
   /// \brief Called on well-formed '\#pragma omp taskloop' after parsing of the
   /// associated statement.
-  StmtResult ActOnOpenMPTaskLoopDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPTaskLoopDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                               SourceLocation StartLoc, SourceLocation EndLoc,
+                               VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp taskloop simd' after parsing of
   /// the associated statement.
   StmtResult ActOnOpenMPTaskLoopSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp distribute' after parsing
   /// of the associated statement.
-  StmtResult ActOnOpenMPDistributeDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPDistributeDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                                 SourceLocation StartLoc, SourceLocation EndLoc,
+                                 VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp target update'.
   StmtResult ActOnOpenMPTargetUpdateDirective(ArrayRef<OMPClause *> Clauses,
                                               SourceLocation StartLoc,
@@ -8907,56 +8940,48 @@ public:
   /// parsing of the associated statement.
   StmtResult ActOnOpenMPDistributeParallelForDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp distribute parallel for simd'
   /// after parsing of the associated statement.
   StmtResult ActOnOpenMPDistributeParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp distribute simd' after
   /// parsing of the associated statement.
   StmtResult ActOnOpenMPDistributeSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp target parallel for simd' after
   /// parsing of the associated statement.
   StmtResult ActOnOpenMPTargetParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp target simd' after parsing of
   /// the associated statement.
-  StmtResult ActOnOpenMPTargetSimdDirective(
-      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  StmtResult
+  ActOnOpenMPTargetSimdDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                                 SourceLocation StartLoc, SourceLocation EndLoc,
+                                 VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp teams distribute' after parsing of
   /// the associated statement.
   StmtResult ActOnOpenMPTeamsDistributeDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp teams distribute simd' after parsing
   /// of the associated statement.
   StmtResult ActOnOpenMPTeamsDistributeSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp teams distribute parallel for simd'
   /// after parsing of the associated statement.
   StmtResult ActOnOpenMPTeamsDistributeParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp teams distribute parallel for'
   /// after parsing of the associated statement.
   StmtResult ActOnOpenMPTeamsDistributeParallelForDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp target teams' after parsing of the
   /// associated statement.
   StmtResult ActOnOpenMPTargetTeamsDirective(ArrayRef<OMPClause *> Clauses,
@@ -8967,33 +8992,29 @@ public:
   /// of the associated statement.
   StmtResult ActOnOpenMPTargetTeamsDistributeDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp target teams distribute parallel for'
   /// after parsing of the associated statement.
   StmtResult ActOnOpenMPTargetTeamsDistributeParallelForDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp target teams distribute parallel for
   /// simd' after parsing of the associated statement.
   StmtResult ActOnOpenMPTargetTeamsDistributeParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
   /// Called on well-formed '\#pragma omp target teams distribute simd' after
   /// parsing of the associated statement.
   StmtResult ActOnOpenMPTargetTeamsDistributeSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
-      SourceLocation EndLoc,
-      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
 
   /// Checks correctness of linear modifiers.
   bool CheckOpenMPLinearModifier(OpenMPLinearClauseKind LinKind,
                                  SourceLocation LinLoc);
   /// Checks that the specified declaration matches requirements for the linear
   /// decls.
-  bool CheckOpenMPLinearDecl(ValueDecl *D, SourceLocation ELoc,
+  bool CheckOpenMPLinearDecl(const ValueDecl *D, SourceLocation ELoc,
                              OpenMPLinearClauseKind LinKind, QualType Type);
 
   /// \brief Called on well-formed '\#pragma omp declare simd' after parsing of
@@ -10380,6 +10401,8 @@ private:
   ExprResult SemaBuiltinNontemporalOverloaded(ExprResult TheCallResult);
   ExprResult SemaAtomicOpsOverloaded(ExprResult TheCallResult,
                                      AtomicExpr::AtomicOp Op);
+  ExprResult SemaBuiltinOperatorNewDeleteOverloaded(ExprResult TheCallResult,
+                                                    bool IsDelete);
   bool SemaBuiltinConstantArg(CallExpr *TheCall, int ArgNum,
                               llvm::APSInt &Result);
   bool SemaBuiltinConstantArgRange(CallExpr *TheCall, int ArgNum,

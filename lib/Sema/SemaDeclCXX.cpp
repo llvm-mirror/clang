@@ -2404,7 +2404,7 @@ bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class,
           // The Microsoft extension __interface does not permit bases that
           // are not themselves public interfaces.
           Diag(KnownBase->getLocStart(), diag::err_invalid_base_in_interface)
-            << getRecordDiagFromTagKind(RD->getTagKind()) << RD->getName()
+            << getRecordDiagFromTagKind(RD->getTagKind()) << RD
             << RD->getSourceRange();
           Invalid = true;
         }
@@ -2862,7 +2862,7 @@ void Sema::CheckShadowInheritedFields(const SourceLocation &Loc,
     if (AS_none !=
         CXXRecordDecl::MergeAccess(P.Access, BaseField->getAccess())) {
       Diag(Loc, diag::warn_shadow_field)
-        << FieldName.getAsString() << RD->getName() << Base->getName();
+        << FieldName << RD << Base;
       Diag(BaseField->getLocation(), diag::note_shadow_field);
       Bases.erase(It);
     }
@@ -3051,7 +3051,9 @@ Sema::ActOnCXXMemberDeclarator(Scope *S, AccessSpecifier AS, Declarator &D,
       //   int X::member;
       // };
       if (DeclContext *DC = computeDeclContext(SS, false))
-        diagnoseQualifiedDeclaration(SS, DC, Name, D.getIdentifierLoc());
+        diagnoseQualifiedDeclaration(SS, DC, Name, D.getIdentifierLoc(),
+                                     D.getName().getKind() ==
+                                         UnqualifiedIdKind::IK_TemplateId);
       else
         Diag(D.getIdentifierLoc(), diag::err_member_qualification)
           << Name << SS.getRange();
@@ -4333,7 +4335,7 @@ BuildImplicitMemberInitializer(Sema &SemaRef, CXXConstructorDecl *Constructor,
     QualType ParamType = Param->getType().getNonReferenceType();
 
     // Suppress copying zero-width bitfields.
-    if (Field->isBitField() && Field->getBitWidthValue(SemaRef.Context) == 0)
+    if (Field->isZeroLengthBitField(SemaRef.Context))
       return false;
 
     Expr *MemberExprBase =
@@ -5526,7 +5528,7 @@ static void ReferenceDllExportedMembers(Sema &S, CXXRecordDecl *Class) {
         S.MarkFunctionReferenced(Class->getLocation(), MD);
         if (Trap.hasErrorOccurred()) {
           S.Diag(ClassAttr->getLocation(), diag::note_due_to_dllexported_class)
-              << Class->getName() << !S.getLangOpts().CPlusPlus11;
+              << Class << !S.getLangOpts().CPlusPlus11;
           break;
         }
 
@@ -5685,6 +5687,21 @@ void Sema::checkClassLevelDLLAttribute(CXXRecordDecl *Class) {
           cast<InheritableAttr>(ClassAttr->clone(getASTContext()));
       NewAttr->setInherited(true);
       Member->addAttr(NewAttr);
+
+      if (MD) {
+        // Propagate DLLAttr to friend re-declarations of MD that have already
+        // been constructed.
+        for (FunctionDecl *FD = MD->getMostRecentDecl(); FD;
+             FD = FD->getPreviousDecl()) {
+          if (FD->getFriendObjectKind() == Decl::FOK_None)
+            continue;
+          assert(!getDLLAttr(FD) &&
+                 "friend re-decl should not already have a DLLAttr");
+          NewAttr = cast<InheritableAttr>(ClassAttr->clone(getASTContext()));
+          NewAttr->setInherited(true);
+          FD->addAttr(NewAttr);
+        }
+      }
     }
   }
 
@@ -5774,11 +5791,20 @@ static void DefineImplicitSpecialMember(Sema &S, CXXMethodDecl *MD,
   }
 }
 
-/// Determine whether a type is permitted to be passed or returned in
-/// registers, per C++ [class.temporary]p3.
-static bool computeCanPassInRegisters(Sema &S, CXXRecordDecl *D) {
+/// Determine whether a type would be destructed in the callee if it had a
+/// non-trivial destructor. The rules here are based on C++ [class.temporary]p3,
+/// which determines whether a struct can be passed to or returned from
+/// functions in registers.
+static bool paramCanBeDestroyedInCallee(Sema &S, CXXRecordDecl *D,
+                                        TargetInfo::CallingConvKind CCK) {
   if (D->isDependentType() || D->isInvalidDecl())
     return false;
+
+  // Clang <= 4 used the pre-C++11 rule, which ignores move operations.
+  // The PS4 platform ABI follows the behavior of Clang 3.2.
+  if (CCK == TargetInfo::CCK_ClangABI4OrPS4)
+    return !D->hasNonTrivialDestructorForCall() &&
+           !D->hasNonTrivialCopyConstructorForCall();
 
   // Per C++ [class.temporary]p3, the relevant condition is:
   //   each copy constructor, move constructor, and destructor of X is
@@ -5819,6 +5845,77 @@ static bool computeCanPassInRegisters(Sema &S, CXXRecordDecl *D) {
   }
 
   return HasNonDeletedCopyOrMove;
+}
+
+static RecordDecl::ArgPassingKind
+computeArgPassingRestrictions(bool DestroyedInCallee, const CXXRecordDecl *RD,
+                              TargetInfo::CallingConvKind CCK, Sema &S) {
+  if (RD->isDependentType() || RD->isInvalidDecl())
+    return RecordDecl::APK_CanPassInRegs;
+
+  // The param cannot be passed in registers if ArgPassingRestrictions is set to
+  // APK_CanNeverPassInRegs.
+  if (RD->getArgPassingRestrictions() == RecordDecl::APK_CanNeverPassInRegs)
+    return RecordDecl::APK_CanNeverPassInRegs;
+
+  if (CCK != TargetInfo::CCK_MicrosoftX86_64)
+    return DestroyedInCallee ? RecordDecl::APK_CanPassInRegs
+                             : RecordDecl::APK_CannotPassInRegs;
+
+  bool CopyCtorIsTrivial = false, CopyCtorIsTrivialForCall = false;
+  bool DtorIsTrivialForCall = false;
+
+  // If a class has at least one non-deleted, trivial copy constructor, it
+  // is passed according to the C ABI. Otherwise, it is passed indirectly.
+  //
+  // Note: This permits classes with non-trivial copy or move ctors to be
+  // passed in registers, so long as they *also* have a trivial copy ctor,
+  // which is non-conforming.
+  if (RD->needsImplicitCopyConstructor()) {
+    if (!RD->defaultedCopyConstructorIsDeleted()) {
+      if (RD->hasTrivialCopyConstructor())
+        CopyCtorIsTrivial = true;
+      if (RD->hasTrivialCopyConstructorForCall())
+        CopyCtorIsTrivialForCall = true;
+    }
+  } else {
+    for (const CXXConstructorDecl *CD : RD->ctors()) {
+      if (CD->isCopyConstructor() && !CD->isDeleted()) {
+        if (CD->isTrivial())
+          CopyCtorIsTrivial = true;
+        if (CD->isTrivialForCall())
+          CopyCtorIsTrivialForCall = true;
+      }
+    }
+  }
+
+  if (RD->needsImplicitDestructor()) {
+    if (!RD->defaultedDestructorIsDeleted() &&
+        RD->hasTrivialDestructorForCall())
+      DtorIsTrivialForCall = true;
+  } else if (const auto *D = RD->getDestructor()) {
+    if (!D->isDeleted() && D->isTrivialForCall())
+      DtorIsTrivialForCall = true;
+  }
+
+  // If the copy ctor and dtor are both trivial-for-calls, pass direct.
+  if (CopyCtorIsTrivialForCall && DtorIsTrivialForCall)
+    return RecordDecl::APK_CanPassInRegs;
+
+  // If a class has a destructor, we'd really like to pass it indirectly
+  // because it allows us to elide copies.  Unfortunately, MSVC makes that
+  // impossible for small types, which it will pass in a single register or
+  // stack slot. Most objects with dtors are large-ish, so handle that early.
+  // We can't call out all large objects as being indirect because there are
+  // multiple x64 calling conventions and the C++ ABI code shouldn't dictate
+  // how we pass large POD types.
+
+  // Note: This permits small classes with nontrivial destructors to be
+  // passed in registers, which is non-conforming.
+  if (CopyCtorIsTrivial &&
+      S.getASTContext().getTypeSize(RD->getTypeForDecl()) <= 64)
+    return RecordDecl::APK_CanPassInRegs;
+  return RecordDecl::APK_CannotPassInRegs;
 }
 
 /// \brief Perform semantic checks on a class definition that has been
@@ -5984,7 +6081,17 @@ void Sema::CheckCompletedCXXClass(CXXRecordDecl *Record) {
 
   checkClassLevelDLLAttribute(Record);
 
-  Record->setCanPassInRegisters(computeCanPassInRegisters(*this, Record));
+  bool ClangABICompat4 =
+      Context.getLangOpts().getClangABICompat() <= LangOptions::ClangABI::Ver4;
+  TargetInfo::CallingConvKind CCK =
+      Context.getTargetInfo().getCallingConvKind(ClangABICompat4);
+  bool DestroyedInCallee = paramCanBeDestroyedInCallee(*this, Record, CCK);
+
+  if (Record->hasNonTrivialDestructor())
+    Record->setParamDestroyedInCallee(DestroyedInCallee);
+
+  Record->setArgPassingRestrictions(
+      computeArgPassingRestrictions(DestroyedInCallee, Record, CCK, *this));
 }
 
 /// Look up the special member function that would be called by a special
@@ -8212,7 +8319,8 @@ void Sema::CheckConversionDeclarator(Declarator &D, QualType &R,
   QualType ConvType =
       GetTypeFromParser(D.getName().ConversionFunctionId, &ConvTSI);
 
-  if (D.getDeclSpec().hasTypeSpecifier() && !D.isInvalidType()) {
+  const DeclSpec &DS = D.getDeclSpec();
+  if (DS.hasTypeSpecifier() && !D.isInvalidType()) {
     // Conversion functions don't have return types, but the parser will
     // happily parse something like:
     //
@@ -8222,8 +8330,17 @@ void Sema::CheckConversionDeclarator(Declarator &D, QualType &R,
     //
     // The return type will be changed later anyway.
     Diag(D.getIdentifierLoc(), diag::err_conv_function_return_type)
-      << SourceRange(D.getDeclSpec().getTypeSpecTypeLoc())
+      << SourceRange(DS.getTypeSpecTypeLoc())
       << SourceRange(D.getIdentifierLoc());
+    D.setInvalidType();
+  } else if (DS.getTypeQualifiers() && !D.isInvalidType()) {
+    // It's also plausible that the user writes type qualifiers in the wrong
+    // place, such as:
+    //   struct S { const operator int(); };
+    // FIXME: we could provide a fixit to move the qualifiers onto the
+    // conversion type.
+    Diag(D.getIdentifierLoc(), diag::err_conv_function_with_complex_decl)
+        << SourceRange(D.getIdentifierLoc()) << 0;
     D.setInvalidType();
   }
 
@@ -8337,12 +8454,12 @@ void Sema::CheckConversionDeclarator(Declarator &D, QualType &R,
     R = Context.getFunctionType(ConvType, None, Proto->getExtProtoInfo());
 
   // C++0x explicit conversion operators.
-  if (D.getDeclSpec().isExplicitSpecified())
-    Diag(D.getDeclSpec().getExplicitSpecLoc(),
-         getLangOpts().CPlusPlus11 ?
-           diag::warn_cxx98_compat_explicit_conversion_functions :
-           diag::ext_explicit_conversion_functions)
-      << SourceRange(D.getDeclSpec().getExplicitSpecLoc());
+  if (DS.isExplicitSpecified())
+    Diag(DS.getExplicitSpecLoc(),
+         getLangOpts().CPlusPlus11
+             ? diag::warn_cxx98_compat_explicit_conversion_functions
+             : diag::ext_explicit_conversion_functions)
+        << SourceRange(DS.getExplicitSpecLoc());
 }
 
 /// ActOnConversionDeclarator - Called by ActOnDeclarator to complete
@@ -9350,7 +9467,7 @@ UsingShadowDecl *Sema::BuildUsingShadowDecl(Scope *S,
     NonTemplateTarget = TargetTD->getTemplatedDecl();
 
   UsingShadowDecl *Shadow;
-  if (isa<CXXConstructorDecl>(NonTemplateTarget)) {
+  if (!isa<ConceptDecl>(Target) && isa<CXXConstructorDecl>(NonTemplateTarget)) {
     bool IsVirtualBase =
         isVirtualDirectBase(cast<CXXRecordDecl>(CurContext),
                             UD->getQualifier()->getAsRecordDecl());
@@ -11633,7 +11750,7 @@ void Sema::DefineImplicitCopyAssignment(SourceLocation CurrentLocation,
     }
 
     // Suppress assigning zero-width bitfields.
-    if (Field->isBitField() && Field->getBitWidthValue(Context) == 0)
+    if (Field->isZeroLengthBitField(Context))
       continue;
 
     QualType FieldType = Field->getType().getNonReferenceType();
@@ -12000,7 +12117,7 @@ void Sema::DefineImplicitMoveAssignment(SourceLocation CurrentLocation,
     }
 
     // Suppress assigning zero-width bitfields.
-    if (Field->isBitField() && Field->getBitWidthValue(Context) == 0)
+    if (Field->isZeroLengthBitField(Context))
       continue;
 
     QualType FieldType = Field->getType().getNonReferenceType();

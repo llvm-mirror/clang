@@ -777,7 +777,7 @@ public:
   /// Return the llvm::Constant for the address of the given global variable.
   /// If Ty is non-null and if the global doesn't exist, then it will be created
   /// with the specified type instead of whatever the normal requested type
-  /// would be. If IsForDefinition is true, it is guranteed that an actual
+  /// would be. If IsForDefinition is true, it is guaranteed that an actual
   /// global with type Ty will be returned, not conversion of a variable with
   /// the same mangled name but some other type.
   llvm::Constant *GetAddrOfGlobalVar(const VarDecl *D,
@@ -800,7 +800,8 @@ public:
   ConstantAddress GetAddrOfUuidDescriptor(const CXXUuidofExpr* E);
 
   /// Get the address of the thunk for the given global decl.
-  llvm::Constant *GetAddrOfThunk(GlobalDecl GD, const ThunkInfo &Thunk);
+  llvm::Constant *GetAddrOfThunk(StringRef Name, llvm::Type *FnTy,
+                                 GlobalDecl GD);
 
   /// Get a reference to the target of VD.
   ConstantAddress GetWeakRefReference(const ValueDecl *VD);
@@ -1177,7 +1178,7 @@ public:
     DeferredVTables.push_back(RD);
   }
 
-  /// Emit code for a singal global function or var decl. Forward declarations
+  /// Emit code for a single global function or var decl. Forward declarations
   /// are emitted lazily.
   void EmitGlobal(GlobalDecl D);
 
@@ -1334,6 +1335,12 @@ private:
   void applyGlobalValReplacements();
 
   void checkAliases();
+
+  std::map<int, llvm::TinyPtrVector<llvm::Function *>> DtorsUsingAtExit;
+
+  /// Register functions annotated with __attribute__((destructor)) using
+  /// __cxa_atexit, if it is available, or atexit otherwise.
+  void registerGlobalDtorsWithAtExit();
 
   void emitMultiVersionFunctions();
 

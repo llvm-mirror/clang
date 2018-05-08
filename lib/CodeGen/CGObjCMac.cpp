@@ -1708,7 +1708,7 @@ struct NullReturnState {
            e = Method->param_end(); i != e; ++i, ++I) {
         const ParmVarDecl *ParamDecl = (*i);
         if (ParamDecl->hasAttr<NSConsumedAttr>()) {
-          RValue RV = I->RV;
+          RValue RV = I->getRValue(CGF);
           assert(RV.isScalar() && 
                  "NullReturnState::complete - arg not on object");
           CGF.EmitARCRelease(RV.getScalarVal(), ARCImpreciseLifetime);
@@ -3401,7 +3401,9 @@ static bool hasMRCWeakIvars(CodeGenModule &CGM,
   See EmitClassExtension();
 */
 void CGObjCMac::GenerateClass(const ObjCImplementationDecl *ID) {
-  DefinedSymbols.insert(ID->getIdentifier());
+  IdentifierInfo *RuntimeName =
+      &CGM.getContext().Idents.get(ID->getObjCRuntimeNameAsString());
+  DefinedSymbols.insert(RuntimeName);
 
   std::string ClassName = ID->getNameAsString();
   // FIXME: Gross
@@ -4980,7 +4982,9 @@ llvm::Value *CGObjCMac::EmitClassRef(CodeGenFunction &CGF,
   if (ID->hasAttr<ObjCRuntimeVisibleAttr>())
     return EmitClassRefViaRuntime(CGF, ID, ObjCTypes);
 
-  return EmitClassRefFromId(CGF, ID->getIdentifier());
+  IdentifierInfo *RuntimeName =
+      &CGM.getContext().Idents.get(ID->getObjCRuntimeNameAsString());
+  return EmitClassRefFromId(CGF, RuntimeName);
 }
 
 llvm::Value *CGObjCMac::EmitNSAutoreleasePoolClassRef(CodeGenFunction &CGF) {
@@ -6944,7 +6948,7 @@ llvm::Value *CGObjCNonFragileABIMac::EmitIvarOffset(
 
   // This could be 32bit int or 64bit integer depending on the architecture.
   // Cast it to 64bit integer value, if it is a 32bit integer ivar offset value
-  //  as this is what caller always expectes.
+  //  as this is what caller always expects.
   if (ObjCTypes.IvarOffsetVarTy == ObjCTypes.IntTy)
     IvarOffsetValue = CGF.Builder.CreateIntCast(
         IvarOffsetValue, ObjCTypes.LongTy, true, "ivar.conv");
@@ -7071,7 +7075,7 @@ CGObjCNonFragileABIMac::EmitVTableMessageSend(CodeGenFunction &CGF,
             CGF.getPointerAlign());
 
   // Update the message ref argument.
-  args[1].RV = RValue::get(mref.getPointer());
+  args[1].setRValue(RValue::get(mref.getPointer()));
 
   // Load the function to call from the message ref table.
   Address calleeAddr =

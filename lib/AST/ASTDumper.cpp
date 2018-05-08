@@ -466,6 +466,7 @@ namespace  {
                                          bool DumpRefOnly);
     template<typename TemplateDecl>
     void VisitTemplateDecl(const TemplateDecl *D, bool DumpExplicitInst);
+    void VisitConceptDecl(const ConceptDecl *D);
     void VisitFunctionTemplateDecl(const FunctionTemplateDecl *D);
     void VisitClassTemplateDecl(const ClassTemplateDecl *D);
     void VisitClassTemplateSpecializationDecl(
@@ -1577,6 +1578,12 @@ void ASTDumper::VisitTemplateDecl(const TemplateDecl *D,
                                     !D->isCanonicalDecl());
 }
 
+void ASTDumper::VisitConceptDecl(const ConceptDecl *D) {
+  dumpName(D);
+  dumpTemplateParameters(D->getTemplateParameters());
+  dumpStmt(D->getConstraintExpr());
+}
+
 void ASTDumper::VisitFunctionTemplateDecl(const FunctionTemplateDecl *D) {
   // FIXME: We don't add a declaration of a function template specialization
   // to its context when it's explicitly instantiated, so dump explicit
@@ -1602,7 +1609,7 @@ void ASTDumper::VisitClassTemplatePartialSpecializationDecl(
 
 void ASTDumper::VisitClassScopeFunctionSpecializationDecl(
     const ClassScopeFunctionSpecializationDecl *D) {
-  dumpDeclRef(D->getSpecialization());
+  dumpDecl(D->getSpecialization());
   if (D->hasExplicitTemplateArgs())
     dumpTemplateArgumentListInfo(D->templateArgs());
 }

@@ -2105,8 +2105,8 @@ void ItaniumVTableBuilder::dumpLayout(raw_ostream &Out) {
       const CXXMethodDecl *MD = I.second;
 
       ThunkInfoVectorTy ThunksVector = Thunks[MD];
-      std::sort(ThunksVector.begin(), ThunksVector.end(),
-                [](const ThunkInfo &LHS, const ThunkInfo &RHS) {
+      llvm::sort(ThunksVector.begin(), ThunksVector.end(),
+                 [](const ThunkInfo &LHS, const ThunkInfo &RHS) {
         assert(LHS.Method == nullptr && RHS.Method == nullptr);
         return std::tie(LHS.This, LHS.Return) < std::tie(RHS.This, RHS.Return);
       });
@@ -2206,9 +2206,9 @@ VTableLayout::VTableLayout(ArrayRef<size_t> VTableIndices,
   else
     this->VTableIndices = OwningArrayRef<size_t>(VTableIndices);
 
-  std::sort(this->VTableThunks.begin(), this->VTableThunks.end(),
-            [](const VTableLayout::VTableThunkTy &LHS,
-               const VTableLayout::VTableThunkTy &RHS) {
+  llvm::sort(this->VTableThunks.begin(), this->VTableThunks.end(),
+             [](const VTableLayout::VTableThunkTy &LHS,
+                const VTableLayout::VTableThunkTy &RHS) {
               assert((LHS.first != RHS.first || LHS.second == RHS.second) &&
                      "Different thunks should have unique indices!");
               return LHS.first < RHS.first;
@@ -2367,8 +2367,6 @@ namespace {
 
 class VFTableBuilder {
 public:
-  typedef MicrosoftVTableContext::MethodVFTableLocation MethodVFTableLocation;
-
   typedef llvm::DenseMap<GlobalDecl, MethodVFTableLocation>
     MethodVFTableLocationsTy;
 
@@ -2997,7 +2995,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
       }
 
       // In case we need a return adjustment, we'll add a new slot for
-      // the overrider. Mark the overriden method as shadowed by the new slot.
+      // the overrider. Mark the overridden method as shadowed by the new slot.
       OverriddenMethodInfo.Shadowed = true;
 
       // Force a special name mangling for a return-adjusting thunk
@@ -3344,8 +3342,8 @@ static bool rebucketPaths(VPtrInfoVector &Paths) {
   PathsSorted.reserve(Paths.size());
   for (auto& P : Paths)
     PathsSorted.push_back(*P);
-  std::sort(PathsSorted.begin(), PathsSorted.end(),
-            [](const VPtrInfo &LHS, const VPtrInfo &RHS) {
+  llvm::sort(PathsSorted.begin(), PathsSorted.end(),
+             [](const VPtrInfo &LHS, const VPtrInfo &RHS) {
     return LHS.MangledPath < RHS.MangledPath;
   });
   bool Changed = false;
@@ -3544,6 +3542,18 @@ static void computeFullPathsForVFTables(ASTContext &Context,
   }
 }
 
+static bool vfptrIsEarlierInMDC(const ASTRecordLayout &Layout,
+                                const MethodVFTableLocation &LHS,
+                                const MethodVFTableLocation &RHS) {
+  CharUnits L = LHS.VFPtrOffset;
+  CharUnits R = RHS.VFPtrOffset;
+  if (LHS.VBase)
+    L += Layout.getVBaseClassOffset(LHS.VBase);
+  if (RHS.VBase)
+    R += Layout.getVBaseClassOffset(RHS.VBase);
+  return L < R;
+}
+
 void MicrosoftVTableContext::computeVTableRelatedInformation(
     const CXXRecordDecl *RD) {
   assert(RD->isDynamicClass());
@@ -3555,14 +3565,14 @@ void MicrosoftVTableContext::computeVTableRelatedInformation(
   const VTableLayout::AddressPointsMapTy EmptyAddressPointsMap;
 
   {
-    VPtrInfoVector VFPtrs;
-    computeVTablePaths(/*ForVBTables=*/false, RD, VFPtrs);
-    computeFullPathsForVFTables(Context, RD, VFPtrs);
+    auto VFPtrs = llvm::make_unique<VPtrInfoVector>();
+    computeVTablePaths(/*ForVBTables=*/false, RD, *VFPtrs);
+    computeFullPathsForVFTables(Context, RD, *VFPtrs);
     VFPtrLocations[RD] = std::move(VFPtrs);
   }
 
   MethodVFTableLocationsTy NewMethodLocations;
-  for (const std::unique_ptr<VPtrInfo> &VFPtr : VFPtrLocations[RD]) {
+  for (const std::unique_ptr<VPtrInfo> &VFPtr : *VFPtrLocations[RD]) {
     VFTableBuilder Builder(*this, RD, *VFPtr);
 
     VFTableIdTy id(RD, VFPtr->FullOffsetInMDC);
@@ -3574,12 +3584,15 @@ void MicrosoftVTableContext::computeVTableRelatedInformation(
         EmptyAddressPointsMap);
     Thunks.insert(Builder.thunks_begin(), Builder.thunks_end());
 
+    const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
     for (const auto &Loc : Builder.vtable_locations()) {
-      GlobalDecl GD = Loc.first;
-      MethodVFTableLocation NewLoc = Loc.second;
-      auto M = NewMethodLocations.find(GD);
-      if (M == NewMethodLocations.end() || NewLoc < M->second)
-        NewMethodLocations[GD] = NewLoc;
+      auto Insert = NewMethodLocations.insert(Loc);
+      if (!Insert.second) {
+        const MethodVFTableLocation &NewLoc = Loc.second;
+        MethodVFTableLocation &OldLoc = Insert.first->second;
+        if (vfptrIsEarlierInMDC(Layout, NewLoc, OldLoc))
+          OldLoc = NewLoc;
+      }
     }
   }
 
@@ -3704,7 +3717,7 @@ MicrosoftVTableContext::getVFPtrOffsets(const CXXRecordDecl *RD) {
   computeVTableRelatedInformation(RD);
 
   assert(VFPtrLocations.count(RD) && "Couldn't find vfptr locations");
-  return VFPtrLocations[RD];
+  return *VFPtrLocations[RD];
 }
 
 const VTableLayout &
@@ -3717,7 +3730,7 @@ MicrosoftVTableContext::getVFTableLayout(const CXXRecordDecl *RD,
   return *VFTableLayouts[id];
 }
 
-const MicrosoftVTableContext::MethodVFTableLocation &
+MethodVFTableLocation
 MicrosoftVTableContext::getMethodVFTableLocation(GlobalDecl GD) {
   assert(cast<CXXMethodDecl>(GD.getDecl())->isVirtual() &&
          "Only use this method for virtual methods or dtors");

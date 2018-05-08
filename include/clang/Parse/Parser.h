@@ -179,6 +179,7 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> MSSection;
   std::unique_ptr<PragmaHandler> MSRuntimeChecks;
   std::unique_ptr<PragmaHandler> MSIntrinsic;
+  std::unique_ptr<PragmaHandler> MSOptimize;
   std::unique_ptr<PragmaHandler> CUDAForceHostDeviceHandler;
   std::unique_ptr<PragmaHandler> OptimizeHandler;
   std::unique_ptr<PragmaHandler> LoopHintHandler;
@@ -1096,7 +1097,7 @@ private:
 
     /// \brief Whether this member function had an associated template
     /// scope. When true, D is a template declaration.
-    /// othewise, it is a member function declaration.
+    /// otherwise, it is a member function declaration.
     bool TemplateScope;
 
     /// DefaultArgs - Contains the parameters of the function and
@@ -1152,7 +1153,7 @@ private:
 
     /// \brief Whether this class had an associated template
     /// scope. When true, TagOrTemplate is a template declaration;
-    /// othewise, it is a tag declaration.
+    /// otherwise, it is a tag declaration.
     bool TemplateScope : 1;
 
     /// \brief Whether this class is an __interface.
@@ -1958,7 +1959,16 @@ private:
                         ParsedAttributesWithRange &Attrs);
   DeclSpecContext
   getDeclSpecContextFromDeclaratorContext(DeclaratorContext Context);
-  void ParseDeclarationSpecifiers(
+
+  /// \brief Parses declaration-specifiers upto a declarator or ';' emitting
+  /// diagnostics as necessary and storing parsed information within DS.
+  ///
+  /// Note: Asides from parsing the routine C/C++ decl-specifiers (which could
+  /// include entire class or enum definitions), this also parses a concept
+  /// definition and stores the appropriate AST representations (for
+  /// class/enum/concept declarations/definitions, decltype
+  /// expression-operands or types, where appropriate) within DS.
+  void ParseDeclarationSpecifiersOrConceptDefinition(
       DeclSpec &DS,
       const ParsedTemplateInfo &TemplateInfo = ParsedTemplateInfo(),
       AccessSpecifier AS = AS_none,
@@ -2810,6 +2820,11 @@ private:
                                    SourceLocation &DeclEnd,
                                    AccessSpecifier AS = AS_none);
 
+  /// \brief Parse a single template declaration that declares a concept [c++2a]
+  /// and store the AST node within DS.
+  void ParseConceptDefinition(SourceLocation ConceptLoc, DeclSpec &DS,
+                              const ParsedTemplateInfo &TemplateInfo,
+                              AccessSpecifier AS, DeclSpecContext DSC);
   //===--------------------------------------------------------------------===//
   // Modules
   DeclGroupPtrTy ParseModuleDecl();

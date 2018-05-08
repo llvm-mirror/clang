@@ -341,6 +341,13 @@ void Sema::ActOnStartOfObjCMethodDef(Scope *FnBodyScope, Decl *D) {
   if (!MDecl)
     return;
 
+  QualType ResultType = MDecl->getReturnType();
+  if (!ResultType->isDependentType() && !ResultType->isVoidType() &&
+      !MDecl->isInvalidDecl() &&
+      RequireCompleteType(MDecl->getLocation(), ResultType,
+                          diag::err_func_def_incomplete_result))
+    MDecl->setInvalidDecl();
+
   // Allow all of Sema to see that we are entering a method definition.
   PushDeclContext(FnBodyScope, MDecl);
   PushFunctionScope();
@@ -2723,7 +2730,7 @@ static void CheckProtocolMethodDefs(Sema &S,
             // This is because method will be implemented in the primary class 
             // or one of its super class implementation.
             
-            // Ugly, but necessary. Method declared in protcol might have
+            // Ugly, but necessary. Method declared in protocol might have
             // have been synthesized due to a property declared in the class which
             // uses the protocol.
             if (ObjCMethodDecl *MethodInClass =
@@ -3433,7 +3440,7 @@ static bool FilterMethodsByTypeBound(ObjCMethodDecl *Method,
            MethodInterface->isSuperClassOf(BoundInterface) ||
            BoundInterface->isSuperClassOf(MethodInterface);
   }
-  llvm_unreachable("unknow method context");
+  llvm_unreachable("unknown method context");
 }
 
 /// We first select the type of the method: Instance or Factory, then collect
@@ -4726,6 +4733,17 @@ Decl *Sema::ActOnMethodDeclaration(
   if (MethodDefinition &&
       Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86)
     checkObjCMethodX86VectorTypes(*this, ObjCMethod);
+
+  // + load method cannot have availability attributes. It get called on
+  // startup, so it has to have the availability of the deployment target.
+  if (const auto *attr = ObjCMethod->getAttr<AvailabilityAttr>()) {
+    if (ObjCMethod->isClassMethod() &&
+        ObjCMethod->getSelector().getAsString() == "load") {
+      Diag(attr->getLocation(), diag::warn_availability_on_static_initializer)
+          << 0;
+      ObjCMethod->dropAttr<AvailabilityAttr>();
+    }
+  }
 
   ActOnDocumentableDecl(ObjCMethod);
 

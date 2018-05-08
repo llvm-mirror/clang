@@ -201,10 +201,11 @@ void Sema::MaybeSuggestAddingStaticToDecl(const FunctionDecl *Cur) {
 /// \returns true if there was an error (this declaration cannot be
 /// referenced), false otherwise.
 ///
-bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
+bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
                              const ObjCInterfaceDecl *UnknownObjCClass,
                              bool ObjCPropertyAccess,
                              bool AvoidPartialAvailabilityChecks) {
+  SourceLocation Loc = Locs.front();
   if (getLangOpts().CPlusPlus && isa<FunctionDecl>(D)) {
     // If there were any diagnostics suppressed by template argument deduction,
     // emit them now.
@@ -288,7 +289,7 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     return true;
   }
 
-  DiagnoseAvailabilityOfDecl(D, Loc, UnknownObjCClass, ObjCPropertyAccess,
+  DiagnoseAvailabilityOfDecl(D, Locs, UnknownObjCClass, ObjCPropertyAccess,
                              AvoidPartialAvailabilityChecks);
 
   DiagnoseUnusedOfDecl(*this, D, Loc);
@@ -1679,9 +1680,9 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
   MarkDeclRefReferenced(E);
 
   if (getLangOpts().ObjCWeak && isa<VarDecl>(D) &&
-      Ty.getObjCLifetime() == Qualifiers::OCL_Weak &&
+      Ty.getObjCLifetime() == Qualifiers::OCL_Weak && !isUnevaluatedContext() &&
       !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, E->getLocStart()))
-      recordUseOfEvaluatedWeak(E);
+    getCurFunction()->recordUseOfWeak(E);
 
   FieldDecl *FD = dyn_cast<FieldDecl>(D);
   if (IndirectFieldDecl *IFD = dyn_cast<IndirectFieldDecl>(D))
@@ -2431,8 +2432,9 @@ Sema::LookupInObjCMethod(LookupResult &Lookup, Scope *S,
                           IV->getLocation(), SelfExpr.get(), true, true);
 
       if (IV->getType().getObjCLifetime() == Qualifiers::OCL_Weak) {
-        if (!Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, Loc))
-          recordUseOfEvaluatedWeak(Result);
+        if (!isUnevaluatedContext() &&
+            !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, Loc))
+          getCurFunction()->recordUseOfWeak(Result);
       }
       if (getLangOpts().ObjCAutoRefCount) {
         if (CurContext->isClosure())
@@ -5510,7 +5512,7 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
       // CUDA: Kernel calls must be to global functions
       if (FDecl && !FDecl->hasAttr<CUDAGlobalAttr>())
         return ExprError(Diag(LParenLoc,diag::err_kern_call_not_global_function)
-            << FDecl->getName() << Fn->getSourceRange());
+            << FDecl << Fn->getSourceRange());
 
       // CUDA: Kernel function must have 'void' return type
       if (!FuncT->getReturnType()->isVoidType())
@@ -5520,7 +5522,7 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
       // CUDA: Calls to global functions must be configured
       if (FDecl && FDecl->hasAttr<CUDAGlobalAttr>())
         return ExprError(Diag(LParenLoc, diag::err_global_call_not_config)
-            << FDecl->getName() << Fn->getSourceRange());
+            << FDecl << Fn->getSourceRange());
     }
   }
 
@@ -5719,7 +5721,7 @@ Sema::ActOnInitList(SourceLocation LBraceLoc, MultiExprArg InitArgList,
   }
 
   // Semantic analysis for initializers is done by ActOnDeclarator() and
-  // CheckInitializer() - it requires knowledge of the object being intialized.
+  // CheckInitializer() - it requires knowledge of the object being initialized.
 
   InitListExpr *E = new (Context) InitListExpr(Context, LBraceLoc, InitArgList,
                                                RBraceLoc);
@@ -8029,7 +8031,7 @@ Sema::CheckSingleAssignmentConstraints(QualType LHSType, ExprResult &CallerRHS,
   if (Diagnose && isa<ObjCProtocolExpr>(PRE)) {
     ObjCProtocolDecl *PDecl = cast<ObjCProtocolExpr>(PRE)->getProtocol();
     if (PDecl && !PDecl->hasDefinition()) {
-      Diag(PRE->getExprLoc(), diag::warn_atprotocol_protocol) << PDecl->getName();
+      Diag(PRE->getExprLoc(), diag::warn_atprotocol_protocol) << PDecl;
       Diag(PDecl->getLocation(), diag::note_entity_declared_at) << PDecl;
     }
   }
@@ -8230,7 +8232,7 @@ static bool canConvertIntTyToFloatTy(Sema &S, ExprResult *Int,
   QualType IntTy = Int->get()->getType().getUnqualifiedType();
 
   // Determine if the integer constant can be expressed as a floating point
-  // number of the appropiate type.
+  // number of the appropriate type.
   llvm::APSInt Result;
   bool CstInt = Int->get()->EvaluateAsInt(Result, S.Context);
   uint64_t Bits = 0;
@@ -10027,6 +10029,19 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
         RHS = ImpCastExprToType(RHS.get(), LHSType, CK_BitCast);
       return ResultTy;
     }
+
+    if (!IsRelational && LHSType->isBlockPointerType() &&
+        RHSType->isBlockCompatibleObjCPointerType(Context)) {
+      LHS = ImpCastExprToType(LHS.get(), RHSType,
+                              CK_BlockPointerToObjCPointerCast);
+      return ResultTy;
+    } else if (!IsRelational &&
+               LHSType->isBlockCompatibleObjCPointerType(Context) &&
+               RHSType->isBlockPointerType()) {
+      RHS = ImpCastExprToType(RHS.get(), LHSType,
+                              CK_BlockPointerToObjCPointerCast);
+      return ResultTy;
+    }
   }
   if ((LHSType->isAnyPointerType() && RHSType->isIntegerType()) ||
       (LHSType->isIntegerType() && RHSType->isAnyPointerType())) {
@@ -10699,12 +10714,34 @@ static bool CheckForModifiableLvalue(Expr *E, SourceLocation Loc, Sema &S) {
 static void CheckIdentityFieldAssignment(Expr *LHSExpr, Expr *RHSExpr,
                                          SourceLocation Loc,
                                          Sema &Sema) {
+  if (Sema.inTemplateInstantiation())
+    return;
+  if (Sema.isUnevaluatedContext())
+    return;
+  if (Loc.isInvalid() || Loc.isMacroID())
+    return;
+  if (LHSExpr->getExprLoc().isMacroID() || RHSExpr->getExprLoc().isMacroID())
+    return;
+
   // C / C++ fields
   MemberExpr *ML = dyn_cast<MemberExpr>(LHSExpr);
   MemberExpr *MR = dyn_cast<MemberExpr>(RHSExpr);
-  if (ML && MR && ML->getMemberDecl() == MR->getMemberDecl()) {
-    if (isa<CXXThisExpr>(ML->getBase()) && isa<CXXThisExpr>(MR->getBase()))
-      Sema.Diag(Loc, diag::warn_identity_field_assign) << 0;
+  if (ML && MR) {
+    if (!(isa<CXXThisExpr>(ML->getBase()) && isa<CXXThisExpr>(MR->getBase())))
+      return;
+    const ValueDecl *LHSDecl =
+        cast<ValueDecl>(ML->getMemberDecl()->getCanonicalDecl());
+    const ValueDecl *RHSDecl =
+        cast<ValueDecl>(MR->getMemberDecl()->getCanonicalDecl());
+    if (LHSDecl != RHSDecl)
+      return;
+    if (LHSDecl->getType().isVolatileQualified())
+      return;
+    if (const ReferenceType *RefTy = LHSDecl->getType()->getAs<ReferenceType>())
+      if (RefTy->getPointeeType().isVolatileQualified())
+        return;
+
+    Sema.Diag(Loc, diag::warn_identity_field_assign) << 0;
   }
 
   // Objective-C instance variables
@@ -11458,11 +11495,12 @@ static inline UnaryOperatorKind ConvertTokenKindToUnaryOpcode(
 }
 
 /// DiagnoseSelfAssignment - Emits a warning if a value is assigned to itself.
-/// This warning is only emitted for builtin assignment operations. It is also
-/// suppressed in the event of macro expansions.
+/// This warning suppressed in the event of macro expansions.
 static void DiagnoseSelfAssignment(Sema &S, Expr *LHSExpr, Expr *RHSExpr,
-                                   SourceLocation OpLoc) {
+                                   SourceLocation OpLoc, bool IsBuiltin) {
   if (S.inTemplateInstantiation())
+    return;
+  if (S.isUnevaluatedContext())
     return;
   if (OpLoc.isInvalid() || OpLoc.isMacroID())
     return;
@@ -11486,9 +11524,10 @@ static void DiagnoseSelfAssignment(Sema &S, Expr *LHSExpr, Expr *RHSExpr,
     if (RefTy->getPointeeType().isVolatileQualified())
       return;
 
-  S.Diag(OpLoc, diag::warn_self_assignment)
-      << LHSDeclRef->getType()
-      << LHSExpr->getSourceRange() << RHSExpr->getSourceRange();
+  S.Diag(OpLoc, IsBuiltin ? diag::warn_self_assignment_builtin
+                          : diag::warn_self_assignment_overloaded)
+      << LHSDeclRef->getType() << LHSExpr->getSourceRange()
+      << RHSExpr->getSourceRange();
 }
 
 /// Check if a bitwise-& is performed on an Objective-C pointer.  This
@@ -11681,7 +11720,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
       OK = LHS.get()->getObjectKind();
     }
     if (!ResultTy.isNull()) {
-      DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc);
+      DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc, true);
       DiagnoseSelfMove(LHS.get(), RHS.get(), OpLoc);
     }
     RecordModifiableNonNullParam(*this, LHS.get());
@@ -11779,7 +11818,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     break;
   case BO_AndAssign:
   case BO_OrAssign: // fallthrough
-    DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc);
+    DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc, true);
     LLVM_FALLTHROUGH;
   case BO_XorAssign:
     CompResultTy = CheckBitwiseOperands(LHS, RHS, OpLoc, Opc);
@@ -12078,6 +12117,21 @@ ExprResult Sema::ActOnBinOp(Scope *S, SourceLocation TokLoc,
 static ExprResult BuildOverloadedBinOp(Sema &S, Scope *Sc, SourceLocation OpLoc,
                                        BinaryOperatorKind Opc,
                                        Expr *LHS, Expr *RHS) {
+  switch (Opc) {
+  case BO_Assign:
+  case BO_DivAssign:
+  case BO_RemAssign:
+  case BO_SubAssign:
+  case BO_AndAssign:
+  case BO_OrAssign:
+  case BO_XorAssign:
+    DiagnoseSelfAssignment(S, LHS, RHS, OpLoc, false);
+    CheckIdentityFieldAssignment(LHS, RHS, OpLoc, S);
+    break;
+  default:
+    break;
+  }
+
   // Find all of the overloaded operators visible from this
   // point. We perform both an operator-name lookup from the local
   // scope and an argument-dependent lookup based on the types of
@@ -12393,7 +12447,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
     OK = Input.get()->getObjectKind();
     break;
   case UO_Coawait:
-    // It's unnessesary to represent the pass-through operator co_await in the
+    // It's unnecessary to represent the pass-through operator co_await in the
     // AST; just return the input expression instead.
     assert(!Input.get()->getType()->isDependentType() &&
                    "the co_await expression must be non-dependant before "
@@ -13045,7 +13099,7 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
   // Set the captured variables on the block.
   // FIXME: Share capture structure between BlockDecl and CapturingScopeInfo!
   SmallVector<BlockDecl::Capture, 4> Captures;
-  for (CapturingScopeInfo::Capture &Cap : BSI->Captures) {
+  for (Capture &Cap : BSI->Captures) {
     if (Cap.isThisCapture())
       continue;
     BlockDecl::Capture NewCap(Cap.getVariable(), Cap.isBlockCapture(),
@@ -13125,7 +13179,7 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
     for (const auto &CI : Result->getBlockDecl()->captures()) {
       const VarDecl *var = CI.getVariable();
       if (var->getType().isDestructedType() != QualType::DK_none) {
-        getCurFunction()->setHasBranchProtectedScope();
+        setFunctionHasBranchProtectedScope();
         break;
       }
     }
@@ -13515,7 +13569,7 @@ bool Sema::DiagnoseAssignmentResult(AssignConvertType ConvTy,
   if (DiagKind == diag::warn_incompatible_qualified_id &&
       PDecl && IFace && !IFace->hasDefinition())
       Diag(IFace->getLocation(), diag::note_incomplete_class_and_qualified_id)
-        << IFace->getName() << PDecl->getName();
+        << IFace << PDecl;
     
   if (SecondType == Context.OverloadTy)
     NoteAllOverloadCandidates(OverloadExpr::find(SrcExpr).Expression,
@@ -14144,7 +14198,7 @@ static bool isVariableAlreadyCapturedInScopeInfo(CapturingScopeInfo *CSI, VarDec
     // Similarly to mutable captures in lambda, all the OpenMP captures by copy
     // are mutable in the sense that user can change their value - they are
     // private instances of the captured declarations.
-    const CapturingScopeInfo::Capture &Cap = CSI->getCapture(Var);
+    const Capture &Cap = CSI->getCapture(Var);
     if (Cap.isCopyCapture() &&
         !(isa<LambdaScopeInfo>(CSI) && cast<LambdaScopeInfo>(CSI)->Mutable) &&
         !(isa<CapturedRegionScopeInfo>(CSI) &&
@@ -14328,7 +14382,7 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
 
   const bool HasBlocksAttr = Var->hasAttr<BlocksAttr>();
   if (HasBlocksAttr || CaptureType->isReferenceType() ||
-      (S.getLangOpts().OpenMP && S.IsOpenMPCapturedDecl(Var))) {
+      (S.getLangOpts().OpenMP && S.isOpenMPCapturedDecl(Var))) {
     // Block capture by reference does not change the capture or
     // declaration reference types.
     ByRef = true;
@@ -14401,14 +14455,14 @@ static bool captureInCapturedRegion(CapturedRegionScopeInfo *RSI,
   bool ByRef = true;
   // Using an LValue reference type is consistent with Lambdas (see below).
   if (S.getLangOpts().OpenMP && RSI->CapRegionKind == CR_OpenMP) {
-    if (S.IsOpenMPCapturedDecl(Var)) {
+    if (S.isOpenMPCapturedDecl(Var)) {
       bool HasConst = DeclRefType.isConstQualified();
       DeclRefType = DeclRefType.getUnqualifiedType();
       // Don't lose diagnostics about assignments to const.
       if (HasConst)
         DeclRefType.addConst();
     }
-    ByRef = S.IsOpenMPCapturedByRef(Var, RSI->OpenMPLevel);
+    ByRef = S.isOpenMPCapturedByRef(Var, RSI->OpenMPLevel);
   }
 
   if (ByRef)
@@ -14600,7 +14654,7 @@ bool Sema::tryCaptureVariable(
   // Capture global variables if it is required to use private copy of this
   // variable.
   bool IsGlobal = !Var->hasLocalStorage();
-  if (IsGlobal && !(LangOpts.OpenMP && IsOpenMPCapturedDecl(Var)))
+  if (IsGlobal && !(LangOpts.OpenMP && isOpenMPCapturedDecl(Var)))
     return true;
   Var = Var->getCanonicalDecl();
 
@@ -14965,7 +15019,7 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
     // A reference initialized by a constant expression can never be
     // odr-used, so simply ignore it.
     if (!Var->getType()->isReferenceType() ||
-        (SemaRef.LangOpts.OpenMP && SemaRef.IsOpenMPCapturedDecl(Var)))
+        (SemaRef.LangOpts.OpenMP && SemaRef.isOpenMPCapturedDecl(Var)))
       SemaRef.MaybeODRUseExprs.insert(E);
   } else if (OdrUseContext) {
     MarkVarDeclODRUsed(Var, Loc, SemaRef,

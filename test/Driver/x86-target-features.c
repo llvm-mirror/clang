@@ -60,6 +60,11 @@
 // CLWB: "-target-feature" "+clwb"
 // NO-CLWB: "-target-feature" "-clwb"
 
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mwbnoinvd %s -### -o %t.o 2>&1 | FileCheck -check-prefix=WBNOINVD %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-wbnoinvd %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-WBNOINVD %s
+// WBNOINVD: "-target-feature" "+wbnoinvd"
+// NO-WBNOINVD: "-target-feature" "-wbnoinvd"
+
 // RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mmovbe %s -### -o %t.o 2>&1 | FileCheck -check-prefix=MOVBE %s
 // RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-movbe %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-MOVBE %s
 // MOVBE: "-target-feature" "+movbe"
@@ -139,3 +144,8 @@
 // RUN: %clang -target i386-linux-gnu -mretpoline -mno-retpoline-external-thunk %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-RETPOLINE-EXTERNAL-THUNK %s
 // RETPOLINE-EXTERNAL-THUNK: "-target-feature" "+retpoline-external-thunk"
 // NO-RETPOLINE-EXTERNAL-THUNK: "-target-feature" "-retpoline-external-thunk"
+
+// RUN: %clang -target i386-linux-gnu -mwaitpkg %s -### -o %t.o 2>&1 | FileCheck -check-prefix=WAITPKG %s
+// RUN: %clang -target i386-linux-gnu -mno-waitpkg %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-WAITPKG %s
+// WAITPKG: "-target-feature" "+waitpkg"
+// NO-WAITPKG: "-target-feature" "-waitpkg"

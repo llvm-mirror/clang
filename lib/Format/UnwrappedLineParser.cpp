@@ -449,12 +449,19 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
               (Style.isCpp() && NextTok->is(tok::l_paren)) ||
               NextTok->isOneOf(tok::comma, tok::period, tok::colon,
                                tok::r_paren, tok::r_square, tok::l_brace,
-                               tok::l_square, tok::ellipsis) ||
+                               tok::ellipsis) ||
               (NextTok->is(tok::identifier) &&
                !PrevTok->isOneOf(tok::semi, tok::r_brace, tok::l_brace)) ||
               (NextTok->is(tok::semi) &&
                (!ExpectClassBody || LBraceStack.size() != 1)) ||
               (NextTok->isBinaryOperator() && !NextIsObjCMethod);
+          if (NextTok->is(tok::l_square)) {
+            // We can have an array subscript after a braced init
+            // list, but C++11 attributes are expected after blocks.
+            NextTok = Tokens->getNextToken();
+            ++ReadTokens;
+            ProbablyBracedList = NextTok->isNot(tok::l_square);
+          }
         }
         if (ProbablyBracedList) {
           Tok->BlockKind = BK_BracedInit;
@@ -563,7 +570,7 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
     Line->MatchingOpeningBlockLineIndex = OpeningLineIndex;
     if (OpeningLineIndex != UnwrappedLine::kInvalidIndex) {
       // Update the opening line to add the forward reference as well
-      (*CurrentLines)[OpeningLineIndex].MatchingOpeningBlockLineIndex =
+      (*CurrentLines)[OpeningLineIndex].MatchingClosingBlockLineIndex =
           CurrentLines->size() - 1;
     }
   }
@@ -1406,13 +1413,16 @@ bool UnwrappedLineParser::tryToParseLambdaIntroducer() {
   const FormatToken *Previous = FormatTok->Previous;
   if (Previous &&
       (Previous->isOneOf(tok::identifier, tok::kw_operator, tok::kw_new,
-                         tok::kw_delete) ||
+                         tok::kw_delete, tok::l_square) ||
        FormatTok->isCppStructuredBinding(Style) || Previous->closesScope() ||
        Previous->isSimpleTypeSpecifier())) {
     nextToken();
     return false;
   }
   nextToken();
+  if (FormatTok->is(tok::l_square)) {
+    return false;
+  }
   parseSquare(/*LambdaIntroducer=*/true);
   return true;
 }
@@ -2122,9 +2132,13 @@ void UnwrappedLineParser::parseRecord(bool ParseAsExpr) {
 
 void UnwrappedLineParser::parseObjCProtocolList() {
   assert(FormatTok->Tok.is(tok::less) && "'<' expected.");
-  do
+  do {
     nextToken();
-  while (!eof() && FormatTok->Tok.isNot(tok::greater));
+    // Early exit in case someone forgot a close angle.
+    if (FormatTok->isOneOf(tok::semi, tok::l_brace) ||
+        FormatTok->Tok.isObjCAtKeyword(tok::objc_end))
+      return;
+  } while (!eof() && FormatTok->Tok.isNot(tok::greater));
   nextToken(); // Skip '>'.
 }
 
@@ -2155,7 +2169,32 @@ void UnwrappedLineParser::parseObjCInterfaceOrImplementation() {
   nextToken();
   nextToken(); // interface name
 
-  // @interface can be followed by either a base class, or a category.
+  // @interface can be followed by a lightweight generic
+  // specialization list, then either a base class or a category.
+  if (FormatTok->Tok.is(tok::less)) {
+    // Unlike protocol lists, generic parameterizations support
+    // nested angles:
+    //
+    // @interface Foo<ValueType : id <NSCopying, NSSecureCoding>> :
+    //     NSObject <NSCopying, NSSecureCoding>
+    //
+    // so we need to count how many open angles we have left.
+    unsigned NumOpenAngles = 1;
+    do {
+      nextToken();
+      // Early exit in case someone forgot a close angle.
+      if (FormatTok->isOneOf(tok::semi, tok::l_brace) ||
+          FormatTok->Tok.isObjCAtKeyword(tok::objc_end))
+        break;
+      if (FormatTok->Tok.is(tok::less))
+        ++NumOpenAngles;
+      else if (FormatTok->Tok.is(tok::greater)) {
+        assert(NumOpenAngles > 0 && "'>' makes NumOpenAngles negative");
+        --NumOpenAngles;
+      }
+    } while (!eof() && NumOpenAngles != 0);
+    nextToken(); // Skip '>'.
+  }
   if (FormatTok->Tok.is(tok::colon)) {
     nextToken();
     nextToken(); // base class name

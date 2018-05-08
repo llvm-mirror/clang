@@ -20,8 +20,8 @@
  *
  *===-----------------------------------------------------------------------===
  */
-#ifndef _WMMINTRIN_AES_H
-#define _WMMINTRIN_AES_H
+#ifndef __WMMINTRIN_AES_H
+#define __WMMINTRIN_AES_H
 
 #include <emmintrin.h>
 
@@ -125,7 +125,7 @@ _mm_aesimc_si128(__m128i __V)
   return (__m128i)__builtin_ia32_aesimc128((__v2di)__V);
 }
 
-/// \brief Generates a round key for AES encyption, operating on 128-bit data
+/// \brief Generates a round key for AES encryption, operating on 128-bit data
 ///    specified in the first source operand and using an 8-bit round constant
 ///    specified by the second source operand, and writes the result to the
 ///    destination.
@@ -148,4 +148,4 @@ _mm_aesimc_si128(__m128i __V)
 
 #undef __DEFAULT_FN_ATTRS
 
-#endif  /* _WMMINTRIN_AES_H */
+#endif  /* __WMMINTRIN_AES_H */

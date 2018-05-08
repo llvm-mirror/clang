@@ -83,17 +83,35 @@
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-address,address -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKA-SANA
 // CHECK-SANKA-SANA: '-fsanitize=kernel-address' not allowed with '-fsanitize=address'
 
-// RUN: %clang -target aarch64-linux-gnu -fsanitize=hwaddress,thread -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANT
-// CHECK-SANHA-SANT: '-fsanitize=hwaddress' not allowed with '-fsanitize=thread'
-
-// RUN: %clang -target aarch64-linux-gnu -fsanitize=hwaddress,memory -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANM
-// CHECK-SANHA-SANM: '-fsanitize=hwaddress' not allowed with '-fsanitize=memory'
-
-// RUN: %clang -target aarch64-linux-gnu -fsanitize=hwaddress,address -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANA
-// CHECK-SANHA-SANA: '-fsanitize=hwaddress' not allowed with '-fsanitize=address'
-
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-address,leak -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKA-SANL
 // CHECK-SANKA-SANL: '-fsanitize=kernel-address' not allowed with '-fsanitize=leak'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,thread -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANT
+// CHECK-SANKHA-SANT: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=thread'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,memory -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANM
+// CHECK-SANKHA-SANM: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=memory'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,address -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANA
+// CHECK-SANKHA-SANA: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=address'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,leak -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANL
+// CHECK-SANKHA-SANL: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=leak'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,hwaddress -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANHA
+// CHECK-SANKHA-SANHA: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=hwaddress'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=kernel-hwaddress,kernel-address -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANKHA-SANKA
+// CHECK-SANKHA-SANKA: '-fsanitize=kernel-hwaddress' not allowed with '-fsanitize=kernel-address'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=hwaddress,thread -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANT
+// CHECK-SANHA-SANT: '-fsanitize=hwaddress' not allowed with '-fsanitize=thread'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=hwaddress,memory -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANM
+// CHECK-SANHA-SANM: '-fsanitize=hwaddress' not allowed with '-fsanitize=memory'
+
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=hwaddress,address -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-SANA
+// CHECK-SANHA-SANA: '-fsanitize=hwaddress' not allowed with '-fsanitize=address'
 
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=efficiency-cache-frag,address -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANE-SANA
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=efficiency-working-set,address -pie -fno-rtti %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANE-SANA
@@ -254,6 +272,11 @@
 // CHECK-DEPRECATED-RECOVER: argument '-fno-sanitize-recover' is deprecated, use '-fno-sanitize-recover=undefined,integer' or '-fno-sanitize-recover=all' instead
 // CHECK-DEPRECATED-RECOVER-NOT: is deprecated
 
+// RUN: %clang -target x86_64-linux-gnu %s -fsanitize=kernel-address -fno-sanitize-recover=kernel-address -### 2>&1 | FileCheck %s --check-prefix=CHECK-NO-RECOVER-KASAN
+// RUN: %clang -target x86_64-linux-gnu %s -fsanitize=kernel-hwaddress -fno-sanitize-recover=kernel-hwaddress -### 2>&1 | FileCheck %s --check-prefix=CHECK-NO-RECOVER-KHWASAN
+// CHECK-NO-RECOVER-KASAN: unsupported argument 'kernel-address' to option 'fno-sanitize-recover='
+// CHECK-NO-RECOVER-KHWASAN: unsupported argument 'kernel-hwaddress' to option 'fno-sanitize-recover='
+
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=leak %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANL
 // CHECK-SANL: "-fsanitize=leak"
 
@@ -307,9 +330,6 @@
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=zzz %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-DIAG1
 // CHECK-DIAG1: unsupported argument 'zzz' to option 'fsanitize='
 // CHECK-DIAG1-NOT: unsupported argument 'zzz' to option 'fsanitize='
-
-// RUN: %clang -target i686-linux-gnu -fsanitize=memory %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-MSAN-X86
-// CHECK-MSAN-X86: error: unsupported option '-fsanitize=memory' for target 'i686--linux-gnu'
 
 // RUN: %clang -target x86_64-apple-darwin10 -fsanitize=memory %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-MSAN-DARWIN
 // CHECK-MSAN-DARWIN: unsupported option '-fsanitize=memory' for target 'x86_64-apple-darwin10'
@@ -387,6 +407,25 @@
 
 // RUN: %clang -target armv7-apple-ios7 -miphoneos-version-min=7.0 -fsanitize=address %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ASAN-IOS
 // CHECK-ASAN-IOS: -fsanitize=address
+
+// RUN %clang -target i386-pc-openbsd -fsanitize=undefined %s -### 2>&1 | FileCheck --check-prefix=CHECK-UBSAN-OPENBSD
+// CHECK-UBSAN-OPENBSD: -fsanitize=undefined
+
+// RUN: %clang -target i386-pc-openbsd -fsanitize=address %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ASAN-OPENBSD
+// CHECK-ASAN-OPENBSD: unsupported option '-fsanitize=address' for target 'i386-pc-openbsd'
+
+// RUN: %clang -target i386-pc-openbsd -fsanitize=leak %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-LSAN-OPENBSD
+// CHECK-LSAN-OPENBSD: unsupported option '-fsanitize=leak' for target 'i386-pc-openbsd'
+
+// RUN: %clang -target i386-pc-openbsd -fsanitize=thread %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-TSAN-OPENBSD
+// CHECK-TSAN-OPENBSD: unsupported option '-fsanitize=thread' for target 'i386-pc-openbsd'
+
+// RUN: %clang -target i386-pc-openbsd -fsanitize=memory %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-MSAN-OPENBSD
+// CHECK-MSAN-OPENBSD: unsupported option '-fsanitize=memory' for target 'i386-pc-openbsd'
+
+// RUN: %clang -target i386-pc-openbsd -fsanitize=efficiency-cache-frag %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ESAN-OPENBSD
+// RUN: %clang -target i386-pc-openbsd -fsanitize=efficiency-working-set %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ESAN-OPENBSD
+// CHECK-ESAN-OPENBSD: error: unsupported option '-fsanitize=efficiency-{{.*}}' for target 'i386-pc-openbsd'
 
 // RUN: %clang -target x86_64-apple-darwin -fsanitize=leak %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-LSAN-X86-64-DARWIN
 // CHECK-LSAN-X86-64-DARWIN-NOT: unsupported option
@@ -468,7 +507,7 @@
 // RUN: %clang -target x86_64-linux-gnu -fsanitize-trap=address -c %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ASAN-TRAP
 // CHECK-ASAN-TRAP: error: unsupported argument 'address' to option '-fsanitize-trap'
 
-// RUN: %clang -target aarch64-linux-gnu -fsanitize-trap=hwaddress -c %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-HWASAN-TRAP
+// RUN: %clang -target x86_64-linux-gnu -fsanitize-trap=hwaddress -c %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-HWASAN-TRAP
 // CHECK-HWASAN-TRAP: error: unsupported argument 'hwaddress' to option '-fsanitize-trap'
 
 // RUN: %clang -target x86_64-apple-darwin10 -mmacosx-version-min=10.7 -flto -fsanitize=cfi-vcall -fno-sanitize-trap=cfi -c %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-CFI-NOTRAP-OLD-MACOS
@@ -599,7 +638,7 @@
 
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=address -fsanitize-minimal-runtime -fsanitize=undefined %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-ASAN-UBSAN-MINIMAL
 // CHECK-ASAN-UBSAN-MINIMAL: error: invalid argument '-fsanitize-minimal-runtime' not allowed with '-fsanitize=address'
-// RUN: %clang -target aarch64-linux-gnu -fsanitize=hwaddress -fsanitize-minimal-runtime %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-HWASAN-MINIMAL
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=hwaddress -fsanitize-minimal-runtime %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-HWASAN-MINIMAL
 // CHECK-HWASAN-MINIMAL: error: invalid argument '-fsanitize-minimal-runtime' not allowed with '-fsanitize=hwaddress'
 
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=cfi -flto -fvisibility=hidden -fsanitize-minimal-runtime %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-CFI-MINIMAL
@@ -644,8 +683,5 @@
 // CHECK-SCUDO-MSAN: error: invalid argument '-fsanitize=scudo' not allowed with '-fsanitize=memory'
 // RUN: %clang -target x86_64-linux-gnu -fsanitize=scudo,thread  %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SCUDO-TSAN
 // CHECK-SCUDO-TSAN: error: invalid argument '-fsanitize=scudo' not allowed with '-fsanitize=thread'
-// RUN: %clang -target aarch64-linux-gnu -fsanitize=scudo,hwaddress  %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SCUDO-HWASAN
+// RUN: %clang -target x86_64-linux-gnu -fsanitize=scudo,hwaddress  %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SCUDO-HWASAN
 // CHECK-SCUDO-HWASAN: error: invalid argument '-fsanitize=scudo' not allowed with '-fsanitize=hwaddress'
-
-// RUN: %clang -target x86_64-linux-gnu -fsanitize=hwaddress %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-SANHA-X86_64
-// CHECK-SANHA-X86_64: unsupported option '-fsanitize=hwaddress' for target

@@ -88,13 +88,14 @@ public:
 
   bool handleDeclOccurence(const Decl *D, SymbolRoleSet Roles,
                            ArrayRef<SymbolRelation> Relations,
-                           FileID FID, unsigned Offset,
-                           ASTNodeInfo ASTNode) override {
+                           SourceLocation Loc, ASTNodeInfo ASTNode) override {
     ASTContext &Ctx = D->getASTContext();
     SourceManager &SM = Ctx.getSourceManager();
 
-    unsigned Line = SM.getLineNumber(FID, Offset);
-    unsigned Col = SM.getColumnNumber(FID, Offset);
+    Loc = SM.getFileLoc(Loc);
+    FileID FID = SM.getFileID(Loc);
+    unsigned Line = SM.getLineNumber(FID, SM.getFileOffset(Loc));
+    unsigned Col = SM.getColumnNumber(FID, SM.getFileOffset(Loc));
     OS << Line << ':' << Col << " | ";
 
     printSymbolInfo(getSymbolInfo(D), OS);
@@ -124,12 +125,14 @@ public:
   }
 
   bool handleModuleOccurence(const ImportDecl *ImportD, SymbolRoleSet Roles,
-                             FileID FID, unsigned Offset) override {
+                             SourceLocation Loc) override {
     ASTContext &Ctx = ImportD->getASTContext();
     SourceManager &SM = Ctx.getSourceManager();
 
-    unsigned Line = SM.getLineNumber(FID, Offset);
-    unsigned Col = SM.getColumnNumber(FID, Offset);
+    Loc = SM.getFileLoc(Loc);
+    FileID FID = SM.getFileID(Loc);
+    unsigned Line = SM.getLineNumber(FID, SM.getFileOffset(Loc));
+    unsigned Col = SM.getColumnNumber(FID, SM.getFileOffset(Loc));
     OS << Line << ':' << Col << " | ";
 
     printSymbolInfo(getSymbolInfo(ImportD), OS);
@@ -192,7 +195,7 @@ static bool printSourceSymbols(ArrayRef<const char *> Args,
     if (auto Reader = Unit->getASTReader()) {
       Reader->getModuleManager().visit([&](serialization::ModuleFile &Mod) -> bool {
         OS << "==== Module " << Mod.ModuleName << " ====\n";
-        indexModuleFile(Mod, *Reader, DataConsumer, IndexOpts);
+        indexModuleFile(Mod, *Reader, *DataConsumer, IndexOpts);
         dumpModuleFileInputs(Mod, *Reader, OS);
         return true; // skip module dependencies.
       });
@@ -228,7 +231,7 @@ static bool printSourceSymbolsFromModule(StringRef modulePath,
     return true;
   }
 
-  auto DataConsumer = std::make_shared<PrintIndexDataConsumer>(outs());
+  PrintIndexDataConsumer DataConsumer(outs());
   IndexingOptions IndexOpts;
   indexASTUnit(*AU, DataConsumer, IndexOpts);
 
