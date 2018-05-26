@@ -107,11 +107,13 @@ private:
   /// programs.
   path_list ProgramPaths;
 
+  mutable std::unique_ptr<Tool> FlangFrontend;
   mutable std::unique_ptr<Tool> Clang;
   mutable std::unique_ptr<Tool> Assemble;
   mutable std::unique_ptr<Tool> Link;
   mutable std::unique_ptr<Tool> OffloadBundler;
   Tool *getClang() const;
+  Tool *getFlangFrontend() const;
   Tool *getAssemble() const;
   Tool *getLink() const;
   Tool *getClangAs() const;
@@ -450,6 +452,14 @@ public:
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                             llvm::opt::ArgStringList &CC1Args) const;
 
+  /// \brief Add the flang arguments for system include paths.
+  ///
+  /// This routine is responsible for adding the -stdinc argument to
+  /// include headers and module files from standard system header directories.
+  virtual void
+  AddFlangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &Flang1Args) const { }
+
   /// \brief Add options that need to be passed to cc1 for this target.
   virtual void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                                      llvm::opt::ArgStringList &CC1Args,
@@ -513,6 +523,11 @@ public:
   /// \brief On Windows, returns the MSVC compatibility version.
   virtual VersionTuple computeMSVCVersion(const Driver *D,
                                           const llvm::opt::ArgList &Args) const;
+
+  /// AddFortranStdlibLibArgs - Add the system specific linker arguments to use
+  /// for the given Fortran runtime library type.
+  virtual void AddFortranStdlibLibArgs(const llvm::opt::ArgList &Args,
+                                       llvm::opt::ArgStringList &CmdArgs) const;
 
   /// \brief Return sanitizers which are available in this toolchain.
   virtual SanitizerMask getSupportedSanitizers() const;
