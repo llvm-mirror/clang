@@ -30,6 +30,14 @@ class QualType;
 class RecordDecl;
 class SourceLocation;
 
+/// \brief Whether to perform a normal or minimal equivalence check.
+/// In case of `Minimal`, we do not perform a recursive check of decls with
+/// external storage.
+enum class StructuralEquivalenceKind {
+  Default,
+  Minimal,
+};
+
 struct StructuralEquivalenceContext {
   /// AST contexts for which we are checking structural equivalence.
   ASTContext &FromCtx, &ToCtx;
@@ -47,6 +55,8 @@ struct StructuralEquivalenceContext {
   /// (which we have already complained about).
   llvm::DenseSet<std::pair<Decl *, Decl *>> &NonEquivalentDecls;
 
+  StructuralEquivalenceKind EqKind;
+
   /// Whether we're being strict about the spelling of types when
   /// unifying two types.
   bool StrictTypeSpelling;
@@ -63,10 +73,11 @@ struct StructuralEquivalenceContext {
   StructuralEquivalenceContext(
       ASTContext &FromCtx, ASTContext &ToCtx,
       llvm::DenseSet<std::pair<Decl *, Decl *>> &NonEquivalentDecls,
+      StructuralEquivalenceKind EqKind,
       bool StrictTypeSpelling = false, bool Complain = true,
       bool ErrorOnTagTypeMismatch = false)
       : FromCtx(FromCtx), ToCtx(ToCtx), NonEquivalentDecls(NonEquivalentDecls),
-        StrictTypeSpelling(StrictTypeSpelling),
+        EqKind(EqKind), StrictTypeSpelling(StrictTypeSpelling),
         ErrorOnTagTypeMismatch(ErrorOnTagTypeMismatch), Complain(Complain) {}
 
   DiagnosticBuilder Diag1(SourceLocation Loc, unsigned DiagID);
@@ -74,10 +85,18 @@ struct StructuralEquivalenceContext {
 
   /// Determine whether the two declarations are structurally
   /// equivalent.
-  bool IsStructurallyEquivalent(Decl *D1, Decl *D2);
+  /// Implementation functions (all static functions in
+  /// ASTStructuralEquivalence.cpp) must never call this function because that
+  /// will wreak havoc the internal state (\c DeclsToCheck and
+  /// \c TentativeEquivalences members) and can cause faulty equivalent results.
+  bool IsEquivalent(Decl *D1, Decl *D2);
 
   /// Determine whether the two types are structurally equivalent.
-  bool IsStructurallyEquivalent(QualType T1, QualType T2);
+  /// Implementation functions (all static functions in
+  /// ASTStructuralEquivalence.cpp) must never call this function because that
+  /// will wreak havoc the internal state (\c DeclsToCheck and
+  /// \c TentativeEquivalences members) and can cause faulty equivalent results.
+  bool IsEquivalent(QualType T1, QualType T2);
 
   /// Find the index of the given anonymous struct/union within its
   /// context.
@@ -95,8 +114,19 @@ struct StructuralEquivalenceContext {
 private:
   /// Finish checking all of the structural equivalences.
   ///
-  /// \returns true if an error occurred, false otherwise.
+  /// \returns true if the equivalence check failed (non-equivalence detected),
+  /// false if equivalence was detected.
   bool Finish();
+
+  /// Check for common properties at Finish.
+  /// \returns true if D1 and D2 may be equivalent,
+  /// false if they are for sure not.
+  bool CheckCommonEquivalence(Decl *D1, Decl *D2);
+
+  /// Check for class dependent properties at Finish.
+  /// \returns true if D1 and D2 may be equivalent,
+  /// false if they are for sure not.
+  bool CheckKindSpecificEquivalence(Decl *D1, Decl *D2);
 };
 
 } // namespace clang

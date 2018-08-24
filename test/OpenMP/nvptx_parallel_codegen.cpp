@@ -51,6 +51,15 @@ tx ftemplate(int n) {
     b[2] += 1;
   }
 
+  #pragma omp target
+  {
+    #pragma omp parallel
+    {
+    #pragma omp critical
+    ++a;
+    }
+    ++a;
+  }
   return a;
 }
 
@@ -62,7 +71,7 @@ int bar(int n){
   return a;
 }
 
-  // CHECK-NOT: define {{.*}}void {{@__omp_offloading_.+template.+l17}}_worker()
+// CHECK-NOT: define {{.*}}void {{@__omp_offloading_.+template.+l17}}_worker()
 
 // CHECK-LABEL: define {{.*}}void {{@__omp_offloading_.+template.+l26}}_worker()
 // CHECK-DAG: [[OMP_EXEC_STATUS:%.+]] = alloca i8,
@@ -303,4 +312,37 @@ int bar(int n){
 // CHECK: [[A:%.+]] = alloca i[[SZ:32|64]],
 // CHECK: store i[[SZ]] 45, i[[SZ]]* %a,
 // CHECK: ret void
+
+// CHECK-LABEL: define {{.*}}void {{@__omp_offloading_.+template.+l54}}_worker()
+// CHECK-LABEL: define {{.*}}void {{@__omp_offloading_.+template.+l54}}(
+// CHECK-32: [[A_ADDR:%.+]] = alloca i32,
+// CHECK-64: [[A_ADDR:%.+]] = alloca i64,
+// CHECK-64: [[CONV:%.+]] = bitcast i64* [[A_ADDR]] to i32*
+// CHECK: [[STACK:%.+]] = call i8* @__kmpc_data_sharing_push_stack(i{{64|32}} 4, i16 0)
+// CHECK: [[BC:%.+]] = bitcast i8* [[STACK]] to %struct._globalized_locals_ty*
+// CHECK-32: [[A:%.+]] = load i32, i32* [[A_ADDR]],
+// CHECK-64: [[A:%.+]] = load i32, i32* [[CONV]],
+// CHECK: [[GLOBAL_A_ADDR:%.+]] = getelementptr inbounds %struct._globalized_locals_ty, %struct._globalized_locals_ty* [[BC]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
+// CHECK: store i32 [[A]], i32* [[GLOBAL_A_ADDR]],
+
+// CHECK-LABEL: define internal void @{{.+}}(i32* noalias %{{.+}}, i32* noalias %{{.+}}, i32* dereferenceable{{.*}})
+// CHECK:  [[CC:%.+]] = alloca i32,
+// CHECK:  [[TID:%.+]] = call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
+// CHECK:  [[NUM_THREADS:%.+]] = call i32 @llvm.nvvm.read.ptx.sreg.ntid.x()
+// CHECK:  store i32 0, i32* [[CC]],
+// CHECK:  br label
+
+// CHECK:  [[CC_VAL:%.+]] = load i32, i32* [[CC]],
+// CHECK:  [[RES:%.+]] = icmp slt i32 [[CC_VAL]], [[NUM_THREADS]]
+// CHECK:  br i1 [[RES]], label
+
+// CHECK:  [[CC_VAL:%.+]] = load i32, i32* [[CC]],
+// CHECK:  [[RES:%.+]] = icmp eq i32 [[TID]], [[CC_VAL]]
+// CHECK:  br i1 [[RES]], label
+
+// CHECK:  call void @llvm.nvvm.barrier0()
+// CHECK:  [[NEW_CC_VAL:%.+]] = add nsw i32 [[CC_VAL]], 1
+// CHECK:  store i32 [[NEW_CC_VAL]], i32* [[CC]],
+// CHECK:  br label
+
 #endif

@@ -80,11 +80,6 @@
 // CETSS: "-target-feature" "+shstk"
 // NO-CETSS: "-target-feature" "-shstk"
 
-// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mibt %s -### -o %t.o 2>&1 | FileCheck -check-prefix=CETIBT %s
-// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-ibt %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-CETIBT %s
-// CETIBT: "-target-feature" "+ibt"
-// NO-CETIBT: "-target-feature" "-ibt"
-
 // RUN: %clang -target i386-unknown-linux-gnu -march=i386 -msgx %s -### -o %t.o 2>&1 | FileCheck -check-prefix=SGX %s
 // RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-sgx %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-SGX %s
 // SGX: "-target-feature" "+sgx"
@@ -149,3 +144,28 @@
 // RUN: %clang -target i386-linux-gnu -mno-waitpkg %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-WAITPKG %s
 // WAITPKG: "-target-feature" "+waitpkg"
 // NO-WAITPKG: "-target-feature" "-waitpkg"
+
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mmovdiri %s -### -o %t.o 2>&1 | FileCheck -check-prefix=MOVDIRI %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-movdiri %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-MOVDIRI %s
+// MOVDIRI: "-target-feature" "+movdiri"
+// NO-MOVDIRI: "-target-feature" "-movdiri"
+
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mmovdir64b %s -### -o %t.o 2>&1 | FileCheck -check-prefix=MOVDIR64B %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-movdir64b %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-MOVDIR64B %s
+// MOVDIR64B: "-target-feature" "+movdir64b"
+// NO-MOVDIR64B: "-target-feature" "-movdir64b"
+
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mpconfig %s -### -o %t.o 2>&1 | FileCheck -check-prefix=PCONFIG %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-pconfig %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-PCONFIG %s
+// PCONFIG: "-target-feature" "+pconfig"
+// NO-PCONFIG: "-target-feature" "-pconfig"
+
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mptwrite %s -### -o %t.o 2>&1 | FileCheck -check-prefix=PTWRITE %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-ptwrite %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-PTWRITE %s
+// PTWRITE: "-target-feature" "+ptwrite"
+// NO-PTWRITE: "-target-feature" "-ptwrite"
+
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -minvpcid %s -### -o %t.o 2>&1 | FileCheck -check-prefix=INVPCID %s
+// RUN: %clang -target i386-unknown-linux-gnu -march=i386 -mno-invpcid %s -### -o %t.o 2>&1 | FileCheck -check-prefix=NO-INVPCID %s
+// INVPCID: "-target-feature" "+invpcid"
+// NO-INVPCID: "-target-feature" "-invpcid"

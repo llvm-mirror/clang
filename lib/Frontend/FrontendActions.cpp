@@ -112,14 +112,14 @@ GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   if (!CI.getFrontendOpts().RelocatablePCH)
     Sysroot.clear();
 
+  const auto &FrontendOpts = CI.getFrontendOpts();
   auto Buffer = std::make_shared<PCHBuffer>();
   std::vector<std::unique_ptr<ASTConsumer>> Consumers;
   Consumers.push_back(llvm::make_unique<PCHGenerator>(
                         CI.getPreprocessor(), OutputFile, Sysroot,
-                        Buffer, CI.getFrontendOpts().ModuleFileExtensions,
-      /*AllowASTWithErrors*/CI.getPreprocessorOpts().AllowPCHWithCompilerErrors,
-                        /*IncludeTimestamps*/
-                          +CI.getFrontendOpts().IncludeTimestamps));
+                        Buffer, FrontendOpts.ModuleFileExtensions,
+                        CI.getPreprocessorOpts().AllowPCHWithCompilerErrors,
+                        FrontendOpts.IncludeTimestamps));
   Consumers.push_back(CI.getPCHContainerWriter().CreatePCHContainerGenerator(
       CI, InFile, OutputFile, std::move(OS), Buffer));
 
@@ -377,7 +377,7 @@ private:
     if (auto *NamedTemplate = dyn_cast_or_null<NamedDecl>(Inst.Entity)) {
       llvm::raw_string_ostream OS(Entry.Name);
       NamedTemplate->getNameForDiagnostic(OS, TheSema.getLangOpts(), true);
-      const PresumedLoc DefLoc = 
+      const PresumedLoc DefLoc =
         TheSema.getSourceManager().getPresumedLoc(Inst.Entity->getLocation());
       if(!DefLoc.isInvalid())
         Entry.DefinitionLocation = std::string(DefLoc.getFilename()) + ":" +
@@ -416,7 +416,7 @@ void TemplightDumpAction::ExecuteAction() {
 }
 
 namespace {
-  /// \brief AST reader listener that dumps module information for a module
+  /// AST reader listener that dumps module information for a module
   /// file.
   class DumpModuleInfoListener : public ASTReaderListener {
     llvm::raw_ostream &Out;
@@ -560,6 +560,45 @@ namespace {
 
       Out << "\n";
     }
+
+    /// Tells the \c ASTReaderListener that we want to receive the
+    /// input files of the AST file via \c visitInputFile.
+    bool needsInputFileVisitation() override { return true; }
+
+    /// Tells the \c ASTReaderListener that we want to receive the
+    /// input files of the AST file via \c visitInputFile.
+    bool needsSystemInputFileVisitation() override { return true; }
+
+    /// Indicates that the AST file contains particular input file.
+    ///
+    /// \returns true to continue receiving the next input file, false to stop.
+    bool visitInputFile(StringRef Filename, bool isSystem,
+                        bool isOverridden, bool isExplicitModule) override {
+
+      Out.indent(2) << "Input file: " << Filename;
+
+      if (isSystem || isOverridden || isExplicitModule) {
+        Out << " [";
+        if (isSystem) {
+          Out << "System";
+          if (isOverridden || isExplicitModule)
+            Out << ", ";
+        }
+        if (isOverridden) {
+          Out << "Overridden";
+          if (isExplicitModule)
+            Out << ", ";
+        }
+        if (isExplicitModule)
+          Out << "ExplicitModule";
+
+        Out << "]";
+      }
+
+      Out << "\n";
+
+      return true;
+    }
 #undef DUMP_BOOLEAN
   };
 }
@@ -670,13 +709,13 @@ void PrintPreprocessedAction::ExecuteAction() {
   // the input format has inconsistent line endings.
   //
   // This should be a relatively fast operation since most files won't have
-  // all of their source code on a single line. However, that is still a 
+  // all of their source code on a single line. However, that is still a
   // concern, so if we scan for too long, we'll just assume the file should
   // be opened in binary mode.
   bool BinaryMode = true;
   bool InvalidFile = false;
   const SourceManager& SM = CI.getSourceManager();
-  const llvm::MemoryBuffer *Buffer = SM.getBuffer(SM.getMainFileID(), 
+  const llvm::MemoryBuffer *Buffer = SM.getBuffer(SM.getMainFileID(),
                                                      &InvalidFile);
   if (!InvalidFile) {
     const char *cur = Buffer->getBufferStart();
@@ -684,7 +723,7 @@ void PrintPreprocessedAction::ExecuteAction() {
     const char *next = (cur != end) ? cur + 1 : end;
 
     // Limit ourselves to only scanning 256 characters into the source
-    // file.  This is mostly a sanity check in case the file has no 
+    // file.  This is mostly a sanity check in case the file has no
     // newlines whatsoever.
     if (end - cur > 256) end = cur + 256;
 
@@ -733,8 +772,9 @@ void PrintPreambleAction::ExecuteAction() {
   case InputKind::ObjCXX:
   case InputKind::OpenCL:
   case InputKind::CUDA:
+  case InputKind::HIP:
     break;
-      
+
   case InputKind::Unknown:
   case InputKind::Asm:
   case InputKind::LLVM_IR:
@@ -754,4 +794,52 @@ void PrintPreambleAction::ExecuteAction() {
         Lexer::ComputePreamble((*Buffer)->getBuffer(), CI.getLangOpts()).Size;
     llvm::outs().write((*Buffer)->getBufferStart(), Preamble);
   }
+}
+
+void DumpCompilerOptionsAction::ExecuteAction() {
+  CompilerInstance &CI = getCompilerInstance();
+  std::unique_ptr<raw_ostream> OSP =
+      CI.createDefaultOutputFile(false, getCurrentFile());
+  if (!OSP)
+    return;
+
+  raw_ostream &OS = *OSP;
+  const Preprocessor &PP = CI.getPreprocessor();
+  const LangOptions &LangOpts = PP.getLangOpts();
+
+  // FIXME: Rather than manually format the JSON (which is awkward due to
+  // needing to remove trailing commas), this should make use of a JSON library.
+  // FIXME: Instead of printing enums as an integral value and specifying the
+  // type as a separate field, use introspection to print the enumerator.
+
+  OS << "{\n";
+  OS << "\n\"features\" : [\n";
+  {
+    llvm::SmallString<128> Str;
+#define FEATURE(Name, Predicate)                                               \
+  ("\t{\"" #Name "\" : " + llvm::Twine(Predicate ? "true" : "false") + "},\n") \
+      .toVector(Str);
+#include "clang/Basic/Features.def"
+#undef FEATURE
+    // Remove the newline and comma from the last entry to ensure this remains
+    // valid JSON.
+    OS << Str.substr(0, Str.size() - 2);
+  }
+  OS << "\n],\n";
+
+  OS << "\n\"extensions\" : [\n";
+  {
+    llvm::SmallString<128> Str;
+#define EXTENSION(Name, Predicate)                                             \
+  ("\t{\"" #Name "\" : " + llvm::Twine(Predicate ? "true" : "false") + "},\n") \
+      .toVector(Str);
+#include "clang/Basic/Features.def"
+#undef EXTENSION
+    // Remove the newline and comma from the last entry to ensure this remains
+    // valid JSON.
+    OS << Str.substr(0, Str.size() - 2);
+  }
+  OS << "\n]\n";
+
+  OS << "}";
 }

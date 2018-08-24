@@ -1,3 +1,6 @@
+// This file contains references to sections of the Coroutines TS, which can be
+// found at http://wg21.link/coroutines.
+
 // RUN: %clang_cc1 -std=c++14 -fcoroutines-ts -verify %s -fcxx-exceptions -fexceptions -Wunused-result
 
 void no_coroutine_traits_bad_arg_await() {
@@ -157,7 +160,7 @@ struct coroutine_handle<void> {
 void yield() {
   co_yield 0;
   co_yield {"foo", 1, 2};
-  co_yield {1e100}; // expected-error {{cannot be narrowed}} expected-note {{explicit cast}} expected-warning {{changes value}} expected-warning {{braces around scalar}}
+  co_yield {1e100}; // expected-error {{cannot be narrowed}} expected-note {{explicit cast}} expected-warning {{implicit conversion}} expected-warning {{braces around scalar}}
   co_yield {"foo", __LONG_LONG_MAX__}; // expected-error {{cannot be narrowed}} expected-note {{explicit cast}} expected-warning {{changes value}}
   co_yield {"foo"};
   co_yield "foo"; // expected-error {{no matching}}
@@ -319,6 +322,11 @@ void unevaluated() {
   sizeof(co_yield a); // expected-error {{cannot be used in an unevaluated context}}
   typeid(co_yield a); // expected-error {{cannot be used in an unevaluated context}}
 }
+
+// [expr.await]p2: "An await-expression shall not appear in a default argument."
+// FIXME: A better diagnostic would explicitly state that default arguments are
+// not allowed. A user may not understand that this is "outside a function."
+void default_argument(int arg = co_await 0) {} // expected-error {{'co_await' cannot be used outside a function}}
 
 constexpr auto constexpr_deduced_return_coroutine() {
   co_yield 0; // expected-error {{'co_yield' cannot be used in a constexpr function}}
@@ -831,7 +839,7 @@ struct std::experimental::coroutine_traits<int, mismatch_gro_type_tag1> {
   };
 };
 
-extern "C" int f(mismatch_gro_type_tag1) { 
+extern "C" int f(mismatch_gro_type_tag1) {
   // expected-error@-1 {{cannot initialize return object of type 'int' with an rvalue of type 'void'}}
   co_return; //expected-note {{function is a coroutine due to use of 'co_return' here}}
 }
@@ -848,7 +856,7 @@ struct std::experimental::coroutine_traits<int, mismatch_gro_type_tag2> {
   };
 };
 
-extern "C" int f(mismatch_gro_type_tag2) { 
+extern "C" int f(mismatch_gro_type_tag2) {
   // expected-error@-1 {{cannot initialize return object of type 'int' with an lvalue of type 'void *'}}
   co_return; //expected-note {{function is a coroutine due to use of 'co_return' here}}
 }
@@ -866,7 +874,7 @@ struct std::experimental::coroutine_traits<int, mismatch_gro_type_tag3> {
   };
 };
 
-extern "C" int f(mismatch_gro_type_tag3) { 
+extern "C" int f(mismatch_gro_type_tag3) {
   // expected-error@-1 {{cannot initialize return object of type 'int' with an rvalue of type 'void'}}
   co_return; //expected-note {{function is a coroutine due to use of 'co_return' here}}
 }
@@ -885,7 +893,7 @@ struct std::experimental::coroutine_traits<int, mismatch_gro_type_tag4> {
   };
 };
 
-extern "C" int f(mismatch_gro_type_tag4) { 
+extern "C" int f(mismatch_gro_type_tag4) {
   // expected-error@-1 {{cannot initialize return object of type 'int' with an rvalue of type 'char *'}}
   co_return; //expected-note {{function is a coroutine due to use of 'co_return' here}}
 }
@@ -1246,7 +1254,10 @@ good_coroutine_calls_default_constructor() {
   co_return;
 }
 
+struct some_class;
+
 struct good_promise_custom_constructor {
+  good_promise_custom_constructor(some_class&, float, int);
   good_promise_custom_constructor(double, float, int);
   good_promise_custom_constructor() = delete;
   coro<good_promise_custom_constructor> get_return_object();
@@ -1261,9 +1272,20 @@ good_coroutine_calls_custom_constructor(double, float, int) {
   co_return;
 }
 
+struct some_class {
+  coro<good_promise_custom_constructor>
+  good_coroutine_calls_custom_constructor(float, int) {
+    co_return;
+  }
+  coro<good_promise_custom_constructor>
+  static good_coroutine_calls_custom_constructor(double, float, int) {
+    co_return;
+  }
+};
+
 struct bad_promise_no_matching_constructor {
   bad_promise_no_matching_constructor(int, int, int);
-  // expected-note@+1 {{'bad_promise_no_matching_constructor' has been explicitly marked deleted here}}
+  // expected-note@+1 2 {{'bad_promise_no_matching_constructor' has been explicitly marked deleted here}}
   bad_promise_no_matching_constructor() = delete;
   coro<bad_promise_no_matching_constructor> get_return_object();
   suspend_always initial_suspend();
@@ -1277,6 +1299,14 @@ bad_coroutine_calls_with_no_matching_constructor(int, int) {
   // expected-error@-1 {{call to deleted constructor of 'std::experimental::coroutine_traits<coro<CoroHandleMemberFunctionTest::bad_promise_no_matching_constructor>, int, int>::promise_type' (aka 'CoroHandleMemberFunctionTest::bad_promise_no_matching_constructor')}}
   co_return;
 }
+
+struct some_class2 {
+coro<bad_promise_no_matching_constructor>
+bad_coroutine_calls_with_no_matching_constructor(int, int, int) {
+  // expected-error@-1 {{call to deleted constructor}}
+  co_return;
+}
+};
 
 } // namespace CoroHandleMemberFunctionTest
 

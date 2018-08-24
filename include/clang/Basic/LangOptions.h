@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 //
 /// \file
-/// \brief Defines the clang::LangOptions interface.
+/// Defines the clang::LangOptions interface.
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,15 +45,15 @@ protected:
 #include "clang/Basic/LangOptions.def"
 };
 
-/// \brief Keeps track of the various options that can be
+/// Keeps track of the various options that can be
 /// enabled, which controls the dialect of C or C++ that is accepted.
 class LangOptions : public LangOptionsBase {
 public:
   using Visibility = clang::Visibility;
-  
+
   enum GCMode { NonGC, GCOnly, HybridGC };
   enum StackProtectorMode { SSPOff, SSPOn, SSPStrong, SSPReq };
-  
+
   enum SignedOverflowBehaviorTy {
     // Default C standard behavior.
     SOB_Undefined,
@@ -137,27 +137,35 @@ public:
     FPC_Fast
   };
 
+  // TODO: merge FEnvAccessModeKind and FPContractModeKind
+  enum FEnvAccessModeKind {
+    FEA_Off,
+
+    FEA_On
+  };
+
+
 public:
-  /// \brief Set of enabled sanitizers.
+  /// Set of enabled sanitizers.
   SanitizerSet Sanitize;
 
-  /// \brief Paths to blacklist files specifying which objects
+  /// Paths to blacklist files specifying which objects
   /// (files, functions, variables) should not be instrumented.
   std::vector<std::string> SanitizerBlacklistFiles;
 
-  /// \brief Paths to the XRay "always instrument" files specifying which
+  /// Paths to the XRay "always instrument" files specifying which
   /// objects (files, functions, variables) should be imbued with the XRay
   /// "always instrument" attribute.
   /// WARNING: This is a deprecated field and will go away in the future.
   std::vector<std::string> XRayAlwaysInstrumentFiles;
 
-  /// \brief Paths to the XRay "never instrument" files specifying which
+  /// Paths to the XRay "never instrument" files specifying which
   /// objects (files, functions, variables) should be imbued with the XRay
   /// "never instrument" attribute.
   /// WARNING: This is a deprecated field and will go away in the future.
   std::vector<std::string> XRayNeverInstrumentFiles;
 
-  /// \brief Paths to the XRay attribute list files, specifying which objects
+  /// Paths to the XRay attribute list files, specifying which objects
   /// (files, functions, variables) should be imbued with the appropriate XRay
   /// attribute(s).
   std::vector<std::string> XRayAttrListFiles;
@@ -165,8 +173,8 @@ public:
   clang::ObjCRuntime ObjCRuntime;
 
   std::string ObjCConstantStringClass;
-  
-  /// \brief The name of the handler function to be called when -ftrapv is
+
+  /// The name of the handler function to be called when -ftrapv is
   /// specified.
   ///
   /// If none is specified, abort (GCC-compatible behaviour).
@@ -175,44 +183,44 @@ public:
   /// The module currently being compiled as speficied by -fmodule-name.
   std::string ModuleName;
 
-  /// \brief The name of the current module, of which the main source file
+  /// The name of the current module, of which the main source file
   /// is a part. If CompilingModule is set, we are compiling the interface
   /// of this module, otherwise we are compiling an implementation file of
   /// it. This starts as ModuleName in case -fmodule-name is provided and
   /// changes during compilation to reflect the current module.
   std::string CurrentModule;
 
-  /// \brief The names of any features to enable in module 'requires' decls
+  /// The names of any features to enable in module 'requires' decls
   /// in addition to the hard-coded list in Module.cpp and the target features.
   ///
   /// This list is sorted.
   std::vector<std::string> ModuleFeatures;
 
-  /// \brief Options for parsing comments.
+  /// Options for parsing comments.
   CommentOptions CommentOpts;
 
-  /// \brief A list of all -fno-builtin-* function names (e.g., memset).
+  /// A list of all -fno-builtin-* function names (e.g., memset).
   std::vector<std::string> NoBuiltinFuncs;
 
-  /// \brief Triples of the OpenMP targets that the host code codegen should
+  /// Triples of the OpenMP targets that the host code codegen should
   /// take into account in order to generate accurate offloading descriptors.
   std::vector<llvm::Triple> OMPTargetTriples;
 
-  /// \brief Name of the IR file that contains the result of the OpenMP target
+  /// Name of the IR file that contains the result of the OpenMP target
   /// host code generation.
   std::string OMPHostIRFile;
 
-  /// \brief Indicates whether the front-end is explicitly told that the
+  /// Indicates whether the front-end is explicitly told that the
   /// input is a header file (i.e. -x c-header).
   bool IsHeaderFile = false;
 
   LangOptions();
 
   // Define accessors/mutators for language options of enumeration type.
-#define LANGOPT(Name, Bits, Default, Description) 
+#define LANGOPT(Name, Bits, Default, Description)
 #define ENUM_LANGOPT(Name, Type, Bits, Default, Description) \
   Type get##Name() const { return static_cast<Type>(Name); } \
-  void set##Name(Type Value) { Name = static_cast<unsigned>(Value); }  
+  void set##Name(Type Value) { Name = static_cast<unsigned>(Value); }
 #include "clang/Basic/LangOptions.def"
 
   /// Are we compiling a module interface (.cppm or module map)?
@@ -228,7 +236,7 @@ public:
   bool isSignedOverflowDefined() const {
     return getSignedOverflowBehavior() == SOB_Defined;
   }
-  
+
   bool isSubscriptPointerArithmetic() const {
     return ObjCRuntime.isSubscriptPointerArithmetic() &&
            !ObjCSubscriptingLegacyRuntime;
@@ -238,15 +246,15 @@ public:
     return MSCompatibilityVersion >= MajorVersion * 10000000U;
   }
 
-  /// \brief Reset all of the options that are not considered when building a
+  /// Reset all of the options that are not considered when building a
   /// module.
   void resetNonModularOptions();
 
-  /// \brief Is this a libc/libm function that is no longer recognized as a
+  /// Is this a libc/libm function that is no longer recognized as a
   /// builtin because a -fno-builtin-* option has been specified?
   bool isNoBuiltinFunc(StringRef Name) const;
 
-  /// \brief True if any ObjC types may have non-trivial lifetime qualifiers.
+  /// True if any ObjC types may have non-trivial lifetime qualifiers.
   bool allowsNonTrivialObjCLifetimeQualifiers() const {
     return ObjCAutoRefCount || ObjCWeak;
   }
@@ -254,19 +262,27 @@ public:
   bool assumeFunctionsAreConvergent() const {
     return (CUDA && CUDAIsDevice) || OpenCL;
   }
+
+  /// Return the OpenCL C or C++ version as a VersionTuple.
+  VersionTuple getOpenCLVersionTuple() const;
 };
 
-/// \brief Floating point control options
+/// Floating point control options
 class FPOptions {
 public:
-  FPOptions() : fp_contract(LangOptions::FPC_Off) {}
+  FPOptions() : fp_contract(LangOptions::FPC_Off), 
+                fenv_access(LangOptions::FEA_Off) {}
 
   // Used for serializing.
   explicit FPOptions(unsigned I)
-      : fp_contract(static_cast<LangOptions::FPContractModeKind>(I)) {}
+      : fp_contract(static_cast<LangOptions::FPContractModeKind>(I & 3)),
+        fenv_access(static_cast<LangOptions::FEnvAccessModeKind>((I >> 2) & 1))
+        {}
 
   explicit FPOptions(const LangOptions &LangOpts)
-      : fp_contract(LangOpts.getDefaultFPContractMode()) {}
+      : fp_contract(LangOpts.getDefaultFPContractMode()),
+        fenv_access(LangOptions::FEA_Off) {}
+  // FIXME: Use getDefaultFEnvAccessMode() when available.
 
   bool allowFPContractWithinStatement() const {
     return fp_contract == LangOptions::FPC_On;
@@ -286,27 +302,39 @@ public:
 
   void setDisallowFPContract() { fp_contract = LangOptions::FPC_Off; }
 
+  bool allowFEnvAccess() const {
+    return fenv_access == LangOptions::FEA_On;
+  }
+
+  void setAllowFEnvAccess() {
+    fenv_access = LangOptions::FEA_On;
+  }
+
+  void setDisallowFEnvAccess() { fenv_access = LangOptions::FEA_Off; }
+
   /// Used to serialize this.
-  unsigned getInt() const { return fp_contract; }
+  unsigned getInt() const { return fp_contract | (fenv_access << 2); }
 
 private:
-  /// Adjust BinaryOperator::FPFeatures to match the bit-field size of this.
+  /// Adjust BinaryOperator::FPFeatures to match the total bit-field size 
+  /// of these two.
   unsigned fp_contract : 2;
+  unsigned fenv_access : 1;
 };
 
-/// \brief Describes the kind of translation unit being processed.
+/// Describes the kind of translation unit being processed.
 enum TranslationUnitKind {
-  /// \brief The translation unit is a complete translation unit.
+  /// The translation unit is a complete translation unit.
   TU_Complete,
 
-  /// \brief The translation unit is a prefix to a translation unit, and is
+  /// The translation unit is a prefix to a translation unit, and is
   /// not complete.
   TU_Prefix,
 
-  /// \brief The translation unit is a module.
+  /// The translation unit is a module.
   TU_Module
 };
-  
+
 } // namespace clang
 
 #endif // LLVM_CLANG_BASIC_LANGOPTIONS_H

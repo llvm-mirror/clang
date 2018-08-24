@@ -34,7 +34,6 @@
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallVector.h"
@@ -42,6 +41,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -139,7 +139,7 @@ void Decl::setInvalidDecl(bool Invalid) {
   if (!isa<ParmVarDecl>(this)) {
     // Defensive maneuver for ill-formed code: we're likely not to make it to
     // a point where we set the access specifier, so default it to "public"
-    // to avoid triggering asserts elsewhere in the front end. 
+    // to avoid triggering asserts elsewhere in the front end.
     setAccess(AS_public);
   }
 
@@ -153,12 +153,12 @@ void Decl::setInvalidDecl(bool Invalid) {
 }
 
 const char *DeclContext::getDeclKindName() const {
-  switch (DeclKind) {
-  default: llvm_unreachable("Declaration context not in DeclNodes.inc!");
+  switch (getDeclKind()) {
 #define DECL(DERIVED, BASE) case Decl::DERIVED: return #DERIVED;
 #define ABSTRACT_DECL(DECL)
 #include "clang/AST/DeclNodes.inc"
   }
+  llvm_unreachable("Declaration context not in DeclNodes.inc!");
 }
 
 bool Decl::StatisticsEnabled = false;
@@ -211,7 +211,7 @@ bool Decl::isTemplateParameterPack() const {
 bool Decl::isParameterPack() const {
   if (const auto *Parm = dyn_cast<ParmVarDecl>(this))
     return Parm->isParameterPack();
-  
+
   return isTemplateParameterPack();
 }
 
@@ -253,7 +253,7 @@ bool Decl::isTemplated() const {
 
 const DeclContext *Decl::getParentFunctionOrMethod() const {
   for (const DeclContext *DC = getDeclContext();
-       DC && !DC->isTranslationUnit() && !DC->isNamespace(); 
+       DC && !DC->isTranslationUnit() && !DC->isNamespace();
        DC = DC->getParent())
     if (DC->isFunctionOrMethod())
       return DC;
@@ -419,7 +419,7 @@ void Decl::markUsed(ASTContext &C) {
   setIsUsed();
 }
 
-bool Decl::isReferenced() const { 
+bool Decl::isReferenced() const {
   if (Referenced)
     return true;
 
@@ -428,7 +428,7 @@ bool Decl::isReferenced() const {
     if (I->Referenced)
       return true;
 
-  return false; 
+  return false;
 }
 
 bool Decl::isExported() const {
@@ -493,7 +493,7 @@ static StringRef getRealizedPlatform(const AvailabilityAttr *A,
   return RealizedPlatform;
 }
 
-/// \brief Determine the availability of the given declaration based on
+/// Determine the availability of the given declaration based on
 /// the target platform.
 ///
 /// When it returns an availability result other than \c AR_Available,
@@ -530,13 +530,13 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
     HintMessage = " - ";
     HintMessage += A->getMessage();
   }
-  
+
   // Make sure that this declaration has not been marked 'unavailable'.
   if (A->getUnavailable()) {
     if (Message) {
       Message->clear();
       llvm::raw_string_ostream Out(*Message);
-      Out << "not available on " << PrettyPlatformName 
+      Out << "not available on " << PrettyPlatformName
           << HintMessage;
     }
 
@@ -544,14 +544,13 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
   }
 
   // Make sure that this declaration has already been introduced.
-  if (!A->getIntroduced().empty() && 
+  if (!A->getIntroduced().empty() &&
       EnclosingVersion < A->getIntroduced()) {
     if (Message) {
       Message->clear();
       llvm::raw_string_ostream Out(*Message);
       VersionTuple VTI(A->getIntroduced());
-      VTI.UseDotAsSeparator();
-      Out << "introduced in " << PrettyPlatformName << ' ' 
+      Out << "introduced in " << PrettyPlatformName << ' '
           << VTI << HintMessage;
     }
 
@@ -564,11 +563,10 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
       Message->clear();
       llvm::raw_string_ostream Out(*Message);
       VersionTuple VTO(A->getObsoleted());
-      VTO.UseDotAsSeparator();
-      Out << "obsoleted in " << PrettyPlatformName << ' ' 
+      Out << "obsoleted in " << PrettyPlatformName << ' '
           << VTO << HintMessage;
     }
-    
+
     return AR_Unavailable;
   }
 
@@ -578,11 +576,10 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
       Message->clear();
       llvm::raw_string_ostream Out(*Message);
       VersionTuple VTD(A->getDeprecated());
-      VTD.UseDotAsSeparator();
       Out << "first deprecated in " << PrettyPlatformName << ' '
           << VTD << HintMessage;
     }
-    
+
     return AR_Deprecated;
   }
 
@@ -590,9 +587,11 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
 }
 
 AvailabilityResult Decl::getAvailability(std::string *Message,
-                                         VersionTuple EnclosingVersion) const {
+                                         VersionTuple EnclosingVersion,
+                                         StringRef *RealizedPlatform) const {
   if (auto *FTD = dyn_cast<FunctionTemplateDecl>(this))
-    return FTD->getTemplatedDecl()->getAvailability(Message, EnclosingVersion);
+    return FTD->getTemplatedDecl()->getAvailability(Message, EnclosingVersion,
+                                                    RealizedPlatform);
 
   AvailabilityResult Result = AR_Available;
   std::string ResultMessage;
@@ -619,8 +618,11 @@ AvailabilityResult Decl::getAvailability(std::string *Message,
       AvailabilityResult AR = CheckAvailability(getASTContext(), Availability,
                                                 Message, EnclosingVersion);
 
-      if (AR == AR_Unavailable)
+      if (AR == AR_Unavailable) {
+        if (RealizedPlatform)
+          *RealizedPlatform = Availability->getPlatform()->getName();
         return AR_Unavailable;
+      }
 
       if (AR > Result) {
         Result = AR;
@@ -978,6 +980,16 @@ Decl *DeclContext::getNonClosureAncestor() {
 // DeclContext Implementation
 //===----------------------------------------------------------------------===//
 
+DeclContext::DeclContext(Decl::Kind K) {
+  DeclContextBits.DeclKind = K;
+  setHasExternalLexicalStorage(false);
+  setHasExternalVisibleStorage(false);
+  setNeedToReconcileExternalVisibleStorage(false);
+  setHasLazyLocalLexicalLookups(false);
+  setHasLazyExternalLexicalLookups(false);
+  setUseQualifiedLookup(false);
+}
+
 bool DeclContext::classof(const Decl *D) {
   switch (D->getKind()) {
 #define DECL(NAME, BASE)
@@ -998,19 +1010,19 @@ bool DeclContext::classof(const Decl *D) {
 
 DeclContext::~DeclContext() = default;
 
-/// \brief Find the parent context of this context that will be
+/// Find the parent context of this context that will be
 /// used for unqualified name lookup.
 ///
 /// Generally, the parent lookup context is the semantic context. However, for
 /// a friend function the parent lookup context is the lexical context, which
 /// is the class in which the friend is declared.
 DeclContext *DeclContext::getLookupParent() {
-  // FIXME: Find a better way to identify friends
+  // FIXME: Find a better way to identify friends.
   if (isa<FunctionDecl>(this))
     if (getParent()->getRedeclContext()->isFileContext() &&
         getLexicalParent()->getRedeclContext()->isRecord())
       return getLexicalParent();
-  
+
   return getParent();
 }
 
@@ -1045,11 +1057,11 @@ bool DeclContext::isDependentContext() const {
   if (const auto *Record = dyn_cast<CXXRecordDecl>(this)) {
     if (Record->getDescribedClassTemplate())
       return true;
-    
+
     if (Record->isDependentLambda())
       return true;
   }
-  
+
   if (const auto *Function = dyn_cast<FunctionDecl>(this)) {
     if (Function->getDescribedFunctionTemplate())
       return true;
@@ -1068,9 +1080,9 @@ bool DeclContext::isDependentContext() const {
 }
 
 bool DeclContext::isTransparentContext() const {
-  if (DeclKind == Decl::Enum)
+  if (getDeclKind() == Decl::Enum)
     return !cast<EnumDecl>(this)->isScoped();
-  else if (DeclKind == Decl::LinkageSpec || DeclKind == Decl::Export)
+  else if (getDeclKind() == Decl::LinkageSpec || getDeclKind() == Decl::Export)
     return true;
 
   return false;
@@ -1116,7 +1128,7 @@ bool DeclContext::Encloses(const DeclContext *DC) const {
 }
 
 DeclContext *DeclContext::getPrimaryContext() {
-  switch (DeclKind) {
+  switch (getDeclKind()) {
   case Decl::TranslationUnit:
   case Decl::ExternCContext:
   case Decl::LinkageSpec:
@@ -1138,12 +1150,12 @@ DeclContext *DeclContext::getPrimaryContext() {
     if (auto *Def = cast<ObjCInterfaceDecl>(this)->getDefinition())
       return Def;
     return this;
-      
+
   case Decl::ObjCProtocol:
     if (auto *Def = cast<ObjCProtocolDecl>(this)->getDefinition())
       return Def;
     return this;
-      
+
   case Decl::ObjCCategory:
     return this;
 
@@ -1152,7 +1164,7 @@ DeclContext *DeclContext::getPrimaryContext() {
     return this;
 
   default:
-    if (DeclKind >= Decl::firstTag && DeclKind <= Decl::lastTag) {
+    if (getDeclKind() >= Decl::firstTag && getDeclKind() <= Decl::lastTag) {
       // If this is a tag type that has a definition or is currently
       // being defined, that definition is our primary context.
       auto *Tag = cast<TagDecl>(this);
@@ -1172,26 +1184,27 @@ DeclContext *DeclContext::getPrimaryContext() {
       return Tag;
     }
 
-    assert(DeclKind >= Decl::firstFunction && DeclKind <= Decl::lastFunction &&
+    assert(getDeclKind() >= Decl::firstFunction &&
+           getDeclKind() <= Decl::lastFunction &&
           "Unknown DeclContext kind");
     return this;
   }
 }
 
-void 
+void
 DeclContext::collectAllContexts(SmallVectorImpl<DeclContext *> &Contexts){
   Contexts.clear();
-  
-  if (DeclKind != Decl::Namespace) {
+
+  if (getDeclKind() != Decl::Namespace) {
     Contexts.push_back(this);
     return;
   }
-  
+
   auto *Self = static_cast<NamespaceDecl *>(this);
   for (NamespaceDecl *N = Self->getMostRecentDecl(); N;
        N = N->getPreviousDecl())
     Contexts.push_back(N);
-  
+
   std::reverse(Contexts.begin(), Contexts.end());
 }
 
@@ -1216,18 +1229,18 @@ DeclContext::BuildDeclChain(ArrayRef<Decl *> Decls,
   return std::make_pair(FirstNewDecl, PrevDecl);
 }
 
-/// \brief We have just acquired external visible storage, and we already have
+/// We have just acquired external visible storage, and we already have
 /// built a lookup map. For every name in the map, pull in the new names from
 /// the external storage.
 void DeclContext::reconcileExternalVisibleStorage() const {
-  assert(NeedToReconcileExternalVisibleStorage && LookupPtr);
-  NeedToReconcileExternalVisibleStorage = false;
+  assert(hasNeedToReconcileExternalVisibleStorage() && LookupPtr);
+  setNeedToReconcileExternalVisibleStorage(false);
 
   for (auto &Lookup : *LookupPtr)
     Lookup.second.setHasExternalDecls();
 }
 
-/// \brief Load the declarations within this lexical storage from an
+/// Load the declarations within this lexical storage from an
 /// external source.
 /// \return \c true if any declarations were added.
 bool
@@ -1240,7 +1253,7 @@ DeclContext::LoadLexicalDeclsFromExternalStorage() const {
 
   // Load the external declarations, if any.
   SmallVector<Decl*, 64> Decls;
-  ExternalLexicalStorage = false;
+  setHasExternalLexicalStorage(false);
   Source->FindExternalLexicalDecls(this, Decls);
 
   if (Decls.empty())
@@ -1250,8 +1263,8 @@ DeclContext::LoadLexicalDeclsFromExternalStorage() const {
   // we need to ignore them.
   bool FieldsAlreadyLoaded = false;
   if (const auto *RD = dyn_cast<RecordDecl>(this))
-    FieldsAlreadyLoaded = RD->LoadedFieldsFromExternalStorage;
-  
+    FieldsAlreadyLoaded = RD->hasLoadedFieldsFromExternalStorage();
+
   // Splice the newly-read declarations into the beginning of the list
   // of declarations.
   Decl *ExternalFirst, *ExternalLast;
@@ -1271,7 +1284,7 @@ ExternalASTSource::SetNoExternalVisibleDeclsForName(const DeclContext *DC,
   StoredDeclsMap *Map;
   if (!(Map = DC->LookupPtr))
     Map = DC->CreateStoredDeclsMap(Context);
-  if (DC->NeedToReconcileExternalVisibleStorage)
+  if (DC->hasNeedToReconcileExternalVisibleStorage())
     DC->reconcileExternalVisibleStorage();
 
   (*Map)[Name].removeExternalDecls();
@@ -1287,7 +1300,7 @@ ExternalASTSource::SetExternalVisibleDeclsForName(const DeclContext *DC,
   StoredDeclsMap *Map;
   if (!(Map = DC->LookupPtr))
     Map = DC->CreateStoredDeclsMap(Context);
-  if (DC->NeedToReconcileExternalVisibleStorage)
+  if (DC->hasNeedToReconcileExternalVisibleStorage())
     DC->reconcileExternalVisibleStorage();
 
   StoredDeclsList &List = (*Map)[Name];
@@ -1345,6 +1358,38 @@ bool DeclContext::containsDecl(Decl *D) const {
           (D->NextInContextAndBits.getPointer() || D == LastDecl));
 }
 
+bool DeclContext::containsDeclAndLoad(Decl *D) const {
+  if (hasExternalLexicalStorage())
+    LoadLexicalDeclsFromExternalStorage();
+  return containsDecl(D);
+}
+
+/// shouldBeHidden - Determine whether a declaration which was declared
+/// within its semantic context should be invisible to qualified name lookup.
+static bool shouldBeHidden(NamedDecl *D) {
+  // Skip unnamed declarations.
+  if (!D->getDeclName())
+    return true;
+
+  // Skip entities that can't be found by name lookup into a particular
+  // context.
+  if ((D->getIdentifierNamespace() == 0 && !isa<UsingDirectiveDecl>(D)) ||
+      D->isTemplateParameter())
+    return true;
+
+  // Skip template specializations.
+  // FIXME: This feels like a hack. Should DeclarationName support
+  // template-ids, or is there a better way to keep specializations
+  // from being visible?
+  if (isa<ClassTemplateSpecializationDecl>(D))
+    return true;
+  if (auto *FD = dyn_cast<FunctionDecl>(D))
+    if (FD->isFunctionTemplateSpecialization())
+      return true;
+
+  return false;
+}
+
 void DeclContext::removeDecl(Decl *D) {
   assert(D->getLexicalDeclContext() == this &&
          "decl being removed from non-lexical context");
@@ -1367,7 +1412,7 @@ void DeclContext::removeDecl(Decl *D) {
       }
     }
   }
-  
+
   // Mark that D is no longer in the decl chain.
   D->NextInContextAndBits.setPointer(nullptr);
 
@@ -1375,8 +1420,14 @@ void DeclContext::removeDecl(Decl *D) {
   if (isa<NamedDecl>(D)) {
     auto *ND = cast<NamedDecl>(D);
 
+    // Do not try to remove the declaration if that is invisible to qualified
+    // lookup.  E.g. template specializations are skipped.
+    if (shouldBeHidden(ND))
+      return;
+
     // Remove only decls that have a name
-    if (!ND->getDeclName()) return;
+    if (!ND->getDeclName())
+      return;
 
     auto *DC = D->getDeclContext();
     do {
@@ -1433,32 +1484,6 @@ void DeclContext::addDeclInternal(Decl *D) {
         makeDeclVisibleInContextWithFlags(ND, true, true);
 }
 
-/// shouldBeHidden - Determine whether a declaration which was declared
-/// within its semantic context should be invisible to qualified name lookup.
-static bool shouldBeHidden(NamedDecl *D) {
-  // Skip unnamed declarations.
-  if (!D->getDeclName())
-    return true;
-
-  // Skip entities that can't be found by name lookup into a particular
-  // context.
-  if ((D->getIdentifierNamespace() == 0 && !isa<UsingDirectiveDecl>(D)) ||
-      D->isTemplateParameter())
-    return true;
-
-  // Skip template specializations.
-  // FIXME: This feels like a hack. Should DeclarationName support
-  // template-ids, or is there a better way to keep specializations
-  // from being visible?
-  if (isa<ClassTemplateSpecializationDecl>(D))
-    return true;
-  if (auto *FD = dyn_cast<FunctionDecl>(D))
-    if (FD->isFunctionTemplateSpecialization())
-      return true;
-
-  return false;
-}
-
 /// buildLookup - Build the lookup data structure with all of the
 /// declarations in this DeclContext (and any other contexts linked
 /// to it or transparent contexts nested within it) and return it.
@@ -1469,21 +1494,24 @@ static bool shouldBeHidden(NamedDecl *D) {
 StoredDeclsMap *DeclContext::buildLookup() {
   assert(this == getPrimaryContext() && "buildLookup called on non-primary DC");
 
-  if (!HasLazyLocalLexicalLookups && !HasLazyExternalLexicalLookups)
+  if (!hasLazyLocalLexicalLookups() &&
+      !hasLazyExternalLexicalLookups())
     return LookupPtr;
 
   SmallVector<DeclContext *, 2> Contexts;
   collectAllContexts(Contexts);
 
-  if (HasLazyExternalLexicalLookups) {
-    HasLazyExternalLexicalLookups = false;
+  if (hasLazyExternalLexicalLookups()) {
+    setHasLazyExternalLexicalLookups(false);
     for (auto *DC : Contexts) {
-      if (DC->hasExternalLexicalStorage())
-        HasLazyLocalLexicalLookups |=
-            DC->LoadLexicalDeclsFromExternalStorage();
+      if (DC->hasExternalLexicalStorage()) {
+        bool LoadedDecls = DC->LoadLexicalDeclsFromExternalStorage();
+        setHasLazyLocalLexicalLookups(
+            hasLazyLocalLexicalLookups() | LoadedDecls );
+      }
     }
 
-    if (!HasLazyLocalLexicalLookups)
+    if (!hasLazyLocalLexicalLookups())
       return LookupPtr;
   }
 
@@ -1491,7 +1519,7 @@ StoredDeclsMap *DeclContext::buildLookup() {
     buildLookupImpl(DC, hasExternalVisibleStorage());
 
   // We no longer have any lazy decls.
-  HasLazyLocalLexicalLookups = false;
+  setHasLazyLocalLexicalLookups(false);
   return LookupPtr;
 }
 
@@ -1529,7 +1557,8 @@ NamedDecl *const DeclContextLookupResult::SingleElementDummyList = nullptr;
 
 DeclContext::lookup_result
 DeclContext::lookup(DeclarationName Name) const {
-  assert(DeclKind != Decl::LinkageSpec && DeclKind != Decl::Export &&
+  assert(getDeclKind() != Decl::LinkageSpec &&
+         getDeclKind() != Decl::Export &&
          "should not perform lookups into transparent contexts");
 
   const DeclContext *PrimaryContext = getPrimaryContext();
@@ -1546,12 +1575,13 @@ DeclContext::lookup(DeclarationName Name) const {
   if (hasExternalVisibleStorage()) {
     assert(Source && "external visible storage but no external source?");
 
-    if (NeedToReconcileExternalVisibleStorage)
+    if (hasNeedToReconcileExternalVisibleStorage())
       reconcileExternalVisibleStorage();
 
     StoredDeclsMap *Map = LookupPtr;
 
-    if (HasLazyLocalLexicalLookups || HasLazyExternalLexicalLookups)
+    if (hasLazyLocalLexicalLookups() ||
+        hasLazyExternalLexicalLookups())
       // FIXME: Make buildLookup const?
       Map = const_cast<DeclContext*>(this)->buildLookup();
 
@@ -1576,7 +1606,8 @@ DeclContext::lookup(DeclarationName Name) const {
   }
 
   StoredDeclsMap *Map = LookupPtr;
-  if (HasLazyLocalLexicalLookups || HasLazyExternalLexicalLookups)
+  if (hasLazyLocalLexicalLookups() ||
+      hasLazyExternalLexicalLookups())
     Map = const_cast<DeclContext*>(this)->buildLookup();
 
   if (!Map)
@@ -1591,7 +1622,8 @@ DeclContext::lookup(DeclarationName Name) const {
 
 DeclContext::lookup_result
 DeclContext::noload_lookup(DeclarationName Name) {
-  assert(DeclKind != Decl::LinkageSpec && DeclKind != Decl::Export &&
+  assert(getDeclKind() != Decl::LinkageSpec &&
+         getDeclKind() != Decl::Export &&
          "should not perform lookups into transparent contexts");
 
   DeclContext *PrimaryContext = getPrimaryContext();
@@ -1612,19 +1644,19 @@ DeclContext::noload_lookup(DeclarationName Name) {
 // now. Don't import any external declarations, not even if we know we have
 // some missing from the external visible lookups.
 void DeclContext::loadLazyLocalLexicalLookups() {
-  if (HasLazyLocalLexicalLookups) {
+  if (hasLazyLocalLexicalLookups()) {
     SmallVector<DeclContext *, 2> Contexts;
     collectAllContexts(Contexts);
     for (auto *Context : Contexts)
       buildLookupImpl(Context, hasExternalVisibleStorage());
-    HasLazyLocalLexicalLookups = false;
+    setHasLazyLocalLexicalLookups(false);
   }
 }
 
 void DeclContext::localUncachedLookup(DeclarationName Name,
                                       SmallVectorImpl<NamedDecl *> &Results) {
   Results.clear();
-  
+
   // If there's no external storage, just perform a normal lookup and copy
   // the results.
   if (!hasExternalVisibleStorage() && !hasExternalLexicalStorage() && Name) {
@@ -1635,7 +1667,8 @@ void DeclContext::localUncachedLookup(DeclarationName Name,
 
   // If we have a lookup table, check there first. Maybe we'll get lucky.
   // FIXME: Should we be checking these flags on the primary context?
-  if (Name && !HasLazyLocalLexicalLookups && !HasLazyExternalLexicalLookups) {
+  if (Name && !hasLazyLocalLexicalLookups() &&
+      !hasLazyExternalLexicalLookups()) {
     if (StoredDeclsMap *Map = LookupPtr) {
       StoredDeclsMap::iterator Pos = Map->find(Name);
       if (Pos != Map->end()) {
@@ -1647,7 +1680,7 @@ void DeclContext::localUncachedLookup(DeclarationName Name,
     }
   }
 
-  // Slow case: grovel through the declarations in our chain looking for 
+  // Slow case: grovel through the declarations in our chain looking for
   // matches.
   // FIXME: If we have lazy external declarations, this will not find them!
   // FIXME: Should we CollectAllContexts and walk them all here?
@@ -1744,7 +1777,7 @@ void DeclContext::makeDeclVisibleInContextWithFlags(NamedDecl *D, bool Internal,
     buildLookup();
     makeDeclVisibleInContextImpl(D, Internal);
   } else {
-    HasLazyLocalLexicalLookups = true;
+    setHasLazyLocalLexicalLookups(true);
   }
 
   // If we are a transparent context or inline namespace, insert into our
@@ -1878,7 +1911,7 @@ DependentDiagnostic *DependentDiagnostic::Create(ASTContext &C,
   PartialDiagnostic::Storage *DiagStorage = nullptr;
   if (PDiag.hasStorage())
     DiagStorage = new (C) PartialDiagnostic::Storage;
-  
+
   auto *DD = new (C) DependentDiagnostic(PDiag, DiagStorage);
 
   // TODO: Maybe we shouldn't reverse the order during insertion.

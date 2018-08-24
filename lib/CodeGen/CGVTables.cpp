@@ -110,7 +110,7 @@ static RValue PerformReturnAdjustment(CodeGenFunction &CGF,
   return RValue::get(ReturnValue);
 }
 
-/// This function clones a function's DISubprogram node and enters it into 
+/// This function clones a function's DISubprogram node and enters it into
 /// a value map with the intent that the map can be utilized by the cloner
 /// to short-circuit Metadata node mapping.
 /// Furthermore, the function resolves any DILocalVariable nodes referenced
@@ -128,7 +128,7 @@ static void resolveTopLevelMetadata(llvm::Function *Fn,
   // they are referencing.
   for (auto &BB : Fn->getBasicBlockList()) {
     for (auto &I : BB) {
-      if (auto *DII = dyn_cast<llvm::DbgInfoIntrinsic>(&I)) {
+      if (auto *DII = dyn_cast<llvm::DbgVariableIntrinsic>(&I)) {
         auto *DILocal = DII->getVariable();
         if (!DILocal->isResolved())
           DILocal->resolve();
@@ -1012,31 +1012,29 @@ void CodeGenModule::EmitVTableTypeMetadata(llvm::GlobalVariable *VTable,
   CharUnits PointerWidth =
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
 
-  typedef std::pair<const CXXRecordDecl *, unsigned> BSEntry;
-  std::vector<BSEntry> BitsetEntries;
-  // Create a bit set entry for each address point.
+  typedef std::pair<const CXXRecordDecl *, unsigned> AddressPoint;
+  std::vector<AddressPoint> AddressPoints;
   for (auto &&AP : VTLayout.getAddressPoints())
-    BitsetEntries.push_back(
-        std::make_pair(AP.first.getBase(),
-                       VTLayout.getVTableOffset(AP.second.VTableIndex) +
-                           AP.second.AddressPointIndex));
+    AddressPoints.push_back(std::make_pair(
+        AP.first.getBase(), VTLayout.getVTableOffset(AP.second.VTableIndex) +
+                                AP.second.AddressPointIndex));
 
-  // Sort the bit set entries for determinism.
-  llvm::sort(BitsetEntries.begin(), BitsetEntries.end(),
-             [this](const BSEntry &E1, const BSEntry &E2) {
-    if (&E1 == &E2)
+  // Sort the address points for determinism.
+  llvm::sort(AddressPoints.begin(), AddressPoints.end(),
+             [this](const AddressPoint &AP1, const AddressPoint &AP2) {
+    if (&AP1 == &AP2)
       return false;
 
     std::string S1;
     llvm::raw_string_ostream O1(S1);
     getCXXABI().getMangleContext().mangleTypeName(
-        QualType(E1.first->getTypeForDecl(), 0), O1);
+        QualType(AP1.first->getTypeForDecl(), 0), O1);
     O1.flush();
 
     std::string S2;
     llvm::raw_string_ostream O2(S2);
     getCXXABI().getMangleContext().mangleTypeName(
-        QualType(E2.first->getTypeForDecl(), 0), O2);
+        QualType(AP2.first->getTypeForDecl(), 0), O2);
     O2.flush();
 
     if (S1 < S2)
@@ -1044,10 +1042,26 @@ void CodeGenModule::EmitVTableTypeMetadata(llvm::GlobalVariable *VTable,
     if (S1 != S2)
       return false;
 
-    return E1.second < E2.second;
+    return AP1.second < AP2.second;
   });
 
-  for (auto BitsetEntry : BitsetEntries)
-    AddVTableTypeMetadata(VTable, PointerWidth * BitsetEntry.second,
-                          BitsetEntry.first);
+  ArrayRef<VTableComponent> Comps = VTLayout.vtable_components();
+  for (auto AP : AddressPoints) {
+    // Create type metadata for the address point.
+    AddVTableTypeMetadata(VTable, PointerWidth * AP.second, AP.first);
+
+    // The class associated with each address point could also potentially be
+    // used for indirect calls via a member function pointer, so we need to
+    // annotate the address of each function pointer with the appropriate member
+    // function pointer type.
+    for (unsigned I = 0; I != Comps.size(); ++I) {
+      if (Comps[I].getKind() != VTableComponent::CK_FunctionPointer)
+        continue;
+      llvm::Metadata *MD = CreateMetadataIdentifierForVirtualMemPtrType(
+          Context.getMemberPointerType(
+              Comps[I].getFunctionDecl()->getType(),
+              Context.getRecordType(AP.first).getTypePtr()));
+      VTable->addTypeMetadata((PointerWidth * I).getQuantity(), MD);
+    }
+  }
 }

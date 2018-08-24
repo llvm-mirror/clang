@@ -45,6 +45,8 @@ CreateFrontendBaseAction(CompilerInstance &CI) {
   case ASTDump:                return llvm::make_unique<ASTDumpAction>();
   case ASTPrint:               return llvm::make_unique<ASTPrintAction>();
   case ASTView:                return llvm::make_unique<ASTViewAction>();
+  case DumpCompilerOptions:
+    return llvm::make_unique<DumpCompilerOptionsAction>();
   case DumpRawTokens:          return llvm::make_unique<DumpRawTokensAction>();
   case DumpTokens:             return llvm::make_unique<DumpTokensAction>();
   case EmitAssembly:           return llvm::make_unique<EmitAssemblyAction>();
@@ -137,7 +139,7 @@ CreateFrontendAction(CompilerInstance &CI) {
   if (FEOpts.FixAndRecompile) {
     Act = llvm::make_unique<FixItRecompile>(std::move(Act));
   }
-  
+
 #if CLANG_ENABLE_ARCMT
   if (CI.getFrontendOpts().ProgramAction != frontend::MigrateSource &&
       CI.getFrontendOpts().ProgramAction != frontend::GeneratePCH) {
@@ -258,4 +260,4 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   return Success;
 }
 
-} // namespace clang 
+} // namespace clang

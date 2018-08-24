@@ -110,20 +110,20 @@ namespace clang {
     ASTStmtReader(ASTRecordReader &Record, llvm::BitstreamCursor &Cursor)
         : Record(Record), DeclsCursor(Cursor) {}
 
-    /// \brief The number of record fields required for the Stmt class
+    /// The number of record fields required for the Stmt class
     /// itself.
     static const unsigned NumStmtFields = 0;
 
-    /// \brief The number of record fields required for the Expr class
+    /// The number of record fields required for the Expr class
     /// itself.
     static const unsigned NumExprFields = NumStmtFields + 7;
 
-    /// \brief Read and initialize a ExplicitTemplateArgumentList structure.
+    /// Read and initialize a ExplicitTemplateArgumentList structure.
     void ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
                                    TemplateArgumentLoc *ArgsLocArray,
                                    unsigned NumTemplateArgs);
 
-    /// \brief Read and initialize a ExplicitTemplateArgumentList structure.
+    /// Read and initialize a ExplicitTemplateArgumentList structure.
     void ReadExplicitTemplateArgumentList(ASTTemplateArgumentListInfo &ArgList,
                                           unsigned NumTemplateArgs);
 
@@ -533,6 +533,12 @@ void ASTStmtReader::VisitIntegerLiteral(IntegerLiteral *E) {
   E->setValue(Record.getContext(), Record.readAPInt());
 }
 
+void ASTStmtReader::VisitFixedPointLiteral(FixedPointLiteral *E) {
+  VisitExpr(E);
+  E->setLocation(ReadSourceLocation());
+  E->setValue(Record.getContext(), Record.readAPInt());
+}
+
 void ASTStmtReader::VisitFloatingLiteral(FloatingLiteral *E) {
   VisitExpr(E);
   E->setRawSemantics(static_cast<Stmt::APFloatSemantics>(Record.readInt()));
@@ -763,6 +769,7 @@ ASTStmtReader::VisitBinaryConditionalOperator(BinaryConditionalOperator *E) {
 
 void ASTStmtReader::VisitImplicitCastExpr(ImplicitCastExpr *E) {
   VisitCastExpr(E);
+  E->setIsPartOfExplicitCast(Record.readInt());
 }
 
 void ASTStmtReader::VisitExplicitCastExpr(ExplicitCastExpr *E) {
@@ -1849,7 +1856,7 @@ OMPClause *OMPClauseReader::readClause() {
     C = new (Context) OMPScheduleClause();
     break;
   case OMPC_ordered:
-    C = new (Context) OMPOrderedClause();
+    C = OMPOrderedClause::CreateEmpty(Context, Reader->Record.readInt());
     break;
   case OMPC_nowait:
     C = new (Context) OMPNowaitClause();
@@ -1920,9 +1927,12 @@ OMPClause *OMPClauseReader::readClause() {
   case OMPC_flush:
     C = OMPFlushClause::CreateEmpty(Context, Reader->Record.readInt());
     break;
-  case OMPC_depend:
-    C = OMPDependClause::CreateEmpty(Context, Reader->Record.readInt());
+  case OMPC_depend: {
+    unsigned NumVars = Reader->Record.readInt();
+    unsigned NumLoops = Reader->Record.readInt();
+    C = OMPDependClause::CreateEmpty(Context, NumVars, NumLoops);
     break;
+  }
   case OMPC_device:
     C = new (Context) OMPDeviceClause();
     break;
@@ -2080,6 +2090,10 @@ void OMPClauseReader::VisitOMPScheduleClause(OMPScheduleClause *C) {
 
 void OMPClauseReader::VisitOMPOrderedClause(OMPOrderedClause *C) {
   C->setNumForLoops(Reader->Record.readSubExpr());
+  for (unsigned I = 0, E = C->NumberOfLoops; I < E; ++I)
+    C->setLoopNumIterations(I, Reader->Record.readSubExpr());
+  for (unsigned I = 0, E = C->NumberOfLoops; I < E; ++I)
+    C->setLoopCounter(I, Reader->Record.readSubExpr());
   C->setLParenLoc(Reader->ReadSourceLocation());
 }
 
@@ -2388,10 +2402,11 @@ void OMPClauseReader::VisitOMPDependClause(OMPDependClause *C) {
   unsigned NumVars = C->varlist_size();
   SmallVector<Expr *, 16> Vars;
   Vars.reserve(NumVars);
-  for (unsigned i = 0; i != NumVars; ++i)
+  for (unsigned I = 0; I != NumVars; ++I)
     Vars.push_back(Reader->Record.readSubExpr());
   C->setVarRefs(Vars);
-  C->setCounterValue(Reader->Record.readSubExpr());
+  for (unsigned I = 0, E = C->getNumLoops(); I < E; ++I)
+    C->setLoopData(I, Reader->Record.readSubExpr());
 }
 
 void OMPClauseReader::VisitOMPDeviceClause(OMPDeviceClause *C) {

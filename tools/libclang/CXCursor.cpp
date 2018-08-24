@@ -61,6 +61,24 @@ static CXCursorKind GetCursorKind(const Attr *A) {
     case attr::Visibility: return CXCursor_VisibilityAttr;
     case attr::DLLExport: return CXCursor_DLLExport;
     case attr::DLLImport: return CXCursor_DLLImport;
+    case attr::NSReturnsRetained: return CXCursor_NSReturnsRetained;
+    case attr::NSReturnsNotRetained: return CXCursor_NSReturnsNotRetained;
+    case attr::NSReturnsAutoreleased: return CXCursor_NSReturnsAutoreleased;
+    case attr::NSConsumesSelf: return CXCursor_NSConsumesSelf;
+    case attr::NSConsumed: return CXCursor_NSConsumed;
+    case attr::ObjCException: return CXCursor_ObjCException;
+    case attr::ObjCNSObject: return CXCursor_ObjCNSObject;
+    case attr::ObjCIndependentClass: return CXCursor_ObjCIndependentClass;
+    case attr::ObjCPreciseLifetime: return CXCursor_ObjCPreciseLifetime;
+    case attr::ObjCReturnsInnerPointer: return CXCursor_ObjCReturnsInnerPointer;
+    case attr::ObjCRequiresSuper: return CXCursor_ObjCRequiresSuper;
+    case attr::ObjCRootClass: return CXCursor_ObjCRootClass;
+    case attr::ObjCSubclassingRestricted: return CXCursor_ObjCSubclassingRestricted;
+    case attr::ObjCExplicitProtocolImpl: return CXCursor_ObjCExplicitProtocolImpl;
+    case attr::ObjCDesignatedInitializer: return CXCursor_ObjCDesignatedInitializer;
+    case attr::ObjCRuntimeVisible: return CXCursor_ObjCRuntimeVisible;
+    case attr::ObjCBoxable: return CXCursor_ObjCBoxable;
+    case attr::FlagEnum: return CXCursor_FlagEnum;
   }
 
   return CXCursor_UnexposedAttr;
@@ -303,6 +321,10 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
 
   case Stmt::IntegerLiteralClass:
     K = CXCursor_IntegerLiteral;
+    break;
+
+  case Stmt::FixedPointLiteralClass:
+    K = CXCursor_FixedPointLiteral;
     break;
 
   case Stmt::FloatingLiteralClass:
@@ -1196,19 +1218,19 @@ int clang_Cursor_getNumTemplateArguments(CXCursor C) {
 }
 
 enum CXGetTemplateArgumentStatus {
-  /** \brief The operation completed successfully */
+  /** The operation completed successfully */
   CXGetTemplateArgumentStatus_Success = 0,
 
-  /** \brief The specified cursor did not represent a FunctionDecl. */
+  /** The specified cursor did not represent a FunctionDecl. */
   CXGetTemplateArgumentStatus_CursorNotFunctionDecl = -1,
 
-  /** \brief The specified cursor was not castable to a FunctionDecl. */
+  /** The specified cursor was not castable to a FunctionDecl. */
   CXGetTemplateArgumentStatus_BadFunctionDeclCast = -2,
 
-  /** \brief A NULL FunctionTemplateSpecializationInfo was retrieved. */
+  /** A NULL FunctionTemplateSpecializationInfo was retrieved. */
   CXGetTemplateArgumentStatus_NullTemplSpecInfo = -3,
 
-  /** \brief An invalid (OOB) argument index was specified */
+  /** An invalid (OOB) argument index was specified */
   CXGetTemplateArgumentStatus_InvalidIndex = -4
 };
 

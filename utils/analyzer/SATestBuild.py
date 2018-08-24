@@ -60,9 +60,9 @@ import threading
 import time
 import Queue
 
-#------------------------------------------------------------------------------
+###############################################################################
 # Helper functions.
-#------------------------------------------------------------------------------
+###############################################################################
 
 Local = threading.local()
 Local.stdout = sys.stdout
@@ -91,9 +91,9 @@ def getProjectMapPath():
     ProjectMapPath = os.path.join(os.path.abspath(os.curdir),
                                   ProjectMapFile)
     if not os.path.exists(ProjectMapPath):
-        Local.stdout.write("Error: Cannot find the Project Map file "
-                           + ProjectMapPath
-                           + "\nRunning script for the wrong directory?\n")
+        Local.stdout.write("Error: Cannot find the Project Map file " +
+                           ProjectMapPath +
+                           "\nRunning script for the wrong directory?\n")
         sys.exit(1)
     return ProjectMapPath
 
@@ -108,9 +108,9 @@ def getSBOutputDirName(IsReferenceBuild):
     else:
         return SBOutputDirName
 
-#------------------------------------------------------------------------------
+###############################################################################
 # Configuration setup.
-#------------------------------------------------------------------------------
+###############################################################################
 
 
 # Find Clang for static analysis.
@@ -135,6 +135,9 @@ DownloadScript = "download_project.sh"
 CleanupScript = "cleanup_run_static_analyzer.sh"
 # This is a file containing commands for scan-build.
 BuildScript = "run_static_analyzer.cmd"
+
+# A comment in a build script which disables wrapping.
+NoPrefixCmd = "#NOPREFIX"
 
 # The log file name.
 LogFolderName = "Logs"
@@ -182,9 +185,9 @@ Checkers = ",".join([
 
 Verbose = 0
 
-#------------------------------------------------------------------------------
+###############################################################################
 # Test harness logic.
-#------------------------------------------------------------------------------
+###############################################################################
 
 
 def runCleanupScript(Dir, PBuildLogFile):
@@ -274,10 +277,18 @@ def runScanBuild(Dir, SBOutputDir, PBuildLogFile):
     SBOptions += "-plist-html -o '%s' " % SBOutputDir
     SBOptions += "-enable-checker " + AllCheckers + " "
     SBOptions += "--keep-empty "
-    SBOptions += "-analyzer-config 'stable-report-filename=true' "
+    AnalyzerConfig = [
+        ("stable-report-filename", "true"),
+        ("serialize-stats", "true"),
+    ]
+
+    SBOptions += "-analyzer-config '%s' " % (
+        ",".join("%s=%s" % (key, value) for (key, value) in AnalyzerConfig))
+
     # Always use ccc-analyze to ensure that we can locate the failures
     # directory.
     SBOptions += "--override-compiler "
+    ExtraEnv = {}
     try:
         SBCommandFile = open(BuildScriptPath, "r")
         SBPrefix = "scan-build " + SBOptions + " "
@@ -285,6 +296,16 @@ def runScanBuild(Dir, SBOutputDir, PBuildLogFile):
             Command = Command.strip()
             if len(Command) == 0:
                 continue
+
+            # Custom analyzer invocation specified by project.
+            # Communicate required information using environment variables
+            # instead.
+            if Command == NoPrefixCmd:
+                SBPrefix = ""
+                ExtraEnv['OUTPUT'] = SBOutputDir
+                ExtraEnv['CC'] = Clang
+                continue
+
             # If using 'make', auto imply a -jX argument
             # to speed up analysis.  xcodebuild will
             # automatically use the maximum number of cores.
@@ -298,6 +319,7 @@ def runScanBuild(Dir, SBOutputDir, PBuildLogFile):
             check_call(SBCommand, cwd=SBCwd,
                        stderr=PBuildLogFile,
                        stdout=PBuildLogFile,
+                       env=dict(os.environ, **ExtraEnv),
                        shell=True)
     except CalledProcessError:
         Local.stderr.write("Error: scan-build failed. Its output was: \n")

@@ -724,21 +724,21 @@
 // AARCH64-NETBSD:#define __INT32_FMTi__ "i"
 // AARCH64-NETBSD:#define __INT32_MAX__ 2147483647
 // AARCH64-NETBSD:#define __INT32_TYPE__ int
-// AARCH64-NETBSD:#define __INT64_C_SUFFIX__ LL
-// AARCH64-NETBSD:#define __INT64_FMTd__ "lld"
-// AARCH64-NETBSD:#define __INT64_FMTi__ "lli"
-// AARCH64-NETBSD:#define __INT64_MAX__ 9223372036854775807LL
-// AARCH64-NETBSD:#define __INT64_TYPE__ long long int
+// AARCH64-NETBSD:#define __INT64_C_SUFFIX__ L
+// AARCH64-NETBSD:#define __INT64_FMTd__ "ld"
+// AARCH64-NETBSD:#define __INT64_FMTi__ "li"
+// AARCH64-NETBSD:#define __INT64_MAX__ 9223372036854775807L
+// AARCH64-NETBSD:#define __INT64_TYPE__ long int
 // AARCH64-NETBSD:#define __INT8_C_SUFFIX__
 // AARCH64-NETBSD:#define __INT8_FMTd__ "hhd"
 // AARCH64-NETBSD:#define __INT8_FMTi__ "hhi"
 // AARCH64-NETBSD:#define __INT8_MAX__ 127
 // AARCH64-NETBSD:#define __INT8_TYPE__ signed char
-// AARCH64-NETBSD:#define __INTMAX_C_SUFFIX__ LL
-// AARCH64-NETBSD:#define __INTMAX_FMTd__ "lld"
-// AARCH64-NETBSD:#define __INTMAX_FMTi__ "lli"
-// AARCH64-NETBSD:#define __INTMAX_MAX__ 9223372036854775807LL
-// AARCH64-NETBSD:#define __INTMAX_TYPE__ long long int
+// AARCH64-NETBSD:#define __INTMAX_C_SUFFIX__ L
+// AARCH64-NETBSD:#define __INTMAX_FMTd__ "ld"
+// AARCH64-NETBSD:#define __INTMAX_FMTi__ "li"
+// AARCH64-NETBSD:#define __INTMAX_MAX__ 9223372036854775807L
+// AARCH64-NETBSD:#define __INTMAX_TYPE__ long int
 // AARCH64-NETBSD:#define __INTMAX_WIDTH__ 64
 // AARCH64-NETBSD:#define __INTPTR_FMTd__ "ld"
 // AARCH64-NETBSD:#define __INTPTR_FMTi__ "li"
@@ -824,15 +824,15 @@
 // AARCH64-NETBSD:#define __UINT32_C_SUFFIX__ U
 // AARCH64-NETBSD:#define __UINT32_MAX__ 4294967295U
 // AARCH64-NETBSD:#define __UINT32_TYPE__ unsigned int
-// AARCH64-NETBSD:#define __UINT64_C_SUFFIX__ ULL
-// AARCH64-NETBSD:#define __UINT64_MAX__ 18446744073709551615ULL
-// AARCH64-NETBSD:#define __UINT64_TYPE__ long long unsigned int
+// AARCH64-NETBSD:#define __UINT64_C_SUFFIX__ UL
+// AARCH64-NETBSD:#define __UINT64_MAX__ 18446744073709551615UL
+// AARCH64-NETBSD:#define __UINT64_TYPE__ long unsigned int
 // AARCH64-NETBSD:#define __UINT8_C_SUFFIX__
 // AARCH64-NETBSD:#define __UINT8_MAX__ 255
 // AARCH64-NETBSD:#define __UINT8_TYPE__ unsigned char
-// AARCH64-NETBSD:#define __UINTMAX_C_SUFFIX__ ULL
-// AARCH64-NETBSD:#define __UINTMAX_MAX__ 18446744073709551615ULL
-// AARCH64-NETBSD:#define __UINTMAX_TYPE__ long long unsigned int
+// AARCH64-NETBSD:#define __UINTMAX_C_SUFFIX__ UL
+// AARCH64-NETBSD:#define __UINTMAX_MAX__ 18446744073709551615UL
+// AARCH64-NETBSD:#define __UINTMAX_TYPE__ long unsigned int
 // AARCH64-NETBSD:#define __UINTMAX_WIDTH__ 64
 // AARCH64-NETBSD:#define __UINTPTR_MAX__ 18446744073709551615UL
 // AARCH64-NETBSD:#define __UINTPTR_TYPE__ long unsigned int
@@ -6370,7 +6370,7 @@
 // PPCPOWER9:#define _ARCH_PWR7 1
 // PPCPOWER9:#define _ARCH_PWR9 1
 //
-// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-feature +float128 -target-cpu power8 -fno-signed-char < /dev/null | FileCheck -check-prefix PPC-FLOAT128 %s
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-feature +float128 -target-cpu power9 -fno-signed-char < /dev/null | FileCheck -check-prefix PPC-FLOAT128 %s
 // PPC-FLOAT128:#define __FLOAT128__ 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-linux-gnu -fno-signed-char < /dev/null | FileCheck -match-full-lines -check-prefix PPC64-LINUX %s
@@ -9002,6 +9002,13 @@
 // RUN: %clang_cc1 -x c++ -triple sparc-rtems-elf -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix GNUSOURCE %s
 // GNUSOURCE:#define _GNU_SOURCE 1
 //
+// Check that the GNUstep Objective-C ABI defines exist and are clamped at the
+// highest supported version.
+// RUN: %clang_cc1 -x objective-c -triple i386-unknown-freebsd -fobjc-runtime=gnustep-1.9 -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix GNUSTEP1 %s
+// GNUSTEP1:#define __OBJC_GNUSTEP_RUNTIME_ABI__ 18
+// RUN: %clang_cc1 -x objective-c -triple i386-unknown-freebsd -fobjc-runtime=gnustep-2.5 -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix GNUSTEP2 %s
+// GNUSTEP2:#define __OBJC_GNUSTEP_RUNTIME_ABI__ 20
+//
 // RUN: %clang_cc1 -x c++ -std=c++98 -fno-rtti -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix NORTTI %s
 // NORTTI: #define __GXX_ABI_VERSION {{.*}}
 // NORTTI-NOT:#define __GXX_RTTI
@@ -9012,7 +9019,7 @@
 // ANDROID:#define __ANDROID__ 1
 //
 // RUN: %clang_cc1 -x c++ -triple i686-linux-android -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix I386-ANDROID-CXX %s
-// I386-ANDROID-CXX:#define __STDCPP_DEFAULT_NEW_ALIGNMENT__ 4U
+// I386-ANDROID-CXX:#define __STDCPP_DEFAULT_NEW_ALIGNMENT__ 8U
 //
 // RUN: %clang_cc1 -x c++ -triple x86_64-linux-android -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix X86_64-ANDROID-CXX %s
 // X86_64-ANDROID-CXX:#define __STDCPP_DEFAULT_NEW_ALIGNMENT__ 16UL
@@ -9164,10 +9171,10 @@
 // WEBASSEMBLY32-NEXT:#define __INTMAX_MAX__ 9223372036854775807LL
 // WEBASSEMBLY32-NEXT:#define __INTMAX_TYPE__ long long int
 // WEBASSEMBLY32-NEXT:#define __INTMAX_WIDTH__ 64
-// WEBASSEMBLY32-NEXT:#define __INTPTR_FMTd__ "d"
-// WEBASSEMBLY32-NEXT:#define __INTPTR_FMTi__ "i"
-// WEBASSEMBLY32-NEXT:#define __INTPTR_MAX__ 2147483647
-// WEBASSEMBLY32-NEXT:#define __INTPTR_TYPE__ int
+// WEBASSEMBLY32-NEXT:#define __INTPTR_FMTd__ "ld"
+// WEBASSEMBLY32-NEXT:#define __INTPTR_FMTi__ "li"
+// WEBASSEMBLY32-NEXT:#define __INTPTR_MAX__ 2147483647L
+// WEBASSEMBLY32-NEXT:#define __INTPTR_TYPE__ long int
 // WEBASSEMBLY32-NEXT:#define __INTPTR_WIDTH__ 32
 // WEBASSEMBLY32-NEXT:#define __INT_FAST16_FMTd__ "hd"
 // WEBASSEMBLY32-NEXT:#define __INT_FAST16_FMTi__ "hi"
@@ -9232,10 +9239,10 @@
 // WEBASSEMBLY32-NEXT:#define __ORDER_PDP_ENDIAN__ 3412
 // WEBASSEMBLY32-NEXT:#define __POINTER_WIDTH__ 32
 // WEBASSEMBLY32-NEXT:#define __PRAGMA_REDEFINE_EXTNAME 1
-// WEBASSEMBLY32-NEXT:#define __PTRDIFF_FMTd__ "d"
-// WEBASSEMBLY32-NEXT:#define __PTRDIFF_FMTi__ "i"
-// WEBASSEMBLY32-NEXT:#define __PTRDIFF_MAX__ 2147483647
-// WEBASSEMBLY32-NEXT:#define __PTRDIFF_TYPE__ int
+// WEBASSEMBLY32-NEXT:#define __PTRDIFF_FMTd__ "ld"
+// WEBASSEMBLY32-NEXT:#define __PTRDIFF_FMTi__ "li"
+// WEBASSEMBLY32-NEXT:#define __PTRDIFF_MAX__ 2147483647L
+// WEBASSEMBLY32-NEXT:#define __PTRDIFF_TYPE__ long int
 // WEBASSEMBLY32-NEXT:#define __PTRDIFF_WIDTH__ 32
 // WEBASSEMBLY32-NOT:#define __REGISTER_PREFIX__
 // WEBASSEMBLY32-NEXT:#define __SCHAR_MAX__ 127
@@ -9255,12 +9262,12 @@
 // WEBASSEMBLY32-NEXT:#define __SIZEOF_SIZE_T__ 4
 // WEBASSEMBLY32-NEXT:#define __SIZEOF_WCHAR_T__ 4
 // WEBASSEMBLY32-NEXT:#define __SIZEOF_WINT_T__ 4
-// WEBASSEMBLY32-NEXT:#define __SIZE_FMTX__ "X"
-// WEBASSEMBLY32-NEXT:#define __SIZE_FMTo__ "o"
-// WEBASSEMBLY32-NEXT:#define __SIZE_FMTu__ "u"
-// WEBASSEMBLY32-NEXT:#define __SIZE_FMTx__ "x"
-// WEBASSEMBLY32-NEXT:#define __SIZE_MAX__ 4294967295U
-// WEBASSEMBLY32-NEXT:#define __SIZE_TYPE__ unsigned int
+// WEBASSEMBLY32-NEXT:#define __SIZE_FMTX__ "lX"
+// WEBASSEMBLY32-NEXT:#define __SIZE_FMTo__ "lo"
+// WEBASSEMBLY32-NEXT:#define __SIZE_FMTu__ "lu"
+// WEBASSEMBLY32-NEXT:#define __SIZE_FMTx__ "lx"
+// WEBASSEMBLY32-NEXT:#define __SIZE_MAX__ 4294967295UL
+// WEBASSEMBLY32-NEXT:#define __SIZE_TYPE__ long unsigned int
 // WEBASSEMBLY32-NEXT:#define __SIZE_WIDTH__ 32
 // WEBASSEMBLY32-NEXT:#define __STDC_HOSTED__ 0
 // WEBASSEMBLY32-NOT:#define __STDC_MB_MIGHT_NEQ_WC__
@@ -9308,12 +9315,12 @@
 // WEBASSEMBLY32-NEXT:#define __UINTMAX_MAX__ 18446744073709551615ULL
 // WEBASSEMBLY32-NEXT:#define __UINTMAX_TYPE__ long long unsigned int
 // WEBASSEMBLY32-NEXT:#define __UINTMAX_WIDTH__ 64
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTX__ "X"
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTo__ "o"
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTu__ "u"
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTx__ "x"
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_MAX__ 4294967295U
-// WEBASSEMBLY32-NEXT:#define __UINTPTR_TYPE__ unsigned int
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTX__ "lX"
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTo__ "lo"
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTu__ "lu"
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_FMTx__ "lx"
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_MAX__ 4294967295UL
+// WEBASSEMBLY32-NEXT:#define __UINTPTR_TYPE__ long unsigned int
 // WEBASSEMBLY32-NEXT:#define __UINTPTR_WIDTH__ 32
 // WEBASSEMBLY32-NEXT:#define __UINT_FAST16_FMTX__ "hX"
 // WEBASSEMBLY32-NEXT:#define __UINT_FAST16_FMTo__ "ho"

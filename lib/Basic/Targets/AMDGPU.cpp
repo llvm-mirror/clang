@@ -133,6 +133,10 @@ bool AMDGPUTargetInfo::initFeatureMap(
       CPU = "gfx600";
 
     switch (parseAMDGCNName(CPU).Kind) {
+    case GK_GFX906:
+      Features["dl-insts"] = true;
+      LLVM_FALLTHROUGH;
+    case GK_GFX904:
     case GK_GFX902:
     case GK_GFX900:
       Features["gfx9-insts"] = true;
@@ -141,15 +145,18 @@ bool AMDGPUTargetInfo::initFeatureMap(
     case GK_GFX803:
     case GK_GFX802:
     case GK_GFX801:
+      Features["vi-insts"] = true;
       Features["16-bit-insts"] = true;
       Features["dpp"] = true;
       Features["s-memrealtime"] = true;
-      break;
+      LLVM_FALLTHROUGH;
     case GK_GFX704:
     case GK_GFX703:
     case GK_GFX702:
     case GK_GFX701:
     case GK_GFX700:
+      Features["ci-insts"] = true;
+      LLVM_FALLTHROUGH;
     case GK_GFX601:
     case GK_GFX600:
       break;
@@ -203,7 +210,8 @@ void AMDGPUTargetInfo::adjustTargetOptions(const CodeGenOptions &CGOpts,
   }
   if (!hasFP32Denormals)
     TargetOpts.Features.push_back(
-        (Twine(CGOptsGPU.HasFastFMAF && !CGOpts.FlushDenorm
+        (Twine(CGOptsGPU.HasFastFMAF && CGOptsGPU.HasFullRateF32Denorms &&
+               !CGOpts.FlushDenorm
                    ? '+'
                    : '-') +
          Twine("fp32-denormals"))

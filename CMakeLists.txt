@@ -583,6 +583,10 @@ if (CLANG_ENABLE_BOOTSTRAP)
     endif()
   endif()
 
+  if(CLANG_BOOTSTRAP_EXTRA_DEPS)
+    add_dependencies(clang-bootstrap-deps ${CLANG_BOOTSTRAP_EXTRA_DEPS})
+  endif()
+
   add_custom_target(${NEXT_CLANG_STAGE}-clear
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${NEXT_CLANG_STAGE}-cleared
     )
@@ -617,10 +621,15 @@ if (CLANG_ENABLE_BOOTSTRAP)
     LLVM_ENABLE_PROJECTS
     LLVM_ENABLE_RUNTIMES)
 
-  # We don't need to depend on compiler-rt if we're building instrumented
+  # We don't need to depend on compiler-rt/libcxx if we're building instrumented
   # because the next stage will use the same compiler used to build this stage.
-  if(TARGET compiler-rt AND NOT LLVM_BUILD_INSTRUMENTED)
-    add_dependencies(clang-bootstrap-deps compiler-rt)
+  if(NOT LLVM_BUILD_INSTRUMENTED)
+    if(TARGET compiler-rt)
+      add_dependencies(clang-bootstrap-deps compiler-rt)
+    endif()
+    if(TARGET cxx-headers)
+      add_dependencies(clang-bootstrap-deps cxx-headers)
+    endif()
   endif()
 
   set(C_COMPILER "clang")
@@ -749,6 +758,7 @@ endif()
 if (LLVM_ADD_NATIVE_VISUALIZERS_TO_SOLUTION)
   add_subdirectory(utils/ClangVisualizers)
 endif()
+add_subdirectory(utils/hmaptool)
 
 configure_file(
   ${CLANG_SOURCE_DIR}/include/clang/Config/config.h.cmake

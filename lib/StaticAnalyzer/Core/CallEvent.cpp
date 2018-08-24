@@ -27,6 +27,7 @@
 #include "clang/AST/Type.h"
 #include "clang/Analysis/AnalysisDeclContext.h"
 #include "clang/Analysis/CFG.h"
+#include "clang/Analysis/CFGStmtMap.h"
 #include "clang/Analysis/ProgramPoint.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -166,7 +167,95 @@ bool CallEvent::isGlobalCFunction(StringRef FunctionName) const {
   return CheckerContext::isCLibraryFunction(FD, FunctionName);
 }
 
-/// \brief Returns true if a type is a pointer-to-const or reference-to-const
+AnalysisDeclContext *CallEvent::getCalleeAnalysisDeclContext() const {
+  const Decl *D = getDecl();
+  if (!D)
+    return nullptr;
+
+  // TODO: For now we skip functions without definitions, even if we have
+  // our own getDecl(), because it's hard to find out which re-declaration
+  // is going to be used, and usually clients don't really care about this
+  // situation because there's a loss of precision anyway because we cannot
+  // inline the call.
+  RuntimeDefinition RD = getRuntimeDefinition();
+  if (!RD.getDecl())
+    return nullptr;
+
+  AnalysisDeclContext *ADC =
+      LCtx->getAnalysisDeclContext()->getManager()->getContext(D);
+
+  // TODO: For now we skip virtual functions, because this also rises
+  // the problem of which decl to use, but now it's across different classes.
+  if (RD.mayHaveOtherDefinitions() || RD.getDecl() != ADC->getDecl())
+    return nullptr;
+
+  return ADC;
+}
+
+const StackFrameContext *CallEvent::getCalleeStackFrame() const {
+  AnalysisDeclContext *ADC = getCalleeAnalysisDeclContext();
+  if (!ADC)
+    return nullptr;
+
+  const Expr *E = getOriginExpr();
+  if (!E)
+    return nullptr;
+
+  // Recover CFG block via reverse lookup.
+  // TODO: If we were to keep CFG element information as part of the CallEvent
+  // instead of doing this reverse lookup, we would be able to build the stack
+  // frame for non-expression-based calls, and also we wouldn't need the reverse
+  // lookup.
+  CFGStmtMap *Map = LCtx->getAnalysisDeclContext()->getCFGStmtMap();
+  const CFGBlock *B = Map->getBlock(E);
+  assert(B);
+
+  // Also recover CFG index by scanning the CFG block.
+  unsigned Idx = 0, Sz = B->size();
+  for (; Idx < Sz; ++Idx)
+    if (auto StmtElem = (*B)[Idx].getAs<CFGStmt>())
+      if (StmtElem->getStmt() == E)
+        break;
+  assert(Idx < Sz);
+
+  return ADC->getManager()->getStackFrame(ADC, LCtx, E, B, Idx);
+}
+
+const VarRegion *CallEvent::getParameterLocation(unsigned Index) const {
+  const StackFrameContext *SFC = getCalleeStackFrame();
+  // We cannot construct a VarRegion without a stack frame.
+  if (!SFC)
+    return nullptr;
+
+  // Retrieve parameters of the definition, which are different from
+  // CallEvent's parameters() because getDecl() isn't necessarily
+  // the definition. SFC contains the definition that would be used
+  // during analysis.
+  const Decl *D = SFC->getDecl();
+
+  // TODO: Refactor into a virtual method of CallEvent, like parameters().
+  const ParmVarDecl *PVD = nullptr;
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    PVD = FD->parameters()[Index];
+  else if (const auto *BD = dyn_cast<BlockDecl>(D))
+    PVD = BD->parameters()[Index];
+  else if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+    PVD = MD->parameters()[Index];
+  else if (const auto *CD = dyn_cast<CXXConstructorDecl>(D))
+    PVD = CD->parameters()[Index];
+  assert(PVD && "Unexpected Decl kind!");
+
+  const VarRegion *VR =
+      State->getStateManager().getRegionManager().getVarRegion(PVD, SFC);
+
+  // This sanity check would fail if our parameter declaration doesn't
+  // correspond to the stack frame's function declaration.
+  assert(VR->getStackFrame() == SFC);
+
+  return VR;
+}
+
+/// Returns true if a type is a pointer-to-const or reference-to-const
 /// with no further indirection.
 static bool isPointerToConst(QualType Ty) {
   QualType PointeeTy = Ty->getPointeeType();
@@ -222,6 +311,20 @@ ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
         // TODO: Factor this out + handle the lower level const pointers.
 
     ValuesToInvalidate.push_back(getArgSVal(Idx));
+
+    // If a function accepts an object by argument (which would of course be a
+    // temporary that isn't lifetime-extended), invalidate the object itself,
+    // not only other objects reachable from it. This is necessary because the
+    // destructor has access to the temporary object after the call.
+    // TODO: Support placement arguments once we start
+    // constructing them directly.
+    // TODO: This is unnecessary when there's no destructor, but that's
+    // currently hard to figure out.
+    if (getKind() != CE_CXXAllocator)
+      if (isArgumentConstructedDirectly(Idx))
+        if (auto AdjIdx = getAdjustedParameterIndex(Idx))
+          if (const VarRegion *VR = getParameterLocation(*AdjIdx))
+            ValuesToInvalidate.push_back(loc::MemRegionVal(VR));
   }
 
   // Invalidate designated regions using the batch invalidation API.
@@ -370,6 +473,10 @@ static void addParameterValuesToBindings(const StackFrameContext *CalleeCtx,
     const ParmVarDecl *ParamDecl = *I;
     assert(ParamDecl && "Formal parameter has no decl?");
 
+    if (Call.getKind() != CE_CXXAllocator)
+      if (Call.isArgumentConstructedDirectly(Idx))
+        continue;
+
     SVal ArgVal = Call.getArgSVal(Idx);
     if (!ArgVal.isUnknown()) {
       Loc ParamLoc = SVB.makeLoc(MRMgr.getVarRegion(ParamDecl, CalleeCtx));
@@ -399,10 +506,10 @@ RuntimeDefinition AnyFunctionCall::getRuntimeDefinition() const {
     getManager()->getContext(FD);
   bool IsAutosynthesized;
   Stmt* Body = AD->getBody(IsAutosynthesized);
-  DEBUG({
-      if (IsAutosynthesized)
-        llvm::dbgs() << "Using autosynthesized body for " << FD->getName()
-                     << "\n";
+  LLVM_DEBUG({
+    if (IsAutosynthesized)
+      llvm::dbgs() << "Using autosynthesized body for " << FD->getName()
+                   << "\n";
   });
   if (Body) {
     const Decl* Decl = AD->getDecl();
@@ -534,9 +641,14 @@ void CXXInstanceCall::getExtraInvalidatedValues(
     // Get the record decl for the class of 'This'. D->getParent() may return a
     // base class decl, rather than the class of the instance which needs to be
     // checked for mutable fields.
+    // TODO: We might as well look at the dynamic type of the object.
     const Expr *Ex = getCXXThisExpr()->ignoreParenBaseCasts();
-    const CXXRecordDecl *ParentRecord = Ex->getType()->getAsCXXRecordDecl();
-    if (!ParentRecord || ParentRecord->hasMutableFields())
+    QualType T = Ex->getType();
+    if (T->isPointerType()) // Arrow or implicit-this syntax?
+      T = T->getPointeeType();
+    const CXXRecordDecl *ParentRecord = T->getAsCXXRecordDecl();
+    assert(ParentRecord);
+    if (ParentRecord->hasMutableFields())
       return;
     // Preserve CXXThis.
     const MemRegion *ThisRegion = ThisVal.getAsRegion();
@@ -939,15 +1051,14 @@ const ObjCPropertyDecl *ObjCMethodCall::getAccessedProperty() const {
 bool ObjCMethodCall::canBeOverridenInSubclass(ObjCInterfaceDecl *IDecl,
                                              Selector Sel) const {
   assert(IDecl);
-  const SourceManager &SM =
-    getState()->getStateManager().getContext().getSourceManager();
-
+  AnalysisManager &AMgr =
+      getState()->getStateManager().getOwningEngine()->getAnalysisManager();
   // If the class interface is declared inside the main file, assume it is not
   // subcassed.
   // TODO: It could actually be subclassed if the subclass is private as well.
   // This is probably very rare.
   SourceLocation InterfLoc = IDecl->getEndOfDefinitionLoc();
-  if (InterfLoc.isValid() && SM.isInMainFile(InterfLoc))
+  if (InterfLoc.isValid() && AMgr.isInCodeFile(InterfLoc))
     return false;
 
   // Assume that property accessors are not overridden.
@@ -969,7 +1080,7 @@ bool ObjCMethodCall::canBeOverridenInSubclass(ObjCInterfaceDecl *IDecl,
       return false;
 
     // If outside the main file,
-    if (D->getLocation().isValid() && !SM.isInMainFile(D->getLocation()))
+    if (D->getLocation().isValid() && !AMgr.isInCodeFile(D->getLocation()))
       return true;
 
     if (D->isOverriding()) {
@@ -1217,7 +1328,7 @@ CallEventRef<>
 CallEventManager::getCaller(const StackFrameContext *CalleeCtx,
                             ProgramStateRef State) {
   const LocationContext *ParentCtx = CalleeCtx->getParent();
-  const LocationContext *CallerCtx = ParentCtx->getCurrentStackFrame();
+  const LocationContext *CallerCtx = ParentCtx->getStackFrame();
   assert(CallerCtx && "This should not be used for top-level stack frames");
 
   const Stmt *CallSite = CalleeCtx->getCallSite();

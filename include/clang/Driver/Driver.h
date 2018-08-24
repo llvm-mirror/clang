@@ -202,8 +202,8 @@ public:
   unsigned CCGenDiagnostics : 1;
 
 private:
-  /// Default target triple.
-  std::string DefaultTargetTriple;
+  /// Raw target triple.
+  std::string TargetTriple;
 
   /// Name to use when invoking gcc/g++.
   std::string CCCGenericGCCName;
@@ -243,7 +243,7 @@ private:
   std::list<std::string> TempFiles;
   std::list<std::string> ResultFiles;
 
-  /// \brief Cache of all the ToolChains in use by the driver.
+  /// Cache of all the ToolChains in use by the driver.
   ///
   /// This maps from the string representation of a triple to a ToolChain
   /// created targeting that triple. The driver owns all the ToolChain objects
@@ -256,7 +256,7 @@ private:
   llvm::opt::DerivedArgList *
   TranslateInputArgs(const llvm::opt::InputArgList &Args) const;
 
-  // getFinalPhase - Determine which compilation mode we are in and record 
+  // getFinalPhase - Determine which compilation mode we are in and record
   // which option we used to determine the final phase.
   phases::ID getFinalPhase(const llvm::opt::DerivedArgList &DAL,
                            llvm::opt::Arg **FinalPhaseArg = nullptr) const;
@@ -267,7 +267,7 @@ private:
   void generatePrefixedToolNames(StringRef Tool, const ToolChain &TC,
                                  SmallVectorImpl<std::string> &Names) const;
 
-  /// \brief Find the appropriate .crash diagonostic file for the child crash
+  /// Find the appropriate .crash diagonostic file for the child crash
   /// under this driver and copy it out to a temporary destination with the
   /// other reproducer related files (.sh, .cache, etc). If not found, suggest a
   /// directory for the user to look at.
@@ -282,7 +282,7 @@ private:
                               SmallString<128> &CrashDiagDir);
 
 public:
-  Driver(StringRef ClangExecutable, StringRef DefaultTargetTriple,
+  Driver(StringRef ClangExecutable, StringRef TargetTriple,
          DiagnosticsEngine &Diags,
          IntrusiveRefCntPtr<vfs::FileSystem> VFS = nullptr);
 
@@ -309,12 +309,14 @@ public:
   const std::string &getTitle() { return DriverTitle; }
   void setTitle(std::string Value) { DriverTitle = std::move(Value); }
 
-  /// \brief Get the path to the main clang executable.
+  std::string getTargetTriple() const { return TargetTriple; }
+
+  /// Get the path to the main clang executable.
   const char *getClangProgramPath() const {
     return ClangExecutable.c_str();
   }
 
-  /// \brief Get the path to where the clang executable was installed.
+  /// Get the path to where the clang executable was installed.
   const char *getInstalledDir() const {
     if (!InstalledDir.empty())
       return InstalledDir.c_str();
@@ -363,12 +365,12 @@ public:
   llvm::opt::InputArgList ParseArgStrings(ArrayRef<const char *> Args,
                                           bool &ContainsError);
 
-  /// BuildInputs - Construct the list of inputs and their types from 
+  /// BuildInputs - Construct the list of inputs and their types from
   /// the given arguments.
   ///
   /// \param TC - The default host tool chain.
   /// \param Args - The input arguments.
-  /// \param Inputs - The list to store the resulting compilation 
+  /// \param Inputs - The list to store the resulting compilation
   /// inputs onto.
   void BuildInputs(const ToolChain &TC, llvm::opt::DerivedArgList &Args,
                    InputList &Inputs) const;
@@ -491,7 +493,7 @@ public:
   /// \param JA - The action of interest.
   /// \param BaseInput - The original input file that this action was
   /// triggered by.
-  /// \param BoundArch - The bound architecture. 
+  /// \param BoundArch - The bound architecture.
   /// \param AtTopLevel - Whether this is a "top-level" action.
   /// \param MultipleArchs - Whether multiple -arch options were supplied.
   /// \param NormalizedTriple - The normalized triple of the relevant target.
@@ -500,7 +502,7 @@ public:
                                  bool AtTopLevel, bool MultipleArchs,
                                  StringRef NormalizedTriple) const;
 
-  /// GetTemporaryPath - Return the pathname of a temporary file to use 
+  /// GetTemporaryPath - Return the pathname of a temporary file to use
   /// as part of compilation; the file will have the given prefix and suffix.
   ///
   /// GCC goes to extra lengths here to be a bit more robust.
@@ -540,7 +542,7 @@ private:
   /// compilation based on which -f(no-)?lto(=.*)? option occurs last.
   void setLTOMode(const llvm::opt::ArgList &Args);
 
-  /// \brief Retrieves a ToolChain for a particular \p Target triple.
+  /// Retrieves a ToolChain for a particular \p Target triple.
   ///
   /// Will cache ToolChains for the life of the driver object, and create them
   /// on-demand.
@@ -549,7 +551,7 @@ private:
 
   /// @}
 
-  /// \brief Get bitmasks for which option flags to include and exclude based on
+  /// Get bitmasks for which option flags to include and exclude based on
   /// the driver mode.
   std::pair<unsigned, unsigned> getIncludeExcludeOptionFlagMasks() const;
 

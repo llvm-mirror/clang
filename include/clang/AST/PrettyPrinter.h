@@ -36,7 +36,7 @@ public:
 /// This type is intended to be small and suitable for passing by value.
 /// It is very frequently copied.
 struct PrintingPolicy {
-  /// \brief Create a default printing policy for the specified language.
+  /// Create a default printing policy for the specified language.
   PrintingPolicy(const LangOptions &LO)
     : Indentation(2), SuppressSpecifiers(false),
       SuppressTagKeyword(LO.CPlusPlus),
@@ -81,7 +81,7 @@ struct PrintingPolicy {
   /// declaration for "x", so that we will print "int *x"; it will be
   /// \c true when we print "y", so that we suppress printing the
   /// "const int" type specifier and instead only print the "*y".
-  bool SuppressSpecifiers : 1;
+  unsigned SuppressSpecifiers : 1;
 
   /// Whether type printing should skip printing the tag keyword.
   ///
@@ -91,7 +91,7 @@ struct PrintingPolicy {
   /// \code
   /// struct Geometry::Point;
   /// \endcode
-  bool SuppressTagKeyword : 1;
+  unsigned SuppressTagKeyword : 1;
 
   /// When true, include the body of a tag definition.
   ///
@@ -101,15 +101,15 @@ struct PrintingPolicy {
   /// \code
   /// typedef struct { int x, y; } Point;
   /// \endcode
-  bool IncludeTagDefinition : 1;
+  unsigned IncludeTagDefinition : 1;
 
   /// Suppresses printing of scope specifiers.
-  bool SuppressScope : 1;
+  unsigned SuppressScope : 1;
 
   /// Suppress printing parts of scope specifiers that don't need
   /// to be written, e.g., for inline or anonymous namespaces.
-  bool SuppressUnwrittenScope : 1;
-  
+  unsigned SuppressUnwrittenScope : 1;
+
   /// Suppress printing of variable initializers.
   ///
   /// This flag is used when printing the loop variable in a for-range
@@ -121,7 +121,7 @@ struct PrintingPolicy {
   ///
   /// SuppressInitializers will be true when printing "auto x", so that the
   /// internal initializer constructed for x will not be printed.
-  bool SuppressInitializers : 1;
+  unsigned SuppressInitializers : 1;
 
   /// Whether we should print the sizes of constant array expressions as written
   /// in the sources.
@@ -139,16 +139,16 @@ struct PrintingPolicy {
   /// int a[104];
   /// char a[9] = "A string";
   /// \endcode
-  bool ConstantArraySizeAsWritten : 1;
-  
+  unsigned ConstantArraySizeAsWritten : 1;
+
   /// When printing an anonymous tag name, also print the location of that
   /// entity (e.g., "enum <anonymous at t.h:10:5>"). Otherwise, just prints
   /// "(anonymous)" for the name.
-  bool AnonymousTagLocations : 1;
-  
+  unsigned AnonymousTagLocations : 1;
+
   /// When true, suppress printing of the __strong lifetime qualifier in ARC.
   unsigned SuppressStrongLifetime : 1;
-  
+
   /// When true, suppress printing of lifetime qualifier in ARC.
   unsigned SuppressLifetimeQualifiers : 1;
 
@@ -179,7 +179,7 @@ struct PrintingPolicy {
   /// declarations inside namespaces etc.  Effectively, this should print
   /// only the requested declaration.
   unsigned TerseOutput : 1;
-  
+
   /// When true, do certain refinement needed for producing proper declaration
   /// tag; such as, do not print attributes attached to the declaration.
   ///
@@ -199,7 +199,7 @@ struct PrintingPolicy {
   /// Use whitespace and punctuation like MSVC does. In particular, this prints
   /// anonymous namespaces as `anonymous namespace' and does not insert spaces
   /// after template arguments.
-  bool MSVCFormatting : 1;
+  unsigned MSVCFormatting : 1;
 
   /// Whether we should print the constant expressions as written in the
   /// sources.
@@ -217,14 +217,14 @@ struct PrintingPolicy {
   /// 0x10
   /// 2.5e3
   /// \endcode
-  bool ConstantsAsWritten : 1;
+  unsigned ConstantsAsWritten : 1;
 
   /// When true, don't print the implicit 'self' or 'this' expressions.
-  bool SuppressImplicitBase : 1;
+  unsigned SuppressImplicitBase : 1;
 
   /// When true, print the fully qualified name of function declarations.
   /// This is the opposite of SuppressScope and thus overrules it.
-  bool FullyQualifiedName : 1;
+  unsigned FullyQualifiedName : 1;
 };
 
 } // end namespace clang

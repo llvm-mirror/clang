@@ -54,6 +54,7 @@ add_clang_library(clangBasic
   DiagnosticOptions.cpp
   FileManager.cpp
   FileSystemStatCache.cpp
+  FixedPoint.cpp
   IdentifierTable.cpp
   LangOptions.cpp
   MemoryBufferCache.cpp
@@ -93,7 +94,6 @@ add_clang_library(clangBasic
   Targets/XCore.cpp
   TokenKinds.cpp
   Version.cpp
-  VersionTuple.cpp
   VirtualFileSystem.cpp
   Warnings.cpp
   XRayInstr.cpp

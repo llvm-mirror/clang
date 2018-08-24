@@ -159,7 +159,8 @@ SVal SimpleSValBuilder::evalCastFromLoc(Loc val, QualType castTy) {
               return nonloc::SymbolVal(SymMgr.getExtentSymbol(FTR));
 
         if (const SymbolicRegion *SymR = R->getSymbolicBase())
-          return nonloc::SymbolVal(SymR->getSymbol());
+          return makeNonLoc(SymR->getSymbol(), BO_NE,
+                            BasicVals.getZeroWithPtrWidth(), castTy);
 
         // FALL-THROUGH
         LLVM_FALLTHROUGH;
@@ -439,7 +440,7 @@ static bool shouldRearrange(ProgramStateRef State, BinaryOperator::Opcode Op,
                             SymbolRef Sym, llvm::APSInt Int, QualType Ty) {
   return Sym->getType() == Ty &&
     (!BinaryOperator::isComparisonOp(Op) ||
-     (isWithinConstantOverflowBounds(Sym, State) && 
+     (isWithinConstantOverflowBounds(Sym, State) &&
       isWithinConstantOverflowBounds(Int)));
 }
 
@@ -455,14 +456,17 @@ static Optional<NonLoc> tryRearrange(ProgramStateRef State,
   auto &Opts =
     StateMgr.getOwningEngine()->getAnalysisManager().getAnalyzerOptions();
 
+  // FIXME: After putting complexity threshold to the symbols we can always
+  //        rearrange additive operations but rearrange comparisons only if
+  //        option is set.
+  if(!Opts.shouldAggressivelySimplifyBinaryOperation())
+    return None;
+
   SymbolRef LSym = Lhs.getAsSymbol();
   if (!LSym)
     return None;
 
-  // Always rearrange additive operations but rearrange comparisons only if
-  // option is set.
-  if (BinaryOperator::isComparisonOp(Op) &&
-      Opts.shouldAggressivelySimplifyRelationalComparison()) {
+  if (BinaryOperator::isComparisonOp(Op)) {
     SingleTy = LSym->getType();
     if (ResultTy != SVB.getConditionType())
       return None;
@@ -1222,24 +1226,50 @@ SVal SimpleSValBuilder::simplifySVal(ProgramStateRef State, SVal V) {
     ProgramStateRef State;
     SValBuilder &SVB;
 
+    // Cache results for the lifetime of the Simplifier. Results change every
+    // time new constraints are added to the program state, which is the whole
+    // point of simplifying, and for that very reason it's pointless to maintain
+    // the same cache for the duration of the whole analysis.
+    llvm::DenseMap<SymbolRef, SVal> Cached;
+
+    static bool isUnchanged(SymbolRef Sym, SVal Val) {
+      return Sym == Val.getAsSymbol();
+    }
+
+    SVal cache(SymbolRef Sym, SVal V) {
+      Cached[Sym] = V;
+      return V;
+    }
+
+    SVal skip(SymbolRef Sym) {
+      return cache(Sym, SVB.makeSymbolVal(Sym));
+    }
+
   public:
     Simplifier(ProgramStateRef State)
         : State(State), SVB(State->getStateManager().getSValBuilder()) {}
 
     SVal VisitSymbolData(const SymbolData *S) {
+      // No cache here.
       if (const llvm::APSInt *I =
-              SVB.getKnownValue(State, nonloc::SymbolVal(S)))
+              SVB.getKnownValue(State, SVB.makeSymbolVal(S)))
         return Loc::isLocType(S->getType()) ? (SVal)SVB.makeIntLocVal(*I)
                                             : (SVal)SVB.makeIntVal(*I);
-      return Loc::isLocType(S->getType()) ? (SVal)SVB.makeLoc(S) 
-                                          : nonloc::SymbolVal(S);
+      return SVB.makeSymbolVal(S);
     }
 
     // TODO: Support SymbolCast. Support IntSymExpr when/if we actually
     // start producing them.
 
     SVal VisitSymIntExpr(const SymIntExpr *S) {
+      auto I = Cached.find(S);
+      if (I != Cached.end())
+        return I->second;
+
       SVal LHS = Visit(S->getLHS());
+      if (isUnchanged(S->getLHS(), LHS))
+        return skip(S);
+
       SVal RHS;
       // By looking at the APSInt in the right-hand side of S, we cannot
       // figure out if it should be treated as a Loc or as a NonLoc.
@@ -1258,13 +1288,31 @@ SVal SimpleSValBuilder::simplifySVal(ProgramStateRef State, SVal V) {
       } else {
         RHS = SVB.makeIntVal(S->getRHS());
       }
-      return SVB.evalBinOp(State, S->getOpcode(), LHS, RHS, S->getType());
+
+      return cache(
+          S, SVB.evalBinOp(State, S->getOpcode(), LHS, RHS, S->getType()));
     }
 
     SVal VisitSymSymExpr(const SymSymExpr *S) {
+      auto I = Cached.find(S);
+      if (I != Cached.end())
+        return I->second;
+
+      // For now don't try to simplify mixed Loc/NonLoc expressions
+      // because they often appear from LocAsInteger operations
+      // and we don't know how to combine a LocAsInteger
+      // with a concrete value.
+      if (Loc::isLocType(S->getLHS()->getType()) !=
+          Loc::isLocType(S->getRHS()->getType()))
+        return skip(S);
+
       SVal LHS = Visit(S->getLHS());
       SVal RHS = Visit(S->getRHS());
-      return SVB.evalBinOp(State, S->getOpcode(), LHS, RHS, S->getType());
+      if (isUnchanged(S->getLHS(), LHS) && isUnchanged(S->getRHS(), RHS))
+        return skip(S);
+
+      return cache(
+          S, SVB.evalBinOp(State, S->getOpcode(), LHS, RHS, S->getType()));
     }
 
     SVal VisitSymExpr(SymbolRef S) { return nonloc::SymbolVal(S); }
@@ -1274,13 +1322,20 @@ SVal SimpleSValBuilder::simplifySVal(ProgramStateRef State, SVal V) {
     SVal VisitNonLocSymbolVal(nonloc::SymbolVal V) {
       // Simplification is much more costly than computing complexity.
       // For high complexity, it may be not worth it.
-      if (V.getSymbol()->computeComplexity() > 100)
-        return V;
       return Visit(V.getSymbol());
     }
 
     SVal VisitSVal(SVal V) { return V; }
   };
 
-  return Simplifier(State).Visit(V);
+  // A crude way of preventing this function from calling itself from evalBinOp.
+  static bool isReentering = false;
+  if (isReentering)
+    return V;
+
+  isReentering = true;
+  SVal SimplifiedV = Simplifier(State).Visit(V);
+  isReentering = false;
+
+  return SimplifiedV;
 }

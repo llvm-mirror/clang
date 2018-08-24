@@ -93,7 +93,9 @@ static bool isTest(const Decl *D) {
 static auto findGCDAntiPatternWithSemaphore() -> decltype(compoundStmt()) {
 
   const char *SemaphoreBinding = "semaphore_name";
-  auto SemaphoreCreateM = callExpr(callsName("dispatch_semaphore_create"));
+  auto SemaphoreCreateM = callExpr(allOf(
+      callsName("dispatch_semaphore_create"),
+      hasArgument(0, ignoringParenCasts(integerLiteral(equals(0))))));
 
   auto SemaphoreBindingM = anyOf(
       forEachDescendant(
@@ -187,8 +189,8 @@ static void emitDiagnostics(const BoundNodes &Nodes,
 
   std::string Diagnostics;
   llvm::raw_string_ostream OS(Diagnostics);
-  OS << "Waiting on a " << Type << " with Grand Central Dispatch creates "
-     << "useless threads and is subject to priority inversion; consider "
+  OS << "Waiting on a callback using a " << Type << " creates useless threads "
+     << "and is subject to priority inversion; consider "
      << "using a synchronous API or changing the caller to be asynchronous";
 
   BR.EmitBasicReport(

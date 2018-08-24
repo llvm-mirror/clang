@@ -23,13 +23,13 @@
 using namespace clang;
 using namespace sema;
 
-static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const AttributeList &A,
+static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                    SourceRange Range) {
   FallThroughAttr Attr(A.getRange(), S.Context,
                        A.getAttributeSpellingListIndex());
   if (!isa<NullStmt>(St)) {
     S.Diag(A.getRange().getBegin(), diag::err_fallthrough_attr_wrong_target)
-        << Attr.getSpelling() << St->getLocStart();
+        << Attr.getSpelling() << St->getBeginLoc();
     if (isa<SwitchCase>(St)) {
       SourceLocation L = S.getLocForEndOfToken(Range.getEnd());
       S.Diag(L, diag::note_fallthrough_insert_semi_fixit)
@@ -53,11 +53,10 @@ static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const AttributeList &A,
   return ::new (S.Context) auto(Attr);
 }
 
-static Attr *handleSuppressAttr(Sema &S, Stmt *St, const AttributeList &A,
+static Attr *handleSuppressAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                 SourceRange Range) {
   if (A.getNumArgs() < 1) {
-    S.Diag(A.getLoc(), diag::err_attribute_too_few_arguments)
-        << A.getName() << 1;
+    S.Diag(A.getLoc(), diag::err_attribute_too_few_arguments) << A << 1;
     return nullptr;
   }
 
@@ -78,7 +77,7 @@ static Attr *handleSuppressAttr(Sema &S, Stmt *St, const AttributeList &A,
       DiagnosticIdentifiers.size(), A.getAttributeSpellingListIndex());
 }
 
-static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
+static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                 SourceRange) {
   IdentifierLoc *PragmaNameLoc = A.getArgAsIdent(0);
   IdentifierLoc *OptionLoc = A.getArgAsIdent(1);
@@ -87,6 +86,9 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
 
   bool PragmaUnroll = PragmaNameLoc->Ident->getName() == "unroll";
   bool PragmaNoUnroll = PragmaNameLoc->Ident->getName() == "nounroll";
+  bool PragmaUnrollAndJam = PragmaNameLoc->Ident->getName() == "unroll_and_jam";
+  bool PragmaNoUnrollAndJam =
+      PragmaNameLoc->Ident->getName() == "nounroll_and_jam";
   if (St->getStmtClass() != Stmt::DoStmtClass &&
       St->getStmtClass() != Stmt::ForStmtClass &&
       St->getStmtClass() != Stmt::CXXForRangeStmtClass &&
@@ -95,8 +97,10 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
         llvm::StringSwitch<const char *>(PragmaNameLoc->Ident->getName())
             .Case("unroll", "#pragma unroll")
             .Case("nounroll", "#pragma nounroll")
+            .Case("unroll_and_jam", "#pragma unroll_and_jam")
+            .Case("nounroll_and_jam", "#pragma nounroll_and_jam")
             .Default("#pragma clang loop");
-    S.Diag(St->getLocStart(), diag::err_pragma_loop_precedes_nonloop) << Pragma;
+    S.Diag(St->getBeginLoc(), diag::err_pragma_loop_precedes_nonloop) << Pragma;
     return nullptr;
   }
 
@@ -118,6 +122,20 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
       Option = LoopHintAttr::Unroll;
       State = LoopHintAttr::Enable;
     }
+  } else if (PragmaNoUnrollAndJam) {
+    // #pragma nounroll_and_jam
+    Option = LoopHintAttr::UnrollAndJam;
+    State = LoopHintAttr::Disable;
+  } else if (PragmaUnrollAndJam) {
+    if (ValueExpr) {
+      // #pragma unroll_and_jam N
+      Option = LoopHintAttr::UnrollAndJamCount;
+      State = LoopHintAttr::Numeric;
+    } else {
+      // #pragma unroll_and_jam
+      Option = LoopHintAttr::UnrollAndJam;
+      State = LoopHintAttr::Enable;
+    }
   } else {
     // #pragma clang loop ...
     assert(OptionLoc && OptionLoc->Ident &&
@@ -136,7 +154,7 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
         Option == LoopHintAttr::InterleaveCount ||
         Option == LoopHintAttr::UnrollCount) {
       assert(ValueExpr && "Attribute must have a valid value expression.");
-      if (S.CheckLoopHintExpr(ValueExpr, St->getLocStart()))
+      if (S.CheckLoopHintExpr(ValueExpr, St->getBeginLoc()))
         return nullptr;
       State = LoopHintAttr::Numeric;
     } else if (Option == LoopHintAttr::Vectorize ||
@@ -165,18 +183,20 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
 static void
 CheckForIncompatibleAttributes(Sema &S,
                                const SmallVectorImpl<const Attr *> &Attrs) {
-  // There are 4 categories of loop hints attributes: vectorize, interleave,
-  // unroll and distribute. Except for distribute they come in two variants: a
-  // state form and a numeric form.  The state form selectively
-  // defaults/enables/disables the transformation for the loop (for unroll,
-  // default indicates full unrolling rather than enabling the transformation).
-  // The numeric form form provides an integer hint (for example, unroll count)
-  // to the transformer. The following array accumulates the hints encountered
-  // while iterating through the attributes to check for compatibility.
+  // There are 5 categories of loop hints attributes: vectorize, interleave,
+  // unroll, unroll_and_jam and distribute. Except for distribute they come
+  // in two variants: a state form and a numeric form.  The state form
+  // selectively defaults/enables/disables the transformation for the loop
+  // (for unroll, default indicates full unrolling rather than enabling the
+  // transformation). The numeric form form provides an integer hint (for
+  // example, unroll count) to the transformer. The following array accumulates
+  // the hints encountered while iterating through the attributes to check for
+  // compatibility.
   struct {
     const LoopHintAttr *StateAttr;
     const LoopHintAttr *NumericAttr;
   } HintAttrs[] = {{nullptr, nullptr},
+                   {nullptr, nullptr},
                    {nullptr, nullptr},
                    {nullptr, nullptr},
                    {nullptr, nullptr}};
@@ -189,7 +209,7 @@ CheckForIncompatibleAttributes(Sema &S,
       continue;
 
     LoopHintAttr::OptionType Option = LH->getOption();
-    enum { Vectorize, Interleave, Unroll, Distribute } Category;
+    enum { Vectorize, Interleave, Unroll, UnrollAndJam, Distribute } Category;
     switch (Option) {
     case LoopHintAttr::Vectorize:
     case LoopHintAttr::VectorizeWidth:
@@ -203,16 +223,22 @@ CheckForIncompatibleAttributes(Sema &S,
     case LoopHintAttr::UnrollCount:
       Category = Unroll;
       break;
+    case LoopHintAttr::UnrollAndJam:
+    case LoopHintAttr::UnrollAndJamCount:
+      Category = UnrollAndJam;
+      break;
     case LoopHintAttr::Distribute:
       // Perform the check for duplicated 'distribute' hints.
       Category = Distribute;
       break;
     };
 
+    assert(Category < sizeof(HintAttrs) / sizeof(HintAttrs[0]));
     auto &CategoryState = HintAttrs[Category];
     const LoopHintAttr *PrevAttr;
     if (Option == LoopHintAttr::Vectorize ||
         Option == LoopHintAttr::Interleave || Option == LoopHintAttr::Unroll ||
+        Option == LoopHintAttr::UnrollAndJam ||
         Option == LoopHintAttr::Distribute) {
       // Enable|Disable|AssumeSafety hint.  For example, vectorize(enable).
       PrevAttr = CategoryState.StateAttr;
@@ -232,7 +258,7 @@ CheckForIncompatibleAttributes(Sema &S,
           << LH->getDiagnosticName(Policy);
 
     if (CategoryState.StateAttr && CategoryState.NumericAttr &&
-        (Category == Unroll ||
+        (Category == Unroll || Category == UnrollAndJam ||
          CategoryState.StateAttr->getState() == LoopHintAttr::Disable)) {
       // Disable hints are not compatible with numeric hints of the same
       // category.  As a special case, numeric unroll hints are also not
@@ -246,7 +272,7 @@ CheckForIncompatibleAttributes(Sema &S,
   }
 }
 
-static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const AttributeList &A,
+static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const ParsedAttr &A,
                                     SourceRange Range) {
   // Although the feature was introduced only in OpenCL C v2.0 s6.11.5, it's
   // useful for OpenCL 1.x too and doesn't require HW support.
@@ -257,8 +283,7 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const AttributeList &A,
   unsigned NumArgs = A.getNumArgs();
 
   if (NumArgs > 1) {
-    S.Diag(A.getLoc(), diag::err_attribute_too_many_arguments) << A.getName()
-                                                               << 1;
+    S.Diag(A.getLoc(), diag::err_attribute_too_many_arguments) << A << 1;
     return nullptr;
   }
 
@@ -270,7 +295,7 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const AttributeList &A,
 
     if (!E->isIntegerConstantExpr(ArgVal, S.Context)) {
       S.Diag(A.getLoc(), diag::err_attribute_argument_type)
-          << A.getName() << AANT_ArgumentIntegerConstant << E->getSourceRange();
+          << A << AANT_ArgumentIntegerConstant << E->getSourceRange();
       return nullptr;
     }
 
@@ -279,7 +304,7 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const AttributeList &A,
     if (Val <= 0) {
       S.Diag(A.getRange().getBegin(),
              diag::err_attribute_requires_positive_integer)
-          << A.getName();
+          << A;
       return nullptr;
     }
     UnrollFactor = Val;
@@ -288,36 +313,37 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const AttributeList &A,
   return OpenCLUnrollHintAttr::CreateImplicit(S.Context, UnrollFactor);
 }
 
-static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const AttributeList &A,
+static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
                                   SourceRange Range) {
   switch (A.getKind()) {
-  case AttributeList::UnknownAttribute:
+  case ParsedAttr::UnknownAttribute:
     S.Diag(A.getLoc(), A.isDeclspecAttribute() ?
            diag::warn_unhandled_ms_attribute_ignored :
            diag::warn_unknown_attribute_ignored) << A.getName();
     return nullptr;
-  case AttributeList::AT_FallThrough:
+  case ParsedAttr::AT_FallThrough:
     return handleFallThroughAttr(S, St, A, Range);
-  case AttributeList::AT_LoopHint:
+  case ParsedAttr::AT_LoopHint:
     return handleLoopHintAttr(S, St, A, Range);
-  case AttributeList::AT_OpenCLUnrollHint:
+  case ParsedAttr::AT_OpenCLUnrollHint:
     return handleOpenCLUnrollHint(S, St, A, Range);
-  case AttributeList::AT_Suppress:
+  case ParsedAttr::AT_Suppress:
     return handleSuppressAttr(S, St, A, Range);
   default:
     // if we're here, then we parsed a known attribute, but didn't recognize
     // it as a statement attribute => it is declaration attribute
     S.Diag(A.getRange().getBegin(), diag::err_decl_attribute_invalid_on_stmt)
-        << A.getName() << St->getLocStart();
+        << A.getName() << St->getBeginLoc();
     return nullptr;
   }
 }
 
-StmtResult Sema::ProcessStmtAttributes(Stmt *S, AttributeList *AttrList,
+StmtResult Sema::ProcessStmtAttributes(Stmt *S,
+                                       const ParsedAttributesView &AttrList,
                                        SourceRange Range) {
   SmallVector<const Attr*, 8> Attrs;
-  for (const AttributeList* l = AttrList; l; l = l->getNext()) {
-    if (Attr *a = ProcessStmtAttribute(*this, S, *l, Range))
+  for (const ParsedAttr &AL : AttrList) {
+    if (Attr *a = ProcessStmtAttribute(*this, S, AL, Range))
       Attrs.push_back(a);
   }
 

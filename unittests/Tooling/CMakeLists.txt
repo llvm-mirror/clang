@@ -18,6 +18,7 @@ add_clang_unittest(ToolingTests
   DiagnosticsYamlTest.cpp
   ExecutionTest.cpp
   FixItTest.cpp
+  HeaderIncludesTest.cpp
   LexicallyOrderedRecursiveASTVisitorTest.cpp
   LookupTest.cpp
   QualTypeNamesTest.cpp
@@ -61,5 +62,6 @@ target_link_libraries(ToolingTests
   clangRewrite
   clangTooling
   clangToolingCore
+  clangToolingInclusions
   clangToolingRefactor
   )

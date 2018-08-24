@@ -32,7 +32,7 @@ namespace {
 class NamedDeclOccurrenceFindingVisitor
     : public RecursiveSymbolVisitor<NamedDeclOccurrenceFindingVisitor> {
 public:
-  // \brief Finds the NamedDecl at a point in the source.
+  // Finds the NamedDecl at a point in the source.
   // \param Point the location in the source to search for the NamedDecl.
   explicit NamedDeclOccurrenceFindingVisitor(const SourceLocation Point,
                                              const ASTContext &Context)
@@ -58,7 +58,7 @@ public:
   const NamedDecl *getNamedDecl() const { return Result; }
 
 private:
-  // \brief Determines if the Point is within Start and End.
+  // Determines if the Point is within Start and End.
   bool isPointWithin(const SourceLocation Start, const SourceLocation End) {
     // FIXME: Add tests for Point == End.
     return Point == Start || Point == End ||
@@ -83,8 +83,8 @@ const NamedDecl *getNamedDeclAt(const ASTContext &Context,
   // see. If both start and end is either before or after the point we're
   // looking for the point cannot be inside of this decl. Don't even look at it.
   for (auto *CurrDecl : Context.getTranslationUnitDecl()->decls()) {
-    SourceLocation StartLoc = CurrDecl->getLocStart();
-    SourceLocation EndLoc = CurrDecl->getLocEnd();
+    SourceLocation StartLoc = CurrDecl->getBeginLoc();
+    SourceLocation EndLoc = CurrDecl->getEndLoc();
     if (StartLoc.isValid() && EndLoc.isValid() &&
         SM.isBeforeInTranslationUnit(StartLoc, Point) !=
             SM.isBeforeInTranslationUnit(EndLoc, Point))

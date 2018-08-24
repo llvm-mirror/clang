@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "IndexingContext.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Index/IndexDataConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
@@ -34,6 +35,10 @@ const LangOptions &IndexingContext::getLangOpts() const {
 
 bool IndexingContext::shouldIndexFunctionLocalSymbols() const {
   return IndexOpts.IndexFunctionLocals;
+}
+
+bool IndexingContext::shouldIndexImplicitInstantiation() const {
+  return IndexOpts.IndexImplicitInstantiation;
 }
 
 bool IndexingContext::handleDecl(const Decl *D,
@@ -70,7 +75,7 @@ bool IndexingContext::handleReference(const NamedDecl *D, SourceLocation Loc,
 
   if (isa<NonTypeTemplateParmDecl>(D) || isa<TemplateTypeParmDecl>(D))
     return true;
-    
+
   return handleDeclOccurrence(D, Loc, /*IsRef=*/true, Parent, Roles, Relations,
                               RefE, RefD, DC);
 }
@@ -290,6 +295,7 @@ static bool shouldReportOccurrenceForSystemDeclOnlyMode(
       case SymbolRole::Dynamic:
       case SymbolRole::AddressOf:
       case SymbolRole::Implicit:
+      case SymbolRole::Undefinition:
       case SymbolRole::RelationReceivedBy:
       case SymbolRole::RelationCalledBy:
       case SymbolRole::RelationContainedBy:
@@ -344,6 +350,9 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
     }
   }
 
+  if (!OrigD)
+    OrigD = D;
+
   if (isTemplateImplicitInstantiation(D)) {
     if (!IsRef)
       return true;
@@ -352,9 +361,6 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
       return true;
     assert(!isTemplateImplicitInstantiation(D));
   }
-
-  if (!OrigD)
-    OrigD = D;
 
   if (IsRef)
     Roles |= (unsigned)SymbolRole::Reference;
@@ -405,4 +411,25 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
 
   IndexDataConsumer::ASTNodeInfo Node{OrigE, OrigD, Parent, ContainerDC};
   return DataConsumer.handleDeclOccurence(D, Roles, FinalRelations, Loc, Node);
+}
+
+void IndexingContext::handleMacroDefined(const IdentifierInfo &Name,
+                                         SourceLocation Loc,
+                                         const MacroInfo &MI) {
+  SymbolRoleSet Roles = (unsigned)SymbolRole::Definition;
+  DataConsumer.handleMacroOccurence(&Name, &MI, Roles, Loc);
+}
+
+void IndexingContext::handleMacroUndefined(const IdentifierInfo &Name,
+                                           SourceLocation Loc,
+                                           const MacroInfo &MI) {
+  SymbolRoleSet Roles = (unsigned)SymbolRole::Undefinition;
+  DataConsumer.handleMacroOccurence(&Name, &MI, Roles, Loc);
+}
+
+void IndexingContext::handleMacroReference(const IdentifierInfo &Name,
+                                           SourceLocation Loc,
+                                           const MacroInfo &MI) {
+  SymbolRoleSet Roles = (unsigned)SymbolRole::Reference;
+  DataConsumer.handleMacroOccurence(&Name, &MI, Roles, Loc);
 }

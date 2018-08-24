@@ -113,22 +113,28 @@ void Stmt::EnableStatistics() {
 Stmt *Stmt::IgnoreImplicit() {
   Stmt *s = this;
 
-  if (auto *ewc = dyn_cast<ExprWithCleanups>(s))
-    s = ewc->getSubExpr();
+  Stmt *lasts = nullptr;
 
-  if (auto *mte = dyn_cast<MaterializeTemporaryExpr>(s))
-    s = mte->GetTemporaryExpr();
+  while (s != lasts) {
+    lasts = s;
 
-  if (auto *bte = dyn_cast<CXXBindTemporaryExpr>(s))
-    s = bte->getSubExpr();
+    if (auto *ewc = dyn_cast<ExprWithCleanups>(s))
+      s = ewc->getSubExpr();
 
-  while (auto *ice = dyn_cast<ImplicitCastExpr>(s))
-    s = ice->getSubExpr();
+    if (auto *mte = dyn_cast<MaterializeTemporaryExpr>(s))
+      s = mte->GetTemporaryExpr();
+
+    if (auto *bte = dyn_cast<CXXBindTemporaryExpr>(s))
+      s = bte->getSubExpr();
+
+    if (auto *ice = dyn_cast<ImplicitCastExpr>(s))
+      s = ice->getSubExpr();
+  }
 
   return s;
 }
 
-/// \brief Skip no-op (attributed, compound) container stmts and skip captured
+/// Skip no-op (attributed, compound) container stmts and skip captured
 /// stmt at the top, if \a IgnoreCaptured is true.
 Stmt *Stmt::IgnoreContainers(bool IgnoreCaptured) {
   Stmt *S = this;
@@ -148,7 +154,7 @@ Stmt *Stmt::IgnoreContainers(bool IgnoreCaptured) {
   return S;
 }
 
-/// \brief Strip off all label-like statements.
+/// Strip off all label-like statements.
 ///
 /// This will strip off label statements, case statements, attributed
 /// statements and default statements recursively.
@@ -185,30 +191,26 @@ namespace {
     return bad();
   }
 
-  typedef SourceLocation getLocStart_t() const;
-  template <class T> good implements_getLocStart(getLocStart_t T::*) {
+  typedef SourceLocation getBeginLoc_t() const;
+  template <class T> good implements_getBeginLoc(getBeginLoc_t T::*) {
     return good();
   }
   LLVM_ATTRIBUTE_UNUSED
-  static bad implements_getLocStart(getLocStart_t Stmt::*) {
-    return bad();
-  }
+  static bad implements_getBeginLoc(getBeginLoc_t Stmt::*) { return bad(); }
 
   typedef SourceLocation getLocEnd_t() const;
-  template <class T> good implements_getLocEnd(getLocEnd_t T::*) {
+  template <class T> good implements_getEndLoc(getLocEnd_t T::*) {
     return good();
   }
   LLVM_ATTRIBUTE_UNUSED
-  static bad implements_getLocEnd(getLocEnd_t Stmt::*) {
-    return bad();
-  }
+  static bad implements_getEndLoc(getLocEnd_t Stmt::*) { return bad(); }
 
 #define ASSERT_IMPLEMENTS_children(type) \
   (void) is_good(implements_children(&type::children))
-#define ASSERT_IMPLEMENTS_getLocStart(type) \
-  (void) is_good(implements_getLocStart(&type::getLocStart))
-#define ASSERT_IMPLEMENTS_getLocEnd(type) \
-  (void) is_good(implements_getLocEnd(&type::getLocEnd))
+#define ASSERT_IMPLEMENTS_getBeginLoc(type)                                    \
+  (void)is_good(implements_getBeginLoc(&type::getBeginLoc))
+#define ASSERT_IMPLEMENTS_getEndLoc(type)                                      \
+  (void)is_good(implements_getEndLoc(&type::getEndLoc))
 
 } // namespace
 
@@ -217,10 +219,10 @@ namespace {
 LLVM_ATTRIBUTE_UNUSED
 static inline void check_implementations() {
 #define ABSTRACT_STMT(type)
-#define STMT(type, base) \
-  ASSERT_IMPLEMENTS_children(type); \
-  ASSERT_IMPLEMENTS_getLocStart(type); \
-  ASSERT_IMPLEMENTS_getLocEnd(type);
+#define STMT(type, base)                                                       \
+  ASSERT_IMPLEMENTS_children(type);                                            \
+  ASSERT_IMPLEMENTS_getBeginLoc(type);                                         \
+  ASSERT_IMPLEMENTS_getEndLoc(type);
 #include "clang/AST/StmtNodes.inc"
 }
 
@@ -257,8 +259,8 @@ namespace {
   template <class S>
   SourceRange getSourceRangeImpl(const Stmt *stmt,
                                  SourceRange (Stmt::*v)() const) {
-    return SourceRange(static_cast<const S*>(stmt)->getLocStart(),
-                       static_cast<const S*>(stmt)->getLocEnd());
+    return SourceRange(static_cast<const S *>(stmt)->getBeginLoc(),
+                       static_cast<const S *>(stmt)->getEndLoc());
   }
 
 } // namespace
@@ -275,26 +277,26 @@ SourceRange Stmt::getSourceRange() const {
   llvm_unreachable("unknown statement kind!");
 }
 
-SourceLocation Stmt::getLocStart() const {
-//  llvm::errs() << "getLocStart() for " << getStmtClassName() << "\n";
+SourceLocation Stmt::getBeginLoc() const {
+  //  llvm::errs() << "getBeginLoc() for " << getStmtClassName() << "\n";
   switch (getStmtClass()) {
   case Stmt::NoStmtClass: llvm_unreachable("statement without class");
 #define ABSTRACT_STMT(type)
-#define STMT(type, base) \
-  case Stmt::type##Class: \
-    return static_cast<const type*>(this)->getLocStart();
+#define STMT(type, base)                                                       \
+  case Stmt::type##Class:                                                      \
+    return static_cast<const type *>(this)->getBeginLoc();
 #include "clang/AST/StmtNodes.inc"
   }
   llvm_unreachable("unknown statement kind");
 }
 
-SourceLocation Stmt::getLocEnd() const {
+SourceLocation Stmt::getEndLoc() const {
   switch (getStmtClass()) {
   case Stmt::NoStmtClass: llvm_unreachable("statement without class");
 #define ABSTRACT_STMT(type)
-#define STMT(type, base) \
-  case Stmt::type##Class: \
-    return static_cast<const type*>(this)->getLocEnd();
+#define STMT(type, base)                                                       \
+  case Stmt::type##Class:                                                      \
+    return static_cast<const type *>(this)->getEndLoc();
 #include "clang/AST/StmtNodes.inc"
   }
   llvm_unreachable("unknown statement kind");
@@ -1105,18 +1107,18 @@ const CapturedDecl *CapturedStmt::getCapturedDecl() const {
   return CapDeclAndKind.getPointer();
 }
 
-/// \brief Set the outlined function declaration.
+/// Set the outlined function declaration.
 void CapturedStmt::setCapturedDecl(CapturedDecl *D) {
   assert(D && "null CapturedDecl");
   CapDeclAndKind.setPointer(D);
 }
 
-/// \brief Retrieve the captured region kind.
+/// Retrieve the captured region kind.
 CapturedRegionKind CapturedStmt::getCapturedRegionKind() const {
   return CapDeclAndKind.getInt();
 }
 
-/// \brief Set the captured region kind.
+/// Set the captured region kind.
 void CapturedStmt::setCapturedRegionKind(CapturedRegionKind Kind) {
   CapDeclAndKind.setInt(Kind);
 }

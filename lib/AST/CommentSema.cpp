@@ -215,7 +215,7 @@ void Sema::checkContainerDecl(const BlockCommandComment *Comment) {
     << Comment->getSourceRange();
 }
 
-/// \brief Turn a string into the corresponding PassDirection or -1 if it's not
+/// Turn a string into the corresponding PassDirection or -1 if it's not
 /// valid.
 static int getParamPassDirection(StringRef Arg) {
   return llvm::StringSwitch<int>(Arg)
@@ -703,10 +703,9 @@ void Sema::checkDeprecatedCommand(const BlockCommandComment *Command) {
 
     SmallString<64> TextToInsert(" ");
     TextToInsert += AttributeSpelling;
-    Diag(FD->getLocEnd(),
-         diag::note_add_deprecation_attr)
-      << FixItHint::CreateInsertion(FD->getLocEnd().getLocWithOffset(1),
-                                    TextToInsert);
+    Diag(FD->getEndLoc(), diag::note_add_deprecation_attr)
+        << FixItHint::CreateInsertion(FD->getEndLoc().getLocWithOffset(1),
+                                      TextToInsert);
   }
 }
 

@@ -156,6 +156,7 @@
 #define bit_SMEP        0x00000080
 #define bit_BMI2        0x00000100
 #define bit_ENH_MOVSB   0x00000200
+#define bit_INVPCID     0x00000400
 #define bit_RTM         0x00000800
 #define bit_MPX         0x00004000
 #define bit_AVX512F     0x00010000
@@ -188,16 +189,22 @@
 #define bit_AVX512VPOPCNTDQ  0x00004000
 #define bit_RDPID            0x00400000
 #define bit_CLDEMOTE         0x02000000
+#define bit_MOVDIRI          0x08000000
+#define bit_MOVDIR64B        0x10000000
 
 /* Features in %edx for leaf 7 sub-leaf 0 */
 #define bit_AVX5124VNNIW  0x00000004
 #define bit_AVX5124FMAPS  0x00000008
+#define bit_PCONFIG       0x00040000
 #define bit_IBT           0x00100000
 
 /* Features in %eax for leaf 13 sub-leaf 1 */
 #define bit_XSAVEOPT    0x00000001
 #define bit_XSAVEC      0x00000002
 #define bit_XSAVES      0x00000008
+
+/* Features in %eax for leaf 0x14 sub-leaf 0 */
+#define bit_PTWRITE     0x00000010
 
 /* Features in %ecx for leaf 0x80000001 */
 #define bit_LAHF_LM     0x00000001

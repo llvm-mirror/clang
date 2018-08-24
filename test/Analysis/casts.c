@@ -149,3 +149,42 @@ void multiDimensionalArrayPointerCasts() {
 
   clang_analyzer_eval(*((char *)y1) == *((char *) y3)); // expected-warning{{TRUE}}
 }
+
+void *getVoidPtr();
+
+void testCastVoidPtrToIntPtrThroughIntTypedAssignment() {
+  int *x;
+  (*((int *)(&x))) = (int)getVoidPtr();
+  *x = 1; // no-crash
+}
+
+void testCastUIntPtrToIntPtrThroughIntTypedAssignment() {
+  unsigned u;
+  int *x;
+  (*((int *)(&x))) = (int)&u;
+  *x = 1;
+  clang_analyzer_eval(u == 1); // expected-warning{{TRUE}}
+}
+
+void testCastVoidPtrToIntPtrThroughUIntTypedAssignment() {
+  int *x;
+  (*((int *)(&x))) = (int)(unsigned *)getVoidPtr();
+  *x = 1; // no-crash
+}
+
+void testLocNonLocSymbolAssume(int a, int *b) {
+  if ((int)b < a) {} // no-crash
+}
+
+void testLocNonLocSymbolRemainder(int a, int *b) {
+  int c = ((int)b) % a;
+  if (a == 1) {
+    c += 1;
+  }
+}
+
+void testSwitchWithSizeofs() {
+  switch (sizeof(char) == 1) { // expected-warning{{switch condition has boolean value}}
+  case sizeof(char):; // no-crash
+  }
+}

@@ -40,7 +40,7 @@ namespace {
 StringRef getInMemoryPreamblePath() {
 #if defined(LLVM_ON_UNIX)
   return "/__clang_tmp/___clang_inmemory_preamble___";
-#elif defined(LLVM_ON_WIN32)
+#elif defined(_WIN32)
   return "C:\\__clang_tmp\\___clang_inmemory_preamble___";
 #else
 #warning "Unknown platform. Defaulting to UNIX-style paths for in-memory PCHs"
@@ -62,6 +62,16 @@ createVFSOverlayForPreamblePCH(StringRef PCHFilename,
   Overlay->pushOverlay(PCHFS);
   return Overlay;
 }
+
+class PreambleDependencyCollector : public DependencyCollector {
+public:
+  // We want to collect all dependencies for correctness. Avoiding the real
+  // system dependencies (e.g. stl from /usr/lib) would probably be a good idea,
+  // but there is no way to distinguish between those and the ones that can be
+  // spuriously added by '-isystem' (e.g. to suppress warnings from those
+  // headers).
+  bool needSystemDependencies() override { return true; }
+};
 
 /// Keeps a track of files to be deleted in destructor.
 class TemporaryFiles {
@@ -227,9 +237,6 @@ llvm::ErrorOr<PrecompiledPreamble> PrecompiledPreamble::Build(
     PreambleCallbacks &Callbacks) {
   assert(VFS && "VFS is null");
 
-  if (!Bounds.Size)
-    return BuildPreambleError::PreambleIsEmpty;
-
   auto PreambleInvocation = std::make_shared<CompilerInvocation>(Invocation);
   FrontendOptions &FrontendOpts = PreambleInvocation->getFrontendOpts();
   PreprocessorOptions &PreprocessorOpts =
@@ -311,7 +318,7 @@ llvm::ErrorOr<PrecompiledPreamble> PrecompiledPreamble::Build(
   Clang->setSourceManager(
       new SourceManager(Diagnostics, Clang->getFileManager()));
 
-  auto PreambleDepCollector = std::make_shared<DependencyCollector>();
+  auto PreambleDepCollector = std::make_shared<PreambleDependencyCollector>();
   Clang->addDependencyCollector(PreambleDepCollector);
 
   // Remap the main source file to the preamble buffer.
@@ -412,9 +419,6 @@ bool PrecompiledPreamble::CanReuse(const CompilerInvocation &Invocation,
   auto PreambleInvocation = std::make_shared<CompilerInvocation>(Invocation);
   PreprocessorOptions &PreprocessorOpts =
       PreambleInvocation->getPreprocessorOpts();
-
-  if (!Bounds.Size)
-    return false;
 
   // We've previously computed a preamble. Check whether we have the same
   // preamble now that we did before, and that there's enough space in
@@ -748,8 +752,6 @@ const char *BuildPreambleErrorCategory::name() const noexcept {
 
 std::string BuildPreambleErrorCategory::message(int condition) const {
   switch (static_cast<BuildPreambleError>(condition)) {
-  case BuildPreambleError::PreambleIsEmpty:
-    return "Preamble is empty";
   case BuildPreambleError::CouldntCreateTempFile:
     return "Could not create temporary file for PCH";
   case BuildPreambleError::CouldntCreateTargetInfo:

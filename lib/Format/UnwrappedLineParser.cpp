@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file contains the implementation of the UnwrappedLineParser,
+/// This file contains the implementation of the UnwrappedLineParser,
 /// which turns a stream of tokens into UnwrappedLines.
 ///
 //===----------------------------------------------------------------------===//
@@ -83,6 +83,8 @@ public:
       : Line(Line), TokenSource(TokenSource), ResetToken(ResetToken),
         PreviousLineLevel(Line.Level), PreviousTokenSource(TokenSource),
         Token(nullptr), PreviousToken(nullptr) {
+    FakeEOF.Tok.startToken();
+    FakeEOF.Tok.setKind(tok::eof);
     TokenSource = this;
     Line.Level = 0;
     Line.InPPDirective = true;
@@ -102,7 +104,7 @@ public:
     PreviousToken = Token;
     Token = PreviousTokenSource->getNextToken();
     if (eof())
-      return getFakeEOF();
+      return &FakeEOF;
     return Token;
   }
 
@@ -121,17 +123,7 @@ private:
                                  /*MinColumnToken=*/PreviousToken);
   }
 
-  FormatToken *getFakeEOF() {
-    static bool EOFInitialized = false;
-    static FormatToken FormatTok;
-    if (!EOFInitialized) {
-      FormatTok.Tok.startToken();
-      FormatTok.Tok.setKind(tok::eof);
-      EOFInitialized = true;
-    }
-    return &FormatTok;
-  }
-
+  FormatToken FakeEOF;
   UnwrappedLine &Line;
   FormatTokenSource *&TokenSource;
   FormatToken *&ResetToken;
@@ -260,7 +252,7 @@ void UnwrappedLineParser::parse() {
   IndexedTokenSource TokenSource(AllTokens);
   Line->FirstStartColumn = FirstStartColumn;
   do {
-    DEBUG(llvm::dbgs() << "----\n");
+    LLVM_DEBUG(llvm::dbgs() << "----\n");
     reset();
     Tokens = &TokenSource;
     TokenSource.reset();
@@ -311,6 +303,18 @@ void UnwrappedLineParser::parseFile() {
   else
     parseLevel(/*HasOpeningBrace=*/false);
   // Make sure to format the remaining tokens.
+  //
+  // LK_TextProto is special since its top-level is parsed as the body of a
+  // braced list, which does not necessarily have natural line separators such
+  // as a semicolon. Comments after the last entry that have been determined to
+  // not belong to that line, as in:
+  //   key: value
+  //   // endfile comment
+  // do not have a chance to be put on a line of their own until this point.
+  // Here we add this newline before end-of-file comments.
+  if (Style.Language == FormatStyle::LK_TextProto &&
+      !CommentsBeforeNextToken.empty())
+    addUnwrappedLine();
   flushComments(true);
   addUnwrappedLine();
 }
@@ -2130,6 +2134,24 @@ void UnwrappedLineParser::parseRecord(bool ParseAsExpr) {
   // "} n, m;" will end up in one unwrapped line.
 }
 
+void UnwrappedLineParser::parseObjCMethod() {
+  assert(FormatTok->Tok.isOneOf(tok::l_paren, tok::identifier) &&
+         "'(' or identifier expected.");
+  do {
+    if (FormatTok->Tok.is(tok::semi)) {
+      nextToken();
+      addUnwrappedLine();
+      return;
+    } else if (FormatTok->Tok.is(tok::l_brace)) {
+      parseBlock(/*MustBeDeclaration=*/false);
+      addUnwrappedLine();
+      return;
+    } else {
+      nextToken();
+    }
+  } while (!eof());
+}
+
 void UnwrappedLineParser::parseObjCProtocolList() {
   assert(FormatTok->Tok.is(tok::less) && "'<' expected.");
   do {
@@ -2157,6 +2179,9 @@ void UnwrappedLineParser::parseObjCUntilAtEnd() {
       // Ignore stray "}". parseStructuralElement doesn't consume them.
       nextToken();
       addUnwrappedLine();
+    } else if (FormatTok->isOneOf(tok::minus, tok::plus)) {
+      nextToken();
+      parseObjCMethod();
     } else {
       parseStructuralElement();
     }
@@ -2324,7 +2349,7 @@ LLVM_ATTRIBUTE_UNUSED static void printDebugInfo(const UnwrappedLine &Line,
 void UnwrappedLineParser::addUnwrappedLine() {
   if (Line->Tokens.empty())
     return;
-  DEBUG({
+  LLVM_DEBUG({
     if (CurrentLines == &Lines)
       printDebugInfo(*Line);
   });

@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements UsingDeclarationsSorter, a TokenAnalyzer that
+/// This file implements UsingDeclarationsSorter, a TokenAnalyzer that
 /// sorts consecutive using declarations.
 ///
 //===----------------------------------------------------------------------===//
@@ -161,7 +161,7 @@ void endUsingDeclarationBlock(
     StringRef Text(SourceMgr.getCharacterData(SortedBegin),
                    SourceMgr.getCharacterData(SortedEnd) -
                        SourceMgr.getCharacterData(SortedBegin));
-    DEBUG({
+    LLVM_DEBUG({
       StringRef OldText(SourceMgr.getCharacterData(Begin),
                         SourceMgr.getCharacterData(End) -
                             SourceMgr.getCharacterData(Begin));

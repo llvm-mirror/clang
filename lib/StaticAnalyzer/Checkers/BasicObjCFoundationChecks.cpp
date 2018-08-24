@@ -156,6 +156,11 @@ void NilArgChecker::warnIfNilArg(CheckerContext &C,
   if (!State->isNull(msg.getArgSVal(Arg)).isConstrainedTrue())
       return;
 
+  // NOTE: We cannot throw non-fatal errors from warnIfNilExpr,
+  // because it's called multiple times from some callers, so it'd cause
+  // an unwanted state split if two or more non-fatal errors are thrown
+  // within the same checker callback. For now we don't want to, but
+  // it'll need to be fixed if we ever want to.
   if (ExplodedNode *N = C.generateErrorNode()) {
     SmallString<128> sbuf;
     llvm::raw_svector_ostream os(sbuf);
@@ -1164,7 +1169,7 @@ void ObjCLoopChecker::checkDeadSymbols(SymbolReaper &SymReaper,
 
 namespace {
 /// \class ObjCNonNilReturnValueChecker
-/// \brief The checker restricts the return values of APIs known to
+/// The checker restricts the return values of APIs known to
 /// never (or almost never) return 'nil'.
 class ObjCNonNilReturnValueChecker
   : public Checker<check::PostObjCMessage,

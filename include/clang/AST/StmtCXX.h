@@ -41,9 +41,17 @@ public:
   CXXCatchStmt(EmptyShell Empty)
   : Stmt(CXXCatchStmtClass), ExceptionDecl(nullptr), HandlerBlock(nullptr) {}
 
-  SourceLocation getLocStart() const LLVM_READONLY { return CatchLoc; }
-  SourceLocation getLocEnd() const LLVM_READONLY {
-    return HandlerBlock->getLocEnd();
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
+  }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return CatchLoc; }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return HandlerBlock->getEndLoc();
   }
 
   SourceLocation getCatchLoc() const { return CatchLoc; }
@@ -62,21 +70,22 @@ public:
 
 /// CXXTryStmt - A C++ try block, including all handlers.
 ///
-class CXXTryStmt : public Stmt {
+class CXXTryStmt final : public Stmt,
+                         private llvm::TrailingObjects<CXXTryStmt, Stmt *> {
+
+  friend TrailingObjects;
+  friend class ASTStmtReader;
+
   SourceLocation TryLoc;
   unsigned NumHandlers;
+  size_t numTrailingObjects(OverloadToken<Stmt *>) const { return NumHandlers; }
 
   CXXTryStmt(SourceLocation tryLoc, Stmt *tryBlock, ArrayRef<Stmt*> handlers);
-
   CXXTryStmt(EmptyShell Empty, unsigned numHandlers)
     : Stmt(CXXTryStmtClass), NumHandlers(numHandlers) { }
 
-  Stmt const * const *getStmts() const {
-    return reinterpret_cast<Stmt const * const*>(this + 1);
-  }
-  Stmt **getStmts() {
-    return reinterpret_cast<Stmt **>(this + 1);
-  }
+  Stmt *const *getStmts() const { return getTrailingObjects<Stmt *>(); }
+  Stmt **getStmts() { return getTrailingObjects<Stmt *>(); }
 
 public:
   static CXXTryStmt *Create(const ASTContext &C, SourceLocation tryLoc,
@@ -85,12 +94,19 @@ public:
   static CXXTryStmt *Create(const ASTContext &C, EmptyShell Empty,
                             unsigned numHandlers);
 
-  SourceLocation getLocStart() const LLVM_READONLY { return getTryLoc(); }
-  SourceLocation getLocEnd() const LLVM_READONLY { return getEndLoc(); }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
+  }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return getTryLoc(); }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
 
   SourceLocation getTryLoc() const { return TryLoc; }
   SourceLocation getEndLoc() const {
-    return getStmts()[NumHandlers]->getLocEnd();
+    return getStmts()[NumHandlers]->getEndLoc();
   }
 
   CompoundStmt *getTryBlock() {
@@ -115,8 +131,6 @@ public:
   child_range children() {
     return child_range(getStmts(), getStmts() + getNumHandlers() + 1);
   }
-
-  friend class ASTStmtReader;
 };
 
 /// CXXForRangeStmt - This represents C++0x [stmt.ranged]'s ranged for
@@ -195,9 +209,17 @@ public:
   SourceLocation getColonLoc() const { return ColonLoc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
 
-  SourceLocation getLocStart() const LLVM_READONLY { return ForLoc; }
-  SourceLocation getLocEnd() const LLVM_READONLY {
-    return SubExprs[BODY]->getLocEnd();
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
+  }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return ForLoc; }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return SubExprs[BODY]->getEndLoc();
   }
 
   static bool classof(const Stmt *T) {
@@ -210,7 +232,7 @@ public:
   }
 };
 
-/// \brief Representation of a Microsoft __if_exists or __if_not_exists
+/// Representation of a Microsoft __if_exists or __if_not_exists
 /// statement with a dependent name.
 ///
 /// The __if_exists statement can be used to include a sequence of statements
@@ -257,32 +279,42 @@ public:
     QualifierLoc(QualifierLoc), NameInfo(NameInfo),
     SubStmt(reinterpret_cast<Stmt *>(SubStmt)) { }
 
-  /// \brief Retrieve the location of the __if_exists or __if_not_exists
+  /// Retrieve the location of the __if_exists or __if_not_exists
   /// keyword.
   SourceLocation getKeywordLoc() const { return KeywordLoc; }
 
-  /// \brief Determine whether this is an __if_exists statement.
+  /// Determine whether this is an __if_exists statement.
   bool isIfExists() const { return IsIfExists; }
 
-  /// \brief Determine whether this is an __if_exists statement.
+  /// Determine whether this is an __if_exists statement.
   bool isIfNotExists() const { return !IsIfExists; }
 
-  /// \brief Retrieve the nested-name-specifier that qualifies this name, if
+  /// Retrieve the nested-name-specifier that qualifies this name, if
   /// any.
   NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
 
-  /// \brief Retrieve the name of the entity we're testing for, along with
+  /// Retrieve the name of the entity we're testing for, along with
   /// location information
   DeclarationNameInfo getNameInfo() const { return NameInfo; }
 
-  /// \brief Retrieve the compound statement that will be included in the
+  /// Retrieve the compound statement that will be included in the
   /// program only if the existence of the symbol matches the initial keyword.
   CompoundStmt *getSubStmt() const {
     return reinterpret_cast<CompoundStmt *>(SubStmt);
   }
 
-  SourceLocation getLocStart() const LLVM_READONLY { return KeywordLoc; }
-  SourceLocation getLocEnd() const LLVM_READONLY { return SubStmt->getLocEnd();}
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
+  }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return KeywordLoc; }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return SubStmt->getEndLoc();
+  }
 
   child_range children() {
     return child_range(&SubStmt, &SubStmt+1);
@@ -293,7 +325,7 @@ public:
   }
 };
 
-/// \brief Represents the body of a coroutine. This wraps the normal function
+/// Represents the body of a coroutine. This wraps the normal function
 /// body and holds the additional semantic context required to set up and tear
 /// down the coroutine frame.
 class CoroutineBodyStmt final
@@ -355,7 +387,7 @@ public:
     return getPromiseDecl()->getType()->isDependentType();
   }
 
-  /// \brief Retrieve the body of the coroutine as written. This will be either
+  /// Retrieve the body of the coroutine as written. This will be either
   /// a CompoundStmt or a TryStmt.
   Stmt *getBody() const {
     return getStoredStmts()[SubStmt::Body];
@@ -400,12 +432,20 @@ public:
     return {getStoredStmts() + SubStmt::FirstParamMove, NumParams};
   }
 
-  SourceLocation getLocStart() const LLVM_READONLY {
-    return getBody() ? getBody()->getLocStart()
-            : getPromiseDecl()->getLocStart();
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
   }
-  SourceLocation getLocEnd() const LLVM_READONLY {
-    return getBody() ? getBody()->getLocEnd() : getPromiseDecl()->getLocEnd();
+  SourceLocation getBeginLoc() const LLVM_READONLY {
+    return getBody() ? getBody()->getBeginLoc()
+                     : getPromiseDecl()->getBeginLoc();
+  }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return getBody() ? getBody()->getEndLoc() : getPromiseDecl()->getEndLoc();
   }
 
   child_range children() {
@@ -418,7 +458,7 @@ public:
   }
 };
 
-/// \brief Represents a 'co_return' statement in the C++ Coroutines TS.
+/// Represents a 'co_return' statement in the C++ Coroutines TS.
 ///
 /// This statament models the initialization of the coroutine promise
 /// (encapsulating the eventual notional return value) from an expression
@@ -451,11 +491,11 @@ public:
 
   SourceLocation getKeywordLoc() const { return CoreturnLoc; }
 
-  /// \brief Retrieve the operand of the 'co_return' statement. Will be nullptr
+  /// Retrieve the operand of the 'co_return' statement. Will be nullptr
   /// if none was specified.
   Expr *getOperand() const { return static_cast<Expr*>(SubStmts[Operand]); }
 
-  /// \brief Retrieve the promise call that results from this 'co_return'
+  /// Retrieve the promise call that results from this 'co_return'
   /// statement. Will be nullptr if either the coroutine has not yet been
   /// finalized or the coroutine has no eventual return type.
   Expr *getPromiseCall() const {
@@ -465,9 +505,17 @@ public:
   bool isImplicit() const { return IsImplicit; }
   void setIsImplicit(bool value = true) { IsImplicit = value; }
 
-  SourceLocation getLocStart() const LLVM_READONLY { return CoreturnLoc; }
-  SourceLocation getLocEnd() const LLVM_READONLY {
-    return getOperand() ? getOperand()->getLocEnd() : getLocStart();
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
+                            "Use getBeginLoc instead") {
+    return getBeginLoc();
+  }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return CoreturnLoc; }
+  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
+                            "Use getEndLoc instead") {
+    return getEndLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return getOperand() ? getOperand()->getEndLoc() : getBeginLoc();
   }
 
   child_range children() {

@@ -49,7 +49,7 @@ void SourceLocation::print(raw_ostream &OS, const SourceManager &SM)const{
 
   if (isFileID()) {
     PresumedLoc PLoc = SM.getPresumedLoc(*this);
-    
+
     if (PLoc.isInvalid()) {
       OS << "<invalid>";
       return;
@@ -77,6 +77,7 @@ SourceLocation::printToString(const SourceManager &SM) const {
 
 LLVM_DUMP_METHOD void SourceLocation::dump(const SourceManager &SM) const {
   print(llvm::errs(), SM);
+  llvm::errs() << '\n';
 }
 
 //===----------------------------------------------------------------------===//
@@ -101,15 +102,6 @@ FullSourceLoc FullSourceLoc::getSpellingLoc() const {
 FullSourceLoc FullSourceLoc::getFileLoc() const {
   assert(isValid());
   return FullSourceLoc(SrcMgr->getFileLoc(*this), *SrcMgr);
-}
-
-std::pair<FullSourceLoc, FullSourceLoc>
-FullSourceLoc::getImmediateExpansionRange() const {
-  assert(isValid());
-  std::pair<SourceLocation, SourceLocation> Range =
-      SrcMgr->getImmediateExpansionRange(*this);
-  return std::make_pair(FullSourceLoc(Range.first, *SrcMgr),
-                        FullSourceLoc(Range.second, *SrcMgr));
 }
 
 PresumedLoc FullSourceLoc::getPresumedLoc(bool UseLineDirectives) const {
@@ -152,15 +144,6 @@ unsigned FullSourceLoc::getLineNumber(bool *Invalid) const {
 unsigned FullSourceLoc::getColumnNumber(bool *Invalid) const {
   assert(isValid());
   return SrcMgr->getColumnNumber(getFileID(), getFileOffset(), Invalid);
-}
-
-std::pair<FullSourceLoc, FullSourceLoc>
-FullSourceLoc::getExpansionRange() const {
-  assert(isValid());
-  std::pair<SourceLocation, SourceLocation> Range =
-      SrcMgr->getExpansionRange(*this);
-  return std::make_pair(FullSourceLoc(Range.first, *SrcMgr),
-                        FullSourceLoc(Range.second, *SrcMgr));
 }
 
 const FileEntry *FullSourceLoc::getFileEntry() const {

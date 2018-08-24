@@ -45,7 +45,7 @@ namespace {
 // Skip Parsed Bodies
 //===----------------------------------------------------------------------===//
 
-/// \brief A "region" in source code identified by the file/offset of the
+/// A "region" in source code identified by the file/offset of the
 /// preprocessor conditional directive that it belongs to.
 /// Multiple, non-consecutive ranges can be parts of the same region.
 ///
@@ -249,7 +249,8 @@ public:
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange, const FileEntry *File,
                           StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported) override {
+                          const Module *Imported,
+                          SrcMgr::CharacteristicKind FileType) override {
     bool isImport = (IncludeTok.is(tok::identifier) &&
             IncludeTok.getIdentifierInfo()->getPPKeywordID() == tok::pp_import);
     DataConsumer.ppIncludedFile(HashLoc, FileName, File, isImport, IsAngled,
@@ -401,6 +402,8 @@ static IndexingOptions getIndexingOptionsFromCXOptions(unsigned index_options) {
   IndexingOptions IdxOpts;
   if (index_options & CXIndexOpt_IndexFunctionLocalSymbols)
     IdxOpts.IndexFunctionLocals = true;
+  if (index_options & CXIndexOpt_IndexImplicitTemplateInstantiations)
+    IdxOpts.IndexImplicitInstantiation = true;
   return IdxOpts;
 }
 

@@ -17,14 +17,15 @@
 #ifndef HEADER
 #define HEADER
 
-// HOST: @c = external global i32,
+// HOST-DAG: @c = external global i32,
+// HOST-DAG: @c_decl_tgt_link_ptr = global i32* @c
 // DEVICE-NOT: @c =
 // DEVICE: @c_decl_tgt_link_ptr = common global i32* null
-// HOST: @c_decl_tgt_link_ptr = global i32* @c
 // HOST: [[SIZES:@.+]] = private unnamed_addr constant [2 x i64] [i64 4, i64 4]
 // HOST: [[MAPTYPES:@.+]] = private unnamed_addr constant [2 x i64] [i64 35, i64 531]
-// CHECK: @.omp_offloading.entry_name{{.*}} = internal unnamed_addr constant [{{[0-9]+}} x i8] c"c_decl_tgt_link_ptr\00"
-// CHECK: @.omp_offloading.entry.c_decl_tgt_link_ptr = weak constant %struct.__tgt_offload_entry { i8* bitcast (i32** @c_decl_tgt_link_ptr to i8*), i8* getelementptr inbounds ([{{[0-9]+}} x i8], [{{[0-9]+}} x i8]* @.omp_offloading.entry_name, i32 0, i32 0), i64 8, i32 0, i32 0 }, section ".omp_offloading.entries", align 1
+// HOST: @.omp_offloading.entry_name{{.*}} = internal unnamed_addr constant [{{[0-9]+}} x i8] c"c_decl_tgt_link_ptr\00"
+// HOST: @.omp_offloading.entry.c_decl_tgt_link_ptr = weak constant %struct.__tgt_offload_entry { i8* bitcast (i32** @c_decl_tgt_link_ptr to i8*), i8* getelementptr inbounds ([{{[0-9]+}} x i8], [{{[0-9]+}} x i8]* @.omp_offloading.entry_name, i32 0, i32 0), i64 8, i32 1, i32 0 }, section ".omp_offloading.entries", align 1
+// DEVICE-NOT: internal unnamed_addr constant [{{[0-9]+}} x i8] c"c_decl_tgt_link_ptr\00"
 // CHECK: @llvm.used = appending global [1 x i8*] [i8* bitcast (i32** @c_decl_tgt_link_ptr to i8*)]
 
 extern int c;
@@ -39,7 +40,7 @@ int maini1() {
   return 0;
 }
 
-// DEVICE: define void @__omp_offloading_{{.*}}_{{.*}}maini1{{.*}}_l[[@LINE-7]](i32* dereferenceable{{[^,]*}}
+// DEVICE: define weak void @__omp_offloading_{{.*}}_{{.*}}maini1{{.*}}_l[[@LINE-7]](i32* dereferenceable{{[^,]*}}
 // DEVICE: [[C_REF:%.+]] = load i32*, i32** @c_decl_tgt_link_ptr,
 // DEVICE: [[C:%.+]] = load i32, i32* [[C_REF]],
 // DEVICE: store i32 [[C]], i32* %
@@ -64,5 +65,5 @@ int maini1() {
 // HOST: [[C:%.*]] = load i32, i32* @c,
 // HOST: store i32 [[C]], i32* %
 
-// CHECK: !{i32 1, !"c_decl_tgt_link_ptr", i32 0, i32 {{[0-9]+}}}
+// CHECK: !{i32 1, !"c_decl_tgt_link_ptr", i32 1, i32 {{[0-9]+}}}
 #endif // HEADER

@@ -3,6 +3,7 @@ set(LLVM_LINK_COMPONENTS
   ExecutionEngine
   MC
   MCJIT
+  Object
   OrcJit
   Option
   RuntimeDyld
@@ -12,8 +13,6 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_executable(clang-interpreter
   main.cpp
-  Invoke.cpp
-  Manager.cpp
   )
 
 add_dependencies(clang-interpreter

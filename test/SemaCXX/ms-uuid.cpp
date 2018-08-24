@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -verify -fms-extensions %s -Wno-deprecated-declarations
+// RUN: %clang_cc1 -fsyntax-only -std=c++17 -verify -fms-extensions %s -Wno-deprecated-declarations
 
 typedef struct _GUID {
   unsigned long Data1;
@@ -61,14 +62,14 @@ class __declspec(uuid("110000A0-0000-0000-C000-000000000049")) C2_2;
 [uuid("220000A0-0000-0000-C000-000000000049")] class C4 {};
 
 // Both cl and clang-cl error out on this:
-// expected-note@+1 {{previous uuid specified here}}
-class __declspec(uuid("000000A0-0000-0000-C000-000000000049"))
 // expected-error@+1 {{uuid does not match previous declaration}}
+class __declspec(uuid("000000A0-0000-0000-C000-000000000049"))
+// expected-note@+1 {{previous uuid specified here}}
       __declspec(uuid("110000A0-0000-0000-C000-000000000049")) C5;
 
-// expected-note@+1 {{previous uuid specified here}}
-[uuid("000000A0-0000-0000-C000-000000000049"),
 // expected-error@+1 {{uuid does not match previous declaration}}
+[uuid("000000A0-0000-0000-C000-000000000049"),
+// expected-note@+1 {{previous uuid specified here}}
  uuid("110000A0-0000-0000-C000-000000000049")] class C6;
 
 // cl doesn't diagnose having one uuid each as []-style attributes and as
@@ -92,4 +93,16 @@ class __declspec(uuid("000000A0-0000-0000-C000-000000000049"))
 // the previous case).
 [uuid("000000A0-0000-0000-C000-000000000049"),
  uuid("000000A0-0000-0000-C000-000000000049")] class C10;
+
+template <const GUID* p>
+void F1() {
+  // Regression test for PR24986. The given GUID should just work as a pointer.
+  const GUID* q = p;
+}
+
+void F2() {
+  // The UUID should work for a non-type template parameter.
+  F1<&__uuidof(C1)>();
+}
+
 }

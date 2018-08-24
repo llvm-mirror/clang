@@ -44,7 +44,7 @@ Command::Command(const Action &Source, const Tool &Creator,
       InputFilenames.push_back(II.getFilename());
 }
 
-/// @brief Check if the compiler flag in question should be skipped when
+/// Check if the compiler flag in question should be skipped when
 /// emitting a reproducer. Also track how many arguments it has and if the
 /// option is some kind of include path.
 static bool skipArgs(const char *Flag, bool HaveCrashVFS, int &SkipNum,
@@ -171,7 +171,7 @@ void Command::buildArgvForResponseFile(
   }
 }
 
-/// @brief Rewrite relative include-like flag paths to absolute ones.
+/// Rewrite relative include-like flag paths to absolute ones.
 static void
 rewriteIncludes(const llvm::ArrayRef<const char *> &Args, size_t Idx,
                 size_t NumArgs,
@@ -317,13 +317,13 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
                      std::string *ErrMsg, bool *ExecutionFailed) const {
   SmallVector<const char*, 128> Argv;
 
-  const char **Envp;
-  if (Environment.empty()) {
-    Envp = nullptr;
-  } else {
+  Optional<ArrayRef<StringRef>> Env;
+  std::vector<StringRef> ArgvVectorStorage;
+  if (!Environment.empty()) {
     assert(Environment.back() == nullptr &&
            "Environment vector should be null-terminated by now");
-    Envp = const_cast<const char **>(Environment.data());
+    ArgvVectorStorage = llvm::toStringRefArray(Environment.data());
+    Env = makeArrayRef(ArgvVectorStorage);
   }
 
   if (ResponseFile == nullptr) {
@@ -331,8 +331,9 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
     Argv.append(Arguments.begin(), Arguments.end());
     Argv.push_back(nullptr);
 
+    auto Args = llvm::toStringRefArray(Argv.data());
     return llvm::sys::ExecuteAndWait(
-        Executable, Argv.data(), Envp, Redirects, /*secondsToWait*/ 0,
+        Executable, Args, Env, Redirects, /*secondsToWait*/ 0,
         /*memoryLimit*/ 0, ErrMsg, ExecutionFailed);
   }
 
@@ -357,7 +358,8 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
     return -1;
   }
 
-  return llvm::sys::ExecuteAndWait(Executable, Argv.data(), Envp, Redirects,
+  auto Args = llvm::toStringRefArray(Argv.data());
+  return llvm::sys::ExecuteAndWait(Executable, Args, Env, Redirects,
                                    /*secondsToWait*/ 0,
                                    /*memoryLimit*/ 0, ErrMsg, ExecutionFailed);
 }

@@ -20,7 +20,7 @@
 
 // CHECK-WINDOWS: "-fno-use-cxa-atexit"
 // CHECK-SOLARIS: "-fno-use-cxa-atexit"
-// CHECK-HEXAGON: "-fno-use-cxa-atexit"
+// CHECK-HEXAGON-NOT: "-fno-use-cxa-atexit"
 // CHECK-XCORE: "-fno-use-cxa-atexit"
 // CHECK-MTI: "-fno-use-cxa-atexit"
 // CHECK-MIPS-NOT: "-fno-use-cxa-atexit"
@@ -31,6 +31,8 @@
 // RUN: FileCheck --check-prefix=WITHATEXIT %s
 // RUN: %clang -target x86_64-apple-darwin -c -### %s 2>&1 | \
 // RUN: FileCheck --check-prefix=WITHATEXIT %s
+// RUN: %clang -target x86_64-apple-darwin -c -mkernel -### %s 2>&1 | \
+// RUN: FileCheck --check-prefix=WITHOUTATEXIT %s
 // RUN: %clang -target x86_64-pc-linux-gnu -fregister-global-dtors-with-atexit -fno-register-global-dtors-with-atexit -c -### %s 2>&1 | \
 // RUN: FileCheck --check-prefix=WITHOUTATEXIT %s
 // RUN: %clang -target x86_64-pc-linux-gnu -fno-register-global-dtors-with-atexit -fregister-global-dtors-with-atexit -c -### %s 2>&1 | \

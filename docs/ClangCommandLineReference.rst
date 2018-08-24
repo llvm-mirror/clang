@@ -1543,6 +1543,14 @@ Specifies the largest alignment guaranteed by '::operator new(size\_t)'
 
 Disable implicit builtin knowledge of a specific function
 
+.. option:: -fdelete-null-pointer-checks, -fno-delete-null-pointer-checks
+
+When enabled, treat null pointer dereference, creation of a reference to null,
+or passing a null pointer to a function parameter annotated with the "nonnull"
+attribute as undefined behavior. (And, thus the optimizer may assume that any
+pointer used in such a way must not have been null and optimize away the
+branches accordingly.) On by default.
+
 .. option:: -fno-elide-type
 
 Do not elide types when printing diagnostics
@@ -1920,7 +1928,7 @@ Enable the loop vectorization passes
 
 .. option:: -fvisibility-inlines-hidden
 
-Give inline C++ member functions default visibility by default
+Give inline C++ member functions hidden visibility by default
 
 .. option:: -fvisibility-ms-compat
 
@@ -1933,6 +1941,12 @@ Set the default symbol visibility for all global declarations
 .. option:: -fwhole-program-vtables, -fno-whole-program-vtables
 
 Enables whole-program vtable optimization. Requires -flto
+
+.. option:: -fforce-emit-vtables, -fno-force-emit-vtables
+
+In order to improve devirtualization, forces emitting of vtables even in
+modules where it isn't necessary. It causes more inline virtual functions
+to be emitted.
 
 .. option:: -fwrapv, -fno-wrapv
 
@@ -2296,6 +2310,10 @@ AARCH64
 
 Reserve the x18 register (AArch64 only)
 
+.. option:: -ffixed-x20
+
+Reserve the x20 register (AArch64 only)
+
 .. option:: -mfix-cortex-a53-835769, -mno-fix-cortex-a53-835769
 
 Workaround Cortex-A53 erratum 835769 (AArch64 only)
@@ -2486,8 +2504,6 @@ X86
 
 .. option:: -mgfni, -mno-gfni
 
-.. option:: -mibt, -mno-ibt
-
 .. option:: -mlwp, -mno-lwp
 
 .. option:: -mlzcnt, -mno-lzcnt
@@ -2495,6 +2511,10 @@ X86
 .. option:: -mmmx, -mno-mmx
 
 .. option:: -mmovbe, -mno-movbe
+
+.. option:: -mmovdiri, -mno-movdiri
+
+.. option:: -mmovdir64b, -mno-movdir64b
 
 .. option:: -mmpx, -mno-mpx
 

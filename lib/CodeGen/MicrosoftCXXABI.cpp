@@ -165,7 +165,7 @@ public:
   llvm::BasicBlock *
   EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                 const CXXRecordDecl *RD) override;
-  
+
   llvm::BasicBlock *
   EmitDtorCompleteObjectHandler(CodeGenFunction &CGF);
 
@@ -228,7 +228,6 @@ public:
 
   const CXXRecordDecl *
   getThisArgumentTypeForMethod(const CXXMethodDecl *MD) override {
-    MD = MD->getCanonicalDecl();
     if (MD->isVirtual() && !isa<CXXDestructorDecl>(MD)) {
       MethodVFTableLocation ML =
           CGM.getMicrosoftVTableContext().getMethodVFTableLocation(MD);
@@ -567,7 +566,7 @@ private:
   GetNullMemberPointerFields(const MemberPointerType *MPT,
                              llvm::SmallVectorImpl<llvm::Constant *> &fields);
 
-  /// \brief Shared code for virtual base adjustment.  Returns the offset from
+  /// Shared code for virtual base adjustment.  Returns the offset from
   /// the vbptr to the virtual base.  Optionally returns the address of the
   /// vbptr itself.
   llvm::Value *GetVBaseOffsetFromVBPtr(CodeGenFunction &CGF,
@@ -591,14 +590,14 @@ private:
   performBaseAdjustment(CodeGenFunction &CGF, Address Value,
                         QualType SrcRecordTy);
 
-  /// \brief Performs a full virtual base adjustment.  Used to dereference
+  /// Performs a full virtual base adjustment.  Used to dereference
   /// pointers to members of virtual bases.
   llvm::Value *AdjustVirtualBase(CodeGenFunction &CGF, const Expr *E,
                                  const CXXRecordDecl *RD, Address Base,
                                  llvm::Value *VirtualBaseAdjustmentOffset,
                                  llvm::Value *VBPtrOffset /* optional */);
 
-  /// \brief Emits a full member pointer with the fields common to data and
+  /// Emits a full member pointer with the fields common to data and
   /// function member pointers.
   llvm::Constant *EmitFullMemberPointer(llvm::Constant *FirstField,
                                         bool IsMemberFunction,
@@ -609,13 +608,13 @@ private:
   bool MemberPointerConstantIsNull(const MemberPointerType *MPT,
                                    llvm::Constant *MP);
 
-  /// \brief - Initialize all vbptrs of 'this' with RD as the complete type.
+  /// - Initialize all vbptrs of 'this' with RD as the complete type.
   void EmitVBPtrStores(CodeGenFunction &CGF, const CXXRecordDecl *RD);
 
-  /// \brief Caching wrapper around VBTableBuilder::enumerateVBTables().
+  /// Caching wrapper around VBTableBuilder::enumerateVBTables().
   const VBTableGlobals &enumerateVBTables(const CXXRecordDecl *RD);
 
-  /// \brief Generate a thunk for calling a virtual member function MD.
+  /// Generate a thunk for calling a virtual member function MD.
   llvm::Function *EmitVirtualMemPtrThunk(const CXXMethodDecl *MD,
                                          const MethodVFTableLocation &ML);
 
@@ -761,15 +760,15 @@ private:
   typedef std::pair<const CXXRecordDecl *, CharUnits> VFTableIdTy;
   typedef llvm::DenseMap<VFTableIdTy, llvm::GlobalVariable *> VTablesMapTy;
   typedef llvm::DenseMap<VFTableIdTy, llvm::GlobalValue *> VFTablesMapTy;
-  /// \brief All the vftables that have been referenced.
+  /// All the vftables that have been referenced.
   VFTablesMapTy VFTablesMap;
   VTablesMapTy VTablesMap;
 
-  /// \brief This set holds the record decls we've deferred vtable emission for.
+  /// This set holds the record decls we've deferred vtable emission for.
   llvm::SmallPtrSet<const CXXRecordDecl *, 4> DeferredVFTables;
 
 
-  /// \brief All the vbtables which have been referenced.
+  /// All the vbtables which have been referenced.
   llvm::DenseMap<const CXXRecordDecl *, VBTableGlobals> VBTablesMap;
 
   /// Info on the global variable used to guard initialization of static locals.
@@ -828,6 +827,7 @@ MicrosoftCXXABI::getRecordArgABI(const CXXRecordDecl *RD) const {
     return RAA_Default;
 
   case llvm::Triple::x86_64:
+  case llvm::Triple::aarch64:
     return !canCopyArgument(RD) ? RAA_Indirect : RAA_Default;
   }
 
@@ -858,20 +858,6 @@ void MicrosoftCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
     CGF.EmitNoreturnRuntimeCallOrInvoke(Fn, Args);
   else
     CGF.EmitRuntimeCallOrInvoke(Fn, Args);
-}
-
-namespace {
-struct CatchRetScope final : EHScopeStack::Cleanup {
-  llvm::CatchPadInst *CPI;
-
-  CatchRetScope(llvm::CatchPadInst *CPI) : CPI(CPI) {}
-
-  void Emit(CodeGenFunction &CGF, Flags flags) override {
-    llvm::BasicBlock *BB = CGF.createBasicBlock("catchret.dest");
-    CGF.Builder.CreateCatchRet(CPI, BB);
-    CGF.EmitBlock(BB);
-  }
-};
 }
 
 void MicrosoftCXXABI::emitBeginCatch(CodeGenFunction &CGF,
@@ -1075,10 +1061,22 @@ bool MicrosoftCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
     // the second parameter.
     FI.getReturnInfo() = ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
     FI.getReturnInfo().setSRetAfterThis(FI.isInstanceMethod());
+
+    // aarch64-windows requires that instance methods use X1 for the return
+    // address. So for aarch64-windows we do not mark the
+    // return as SRet.
+    FI.getReturnInfo().setSuppressSRet(CGM.getTarget().getTriple().getArch() ==
+                                       llvm::Triple::aarch64);
     return true;
   } else if (!RD->isPOD()) {
     // If it's a free function, non-POD types are returned indirectly.
     FI.getReturnInfo() = ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+
+    // aarch64-windows requires that non-POD, non-instance returns use X0 for
+    // the return address. So for aarch64-windows we do not mark the return as
+    // SRet.
+    FI.getReturnInfo().setSuppressSRet(CGM.getTarget().getTriple().getArch() ==
+                                       llvm::Triple::aarch64);
     return true;
   }
 
@@ -1125,7 +1123,7 @@ MicrosoftCXXABI::EmitDtorCompleteObjectHandler(CodeGenFunction &CGF) {
 
   CGF.EmitBlock(CallVbaseDtorsBB);
   // CGF will put the base dtor calls in this basic block for us later.
-    
+
   return SkipVbaseDtorsBB;
 }
 
@@ -1320,10 +1318,8 @@ void MicrosoftCXXABI::EmitCXXDestructors(const CXXDestructorDecl *D) {
 
 CharUnits
 MicrosoftCXXABI::getVirtualFunctionPrologueThisAdjustment(GlobalDecl GD) {
-  GD = GD.getCanonicalDecl();
   const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
 
-  GlobalDecl LookupGD = GD;
   if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(MD)) {
     // Complete destructors take a pointer to the complete object as a
     // parameter, thus don't need this adjustment.
@@ -1332,11 +1328,11 @@ MicrosoftCXXABI::getVirtualFunctionPrologueThisAdjustment(GlobalDecl GD) {
 
     // There's no Dtor_Base in vftable but it shares the this adjustment with
     // the deleting one, so look it up instead.
-    LookupGD = GlobalDecl(DD, Dtor_Deleting);
+    GD = GlobalDecl(DD, Dtor_Deleting);
   }
 
   MethodVFTableLocation ML =
-      CGM.getMicrosoftVTableContext().getMethodVFTableLocation(LookupGD);
+      CGM.getMicrosoftVTableContext().getMethodVFTableLocation(GD);
   CharUnits Adjustment = ML.VFPtrOffset;
 
   // Normal virtual instance methods need to adjust from the vfptr that first
@@ -1370,7 +1366,6 @@ Address MicrosoftCXXABI::adjustThisArgumentForVirtualFunctionCall(
     return CGF.Builder.CreateConstByteGEP(This, Adjustment);
   }
 
-  GD = GD.getCanonicalDecl();
   const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
 
   GlobalDecl LookupGD = GD;
@@ -1398,7 +1393,7 @@ Address MicrosoftCXXABI::adjustThisArgumentForVirtualFunctionCall(
   Address Result = This;
   if (ML.VBase) {
     Result = CGF.Builder.CreateElementBitCast(Result, CGF.Int8Ty);
-    
+
     const CXXRecordDecl *Derived = MD->getParent();
     const CXXRecordDecl *VBase = ML.VBase;
     llvm::Value *VBaseOffset =
@@ -1567,21 +1562,21 @@ void MicrosoftCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
     This = adjustThisArgumentForVirtualFunctionCall(CGF, GlobalDecl(DD, Type),
                                                     This, false);
   }
-  
+
   llvm::BasicBlock *BaseDtorEndBB = nullptr;
   if (ForVirtualBase && isa<CXXConstructorDecl>(CGF.CurCodeDecl)) {
     BaseDtorEndBB = EmitDtorCompleteObjectHandler(CGF);
-  }  
+  }
 
   CGF.EmitCXXDestructorCall(DD, Callee, This.getPointer(),
                             /*ImplicitParam=*/nullptr,
                             /*ImplicitParamTy=*/QualType(), nullptr,
                             getFromDtorType(Type));
   if (BaseDtorEndBB) {
-    // Complete object handler should continue to be the remaining 
+    // Complete object handler should continue to be the remaining
     CGF.Builder.CreateBr(BaseDtorEndBB);
     CGF.EmitBlock(BaseDtorEndBB);
-  } 
+  }
 }
 
 void MicrosoftCXXABI::emitVTableTypeMetadata(const VPtrInfo &Info,
@@ -1839,7 +1834,6 @@ CGCallee MicrosoftCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                     Address This,
                                                     llvm::Type *Ty,
                                                     SourceLocation Loc) {
-  GD = GD.getCanonicalDecl();
   CGBuilderTy &Builder = CGF.Builder;
 
   Ty = Ty->getPointerTo()->getPointerTo();
@@ -1878,7 +1872,7 @@ CGCallee MicrosoftCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     VFunc = Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
   }
 
-  CGCallee Callee(MethodDecl, VFunc);
+  CGCallee Callee(MethodDecl->getCanonicalDecl(), VFunc);
   return Callee;
 }
 
@@ -2737,9 +2731,8 @@ llvm::Constant *
 MicrosoftCXXABI::EmitMemberFunctionPointer(const CXXMethodDecl *MD) {
   assert(MD->isInstance() && "Member function must not be static!");
 
-  MD = MD->getCanonicalDecl();
   CharUnits NonVirtualBaseAdjustment = CharUnits::Zero();
-  const CXXRecordDecl *RD = MD->getParent()->getMostRecentDecl();
+  const CXXRecordDecl *RD = MD->getParent()->getMostRecentNonInjectedDecl();
   CodeGenTypes &Types = CGM.getTypes();
 
   unsigned VBTableIndex = 0;
@@ -3356,7 +3349,7 @@ CGCXXABI *clang::CodeGen::CreateMicrosoftCXXABI(CodeGenModule &CGM) {
 //   a reference to the TypeInfo for the type and a reference to the
 //   CompleteHierarchyDescriptor for the type.
 //
-// ClassHieararchyDescriptor: Contains information about a class hierarchy.
+// ClassHierarchyDescriptor: Contains information about a class hierarchy.
 //   Used during dynamic_cast to walk a class hierarchy.  References a base
 //   class array and the size of said array.
 //
@@ -3387,7 +3380,7 @@ static llvm::GlobalVariable *getTypeInfoVTable(CodeGenModule &CGM) {
 
 namespace {
 
-/// \brief A Helper struct that stores information about a class in a class
+/// A Helper struct that stores information about a class in a class
 /// hierarchy.  The information stored in these structs struct is used during
 /// the generation of ClassHierarchyDescriptors and BaseClassDescriptors.
 // During RTTI creation, MSRTTIClasses are stored in a contiguous array with
@@ -3414,7 +3407,7 @@ struct MSRTTIClass {
   uint32_t Flags, NumBases, OffsetInVBase;
 };
 
-/// \brief Recursively initialize the base class array.
+/// Recursively initialize the base class array.
 uint32_t MSRTTIClass::initialize(const MSRTTIClass *Parent,
                                  const CXXBaseSpecifier *Specifier) {
   Flags = HasHierarchyDescriptor;
@@ -3461,7 +3454,7 @@ static llvm::GlobalValue::LinkageTypes getLinkageForRTTI(QualType Ty) {
   llvm_unreachable("Invalid linkage!");
 }
 
-/// \brief An ephemeral helper class for building MS RTTI types.  It caches some
+/// An ephemeral helper class for building MS RTTI types.  It caches some
 /// calls to the module and information about the most derived class in a
 /// hierarchy.
 struct MSRTTIBuilder {
@@ -3494,7 +3487,7 @@ struct MSRTTIBuilder {
 
 } // namespace
 
-/// \brief Recursively serializes a class hierarchy in pre-order depth first
+/// Recursively serializes a class hierarchy in pre-order depth first
 /// order.
 static void serializeClassHierarchy(SmallVectorImpl<MSRTTIClass> &Classes,
                                     const CXXRecordDecl *RD) {
@@ -3503,7 +3496,7 @@ static void serializeClassHierarchy(SmallVectorImpl<MSRTTIClass> &Classes,
     serializeClassHierarchy(Classes, Base.getType()->getAsCXXRecordDecl());
 }
 
-/// \brief Find ambiguity among base classes.
+/// Find ambiguity among base classes.
 static void
 detectAmbiguousBases(SmallVectorImpl<MSRTTIClass> &Classes) {
   llvm::SmallPtrSet<const CXXRecordDecl *, 8> VirtualBases;
@@ -3769,7 +3762,7 @@ MicrosoftCXXABI::getAddrOfCXXCatchHandlerType(QualType Type,
                        Flags};
 }
 
-/// \brief Gets a TypeDescriptor.  Returns a llvm::Constant * rather than a
+/// Gets a TypeDescriptor.  Returns a llvm::Constant * rather than a
 /// llvm::GlobalVariable * because different type descriptors have different
 /// types, and need to be abstracted.  They are abstracting by casting the
 /// address to an Int8PtrTy.
@@ -3811,7 +3804,7 @@ llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type) {
   return llvm::ConstantExpr::getBitCast(Var, CGM.Int8PtrTy);
 }
 
-/// \brief Gets or a creates a Microsoft CompleteObjectLocator.
+/// Gets or a creates a Microsoft CompleteObjectLocator.
 llvm::GlobalVariable *
 MicrosoftCXXABI::getMSCompleteObjectLocator(const CXXRecordDecl *RD,
                                             const VPtrInfo &Info) {

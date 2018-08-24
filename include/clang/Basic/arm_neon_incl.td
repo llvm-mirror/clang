@@ -9,7 +9,7 @@
 //
 //  This file defines data structures shared by arm_neon.td and arm_fp16.td.
 //  It constains base operation classes, operations, instructions, instruction
-//  modifiers, etc.  
+//  modifiers, etc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -253,6 +253,9 @@ def OP_UNAVAILABLE : Operation {
 // B,C,D: array of default elts, force 'Q' size modifier.
 // p: pointer type
 // c: const pointer type
+// 7: vector of 8-bit elements, ignore 'Q' size modifier
+// 8: vector of 8-bit elements, same width as default type
+// 9: vector of 8-bit elements, force 'Q' size modifier
 
 // Every intrinsic subclasses Inst.
 class Inst <string n, string p, string t, Operation o> {

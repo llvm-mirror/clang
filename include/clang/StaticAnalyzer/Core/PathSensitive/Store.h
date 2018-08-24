@@ -107,9 +107,17 @@ public:
   ///   by \c val bound to the location given for \c loc.
   virtual StoreRef Bind(Store store, Loc loc, SVal val) = 0;
 
-  virtual StoreRef BindDefault(Store store, const MemRegion *R, SVal V);
+  /// Return a store with the specified value bound to all sub-regions of the
+  /// region. The region must not have previous bindings. If you need to
+  /// invalidate existing bindings, consider invalidateRegions().
+  virtual StoreRef BindDefaultInitial(Store store, const MemRegion *R,
+                                      SVal V) = 0;
 
-  /// \brief Create a new store with the specified binding removed.
+  /// Return a store with in which all values within the given region are
+  /// reset to zero. This method is allowed to overwrite previous bindings.
+  virtual StoreRef BindDefaultZero(Store store, const MemRegion *R) = 0;
+
+  /// Create a new store with the specified binding removed.
   /// \param ST the original store, that is the basis for the new store.
   /// \param L the location whose binding should be removed.
   virtual StoreRef killBinding(Store ST, Loc L) = 0;
@@ -141,7 +149,7 @@ public:
 
   // FIXME: This should soon be eliminated altogether; clients should deal with
   // region extents directly.
-  virtual DefinedOrUnknownSVal getSizeInElements(ProgramStateRef state, 
+  virtual DefinedOrUnknownSVal getSizeInElements(ProgramStateRef state,
                                                  const MemRegion *region,
                                                  QualType EleTy) {
     return UnknownVal();
@@ -162,14 +170,14 @@ public:
   SVal evalDerivedToBase(SVal Derived, QualType DerivedPtrType,
                          bool IsVirtual);
 
-  /// \brief Attempts to do a down cast. Used to model BaseToDerived and C++
+  /// Attempts to do a down cast. Used to model BaseToDerived and C++
   ///        dynamic_cast.
   /// The callback may result in the following 3 scenarios:
   ///  - Successful cast (ex: derived is subclass of base).
   ///  - Failed cast (ex: derived is definitely not a subclass of base).
   ///    The distinction of this case from the next one is necessary to model
-  ///    dynamic_cast. 
-  ///  - We don't know (base is a symbolic region and we don't have 
+  ///    dynamic_cast.
+  ///  - We don't know (base is a symbolic region and we don't have
   ///    enough info to determine if the cast will succeed at run time).
   /// The function returns an SVal representing the derived class; it's
   /// valid only if Failed flag is set to false.
@@ -187,7 +195,7 @@ public:
 
   virtual bool includedInBindings(Store store,
                                   const MemRegion *region) const = 0;
-  
+
   /// If the StoreManager supports it, increment the reference count of
   /// the specified Store object.
   virtual void incrementReferenceCount(Store store) {}
@@ -213,7 +221,7 @@ public:
   ///   globals should get invalidated.
   /// \param[in,out] IS A set to fill with any symbols that are no longer
   ///   accessible. Pass \c NULL if this information will not be used.
-  /// \param[in] ITraits Information about invalidation for a particular 
+  /// \param[in] ITraits Information about invalidation for a particular
   ///   region/symbol.
   /// \param[in,out] InvalidatedTopLevel A vector to fill with regions
   ////  explicitly being invalidated. Pass \c NULL if this
@@ -282,8 +290,8 @@ protected:
   /// CastRetrievedVal - Used by subclasses of StoreManager to implement
   ///  implicit casts that arise from loads from regions that are reinterpreted
   ///  as another region.
-  SVal CastRetrievedVal(SVal val, const TypedValueRegion *region, 
-                        QualType castTy, bool performTestOnly = true);
+  SVal CastRetrievedVal(SVal val, const TypedValueRegion *region,
+                        QualType castTy);
 
 private:
   SVal getLValueFieldOrIvar(const Decl *decl, SVal base);
@@ -297,16 +305,16 @@ inline StoreRef::StoreRef(Store store, StoreManager & smgr)
 
 inline StoreRef::StoreRef(const StoreRef &sr)
     : store(sr.store), mgr(sr.mgr)
-{ 
+{
   if (store)
     mgr.incrementReferenceCount(store);
 }
-  
+
 inline StoreRef::~StoreRef() {
   if (store)
     mgr.decrementReferenceCount(store);
 }
-  
+
 inline StoreRef &StoreRef::operator=(StoreRef const &newStore) {
   assert(&newStore.mgr == &mgr);
   if (store != newStore.store) {

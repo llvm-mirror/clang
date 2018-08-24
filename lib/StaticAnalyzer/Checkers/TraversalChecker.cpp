@@ -30,7 +30,7 @@ class TraversalDumper : public Checker< check::BranchCondition,
 public:
   void checkBranchCondition(const Stmt *Condition, CheckerContext &C) const;
   void checkBeginFunction(CheckerContext &C) const;
-  void checkEndFunction(CheckerContext &C) const;
+  void checkEndFunction(const ReturnStmt *RS, CheckerContext &C) const;
 };
 }
 
@@ -47,7 +47,7 @@ void TraversalDumper::checkBranchCondition(const Stmt *Condition,
   // It is mildly evil to print directly to llvm::outs() rather than emitting
   // warnings, but this ensures things do not get filtered out by the rest of
   // the static analyzer machinery.
-  SourceLocation Loc = Parent->getLocStart();
+  SourceLocation Loc = Parent->getBeginLoc();
   llvm::outs() << C.getSourceManager().getSpellingLineNumber(Loc) << " "
                << Parent->getStmtClassName() << "\n";
 }
@@ -56,7 +56,8 @@ void TraversalDumper::checkBeginFunction(CheckerContext &C) const {
   llvm::outs() << "--BEGIN FUNCTION--\n";
 }
 
-void TraversalDumper::checkEndFunction(CheckerContext &C) const {
+void TraversalDumper::checkEndFunction(const ReturnStmt *RS,
+                                       CheckerContext &C) const {
   llvm::outs() << "--END FUNCTION--\n";
 }
 

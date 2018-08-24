@@ -96,6 +96,7 @@ private:
   bool InReg : 1;           // isDirect() || isExtend() || isIndirect()
   bool CanBeFlattened: 1;   // isDirect()
   bool SignExt : 1;         // isExtend()
+  bool SuppressSRet : 1;    // isIndirect()
 
   bool canHavePaddingType() const {
     return isDirect() || isExtend() || isIndirect() || isExpand();
@@ -111,13 +112,14 @@ private:
   }
 
   ABIArgInfo(Kind K)
-      : TheKind(K), PaddingInReg(false), InReg(false) {
+      : TheKind(K), PaddingInReg(false), InReg(false), SuppressSRet(false) {
   }
 
 public:
   ABIArgInfo()
       : TypeData(nullptr), PaddingType(nullptr), DirectOffset(0),
-        TheKind(Direct), PaddingInReg(false), InReg(false) {}
+        TheKind(Direct), PaddingInReg(false), InReg(false),
+        SuppressSRet(false) {}
 
   static ABIArgInfo getDirect(llvm::Type *T = nullptr, unsigned Offset = 0,
                               llvm::Type *Padding = nullptr,
@@ -384,7 +386,7 @@ public:
     AllocaFieldIndex = FieldIndex;
   }
 
-  /// \brief Return true if this field of an inalloca struct should be returned
+  /// Return true if this field of an inalloca struct should be returned
   /// to implement a struct return calling convention.
   bool getInAllocaSRet() const {
     assert(isInAlloca() && "Invalid kind!");
@@ -404,6 +406,16 @@ public:
   void setCanBeFlattened(bool Flatten) {
     assert(isDirect() && "Invalid kind!");
     CanBeFlattened = Flatten;
+  }
+
+  bool getSuppressSRet() const {
+    assert(isIndirect() && "Invalid kind!");
+    return SuppressSRet;
+  }
+
+  void setSuppressSRet(bool Suppress) {
+    assert(isIndirect() && "Invalid kind!");
+    SuppressSRet = Suppress;
   }
 
   void dump() const;
@@ -569,11 +581,11 @@ public:
   typedef ArgInfo *arg_iterator;
 
   typedef llvm::iterator_range<arg_iterator> arg_range;
-  typedef llvm::iterator_range<const_arg_iterator> arg_const_range;
+  typedef llvm::iterator_range<const_arg_iterator> const_arg_range;
 
   arg_range arguments() { return arg_range(arg_begin(), arg_end()); }
-  arg_const_range arguments() const {
-    return arg_const_range(arg_begin(), arg_end());
+  const_arg_range arguments() const {
+    return const_arg_range(arg_begin(), arg_end());
   }
 
   const_arg_iterator arg_begin() const { return getArgsBuffer() + 1; }
@@ -648,10 +660,10 @@ public:
     return getExtParameterInfos()[argIndex];
   }
 
-  /// \brief Return true if this function uses inalloca arguments.
+  /// Return true if this function uses inalloca arguments.
   bool usesInAlloca() const { return ArgStruct; }
 
-  /// \brief Get the struct type used to represent all the arguments in memory.
+  /// Get the struct type used to represent all the arguments in memory.
   llvm::StructType *getArgStruct() const { return ArgStruct; }
   CharUnits getArgStructAlignment() const {
     return CharUnits::fromQuantity(ArgStructAlign);

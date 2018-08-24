@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 /// \file
-/// \brief This file implements OMPThreadPrivateDecl, OMPCapturedExprDecl
+/// This file implements OMPThreadPrivateDecl, OMPCapturedExprDecl
 /// classes.
 ///
 //===----------------------------------------------------------------------===//
@@ -57,6 +57,14 @@ void OMPThreadPrivateDecl::setVars(ArrayRef<Expr *> VL) {
 // OMPDeclareReductionDecl Implementation.
 //===----------------------------------------------------------------------===//
 
+OMPDeclareReductionDecl::OMPDeclareReductionDecl(
+    Kind DK, DeclContext *DC, SourceLocation L, DeclarationName Name,
+    QualType Ty, OMPDeclareReductionDecl *PrevDeclInScope)
+    : ValueDecl(DK, DC, L, Name, Ty), DeclContext(DK), Combiner(nullptr),
+      PrevDeclInScope(PrevDeclInScope) {
+  setInitializer(nullptr, CallInit);
+}
+
 void OMPDeclareReductionDecl::anchor() {}
 
 OMPDeclareReductionDecl *OMPDeclareReductionDecl::Create(
@@ -92,16 +100,17 @@ void OMPCapturedExprDecl::anchor() {}
 OMPCapturedExprDecl *OMPCapturedExprDecl::Create(ASTContext &C, DeclContext *DC,
                                                  IdentifierInfo *Id, QualType T,
                                                  SourceLocation StartLoc) {
-  return new (C, DC) OMPCapturedExprDecl(C, DC, Id, T, StartLoc);
+  return new (C, DC) OMPCapturedExprDecl(
+      C, DC, Id, T, C.getTrivialTypeSourceInfo(T), StartLoc);
 }
 
 OMPCapturedExprDecl *OMPCapturedExprDecl::CreateDeserialized(ASTContext &C,
                                                              unsigned ID) {
-  return new (C, ID)
-      OMPCapturedExprDecl(C, nullptr, nullptr, QualType(), SourceLocation());
+  return new (C, ID) OMPCapturedExprDecl(C, nullptr, nullptr, QualType(),
+                                         /*TInfo=*/nullptr, SourceLocation());
 }
 
 SourceRange OMPCapturedExprDecl::getSourceRange() const {
   assert(hasInit());
-  return SourceRange(getInit()->getLocStart(), getInit()->getLocEnd());
+  return SourceRange(getInit()->getBeginLoc(), getInit()->getEndLoc());
 }

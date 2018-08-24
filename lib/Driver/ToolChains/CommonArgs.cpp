@@ -146,12 +146,14 @@ void tools::AddLinkerInputs(const ToolChain &TC, const InputInfoList &Inputs,
   Args.AddAllArgValues(CmdArgs, options::OPT_Zlinker_input);
 
   for (const auto &II : Inputs) {
-    // If the current tool chain refers to an OpenMP offloading host, we should
-    // ignore inputs that refer to OpenMP offloading devices - they will be
-    // embedded according to a proper linker script.
+    // If the current tool chain refers to an OpenMP or HIP offloading host, we
+    // should ignore inputs that refer to OpenMP or HIP offloading devices -
+    // they will be embedded according to a proper linker script.
     if (auto *IA = II.getAction())
-      if (JA.isHostOffloading(Action::OFK_OpenMP) &&
-          IA->isDeviceOffloading(Action::OFK_OpenMP))
+      if ((JA.isHostOffloading(Action::OFK_OpenMP) &&
+           IA->isDeviceOffloading(Action::OFK_OpenMP)) ||
+          (JA.isHostOffloading(Action::OFK_HIP) &&
+           IA->isDeviceOffloading(Action::OFK_HIP)))
         continue;
 
     if (!TC.HasNativeLLVMSupport() && types::isLLVMIR(II.getType()))
@@ -378,7 +380,7 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   // forward.
   CmdArgs.push_back("-plugin");
 
-#if defined(LLVM_ON_WIN32)
+#if defined(_WIN32)
   const char *Suffix = ".dll";
 #elif defined(__APPLE__)
   const char *Suffix = ".dylib";
@@ -412,6 +414,12 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
       OOpt = "0";
     if (!OOpt.empty())
       CmdArgs.push_back(Args.MakeArgString(Twine("-plugin-opt=O") + OOpt));
+  }
+
+  if (Args.hasArg(options::OPT_gsplit_dwarf)) {
+    CmdArgs.push_back(
+        Args.MakeArgString(Twine("-plugin-opt=dwo_dir=") +
+            Output.getFilename() + "_dwo"));
   }
 
   if (IsThinLTO)
@@ -538,6 +546,11 @@ static bool addSanitizerDynamicList(const ToolChain &TC, const ArgList &Args,
   // the option, so don't try to pass it.
   if (TC.getTriple().getOS() == llvm::Triple::Solaris)
     return true;
+  // Myriad is static linking only.  Furthermore, some versions of its
+  // linker have the bug where --export-dynamic overrides -static, so
+  // don't use --export-dynamic on that platform.
+  if (TC.getTriple().getVendor() == llvm::Triple::Myriad)
+    return true;
   SmallString<128> SanRT(TC.getCompilerRT(Args, Sanitizer));
   if (llvm::sys::fs::exists(SanRT + ".syms")) {
     CmdArgs.push_back(Args.MakeArgString("--dynamic-list=" + SanRT + ".syms"));
@@ -551,8 +564,9 @@ void tools::linkSanitizerRuntimeDeps(const ToolChain &TC,
   // Force linking against the system libraries sanitizers depends on
   // (see PR15823 why this is necessary).
   CmdArgs.push_back("--no-as-needed");
-  // There's no libpthread or librt on RTEMS.
-  if (TC.getTriple().getOS() != llvm::Triple::RTEMS) {
+  // There's no libpthread or librt on RTEMS & Android.
+  if (TC.getTriple().getOS() != llvm::Triple::RTEMS &&
+      !TC.getTriple().isAndroid()) {
     CmdArgs.push_back("-lpthread");
     if (TC.getTriple().getOS() != llvm::Triple::OpenBSD)
       CmdArgs.push_back("-lrt");
@@ -586,14 +600,17 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
         HelperStaticRuntimes.push_back("asan-preinit");
     }
     if (SanArgs.needsUbsanRt()) {
-      if (SanArgs.requiresMinimalRuntime()) {
+      if (SanArgs.requiresMinimalRuntime())
         SharedRuntimes.push_back("ubsan_minimal");
-      } else {
+      else
         SharedRuntimes.push_back("ubsan_standalone");
-      }
     }
-    if (SanArgs.needsScudoRt())
-      SharedRuntimes.push_back("scudo");
+    if (SanArgs.needsScudoRt()) {
+      if (SanArgs.requiresMinimalRuntime())
+        SharedRuntimes.push_back("scudo_minimal");
+      else
+        SharedRuntimes.push_back("scudo");
+    }
     if (SanArgs.needsHwasanRt())
       SharedRuntimes.push_back("hwasan");
   }
@@ -659,9 +676,15 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   if (SanArgs.needsEsanRt())
     StaticRuntimes.push_back("esan");
   if (SanArgs.needsScudoRt()) {
-    StaticRuntimes.push_back("scudo");
-    if (SanArgs.linkCXXRuntimes())
-      StaticRuntimes.push_back("scudo_cxx");
+    if (SanArgs.requiresMinimalRuntime()) {
+      StaticRuntimes.push_back("scudo_minimal");
+      if (SanArgs.linkCXXRuntimes())
+        StaticRuntimes.push_back("scudo_cxx_minimal");
+    } else {
+      StaticRuntimes.push_back("scudo");
+      if (SanArgs.linkCXXRuntimes())
+        StaticRuntimes.push_back("scudo_cxx");
+    }
   }
 }
 
@@ -1014,10 +1037,15 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
   if ((ROPI || RWPI) && (PIC || PIE))
     ToolChain.getDriver().Diag(diag::err_drv_ropi_rwpi_incompatible_with_pic);
 
-  if (Triple.getArch() == llvm::Triple::mips ||
-       Triple.getArch() == llvm::Triple::mipsel ||
-       Triple.getArch() == llvm::Triple::mips64 ||
-       Triple.getArch() == llvm::Triple::mips64el) {
+  if (Triple.isMIPS()) {
+    StringRef CPUName;
+    StringRef ABIName;
+    mips::getMipsCPUAndABI(Args, Triple, CPUName, ABIName);
+    // When targeting the N64 ABI, PIC is the default, except in the case
+    // when the -mno-abicalls option is used. In that case we exit
+    // at next check regardless of PIC being set below.
+    if (ABIName == "n64")
+      PIC = true;
     // When targettng MIPS with -mno-abicalls, it's always static.
     if(Args.hasArg(options::OPT_mno_abicalls))
       return std::make_tuple(llvm::Reloc::Static, 0U, false);
@@ -1085,7 +1113,7 @@ void tools::AddAssemblerKPIC(const ToolChain &ToolChain, const ArgList &Args,
     CmdArgs.push_back("-KPIC");
 }
 
-/// \brief Determine whether Objective-C automated reference counting is
+/// Determine whether Objective-C automated reference counting is
 /// enabled.
 bool tools::isObjCAutoRefCount(const ArgList &Args) {
   return Args.hasFlag(options::OPT_fobjc_arc, options::OPT_fno_objc_arc, false);
@@ -1257,6 +1285,125 @@ void tools::AddOpenMPLinkerScript(const ToolChain &TC, Compilation &C,
   // Dump the contents of the linker script if the user requested that. We
   // support this option to enable testing of behavior with -###.
   if (C.getArgs().hasArg(options::OPT_fopenmp_dump_offload_linker_script))
+    llvm::errs() << LksBuffer;
+
+  // If this is a dry run, do not create the linker script file.
+  if (C.getArgs().hasArg(options::OPT__HASH_HASH_HASH))
+    return;
+
+  // Open script file and write the contents.
+  std::error_code EC;
+  llvm::raw_fd_ostream Lksf(LKS, EC, llvm::sys::fs::F_None);
+
+  if (EC) {
+    C.getDriver().Diag(clang::diag::err_unable_to_make_temp) << EC.message();
+    return;
+  }
+
+  Lksf << LksBuffer;
+}
+
+/// Add HIP linker script arguments at the end of the argument list so that
+/// the fat binary is built by embedding the device images into the host. The
+/// linker script also defines a symbol required by the code generation so that
+/// the image can be retrieved at runtime. This should be used only in tool
+/// chains that support linker scripts.
+void tools::AddHIPLinkerScript(const ToolChain &TC, Compilation &C,
+                               const InputInfo &Output,
+                               const InputInfoList &Inputs, const ArgList &Args,
+                               ArgStringList &CmdArgs, const JobAction &JA,
+                               const Tool &T) {
+
+  // If this is not a HIP host toolchain, we don't need to do anything.
+  if (!JA.isHostOffloading(Action::OFK_HIP))
+    return;
+
+  // Create temporary linker script. Keep it if save-temps is enabled.
+  const char *LKS;
+  SmallString<256> Name = llvm::sys::path::filename(Output.getFilename());
+  if (C.getDriver().isSaveTempsEnabled()) {
+    llvm::sys::path::replace_extension(Name, "lk");
+    LKS = C.getArgs().MakeArgString(Name.c_str());
+  } else {
+    llvm::sys::path::replace_extension(Name, "");
+    Name = C.getDriver().GetTemporaryPath(Name, "lk");
+    LKS = C.addTempFile(C.getArgs().MakeArgString(Name.c_str()));
+  }
+
+  // Add linker script option to the command.
+  CmdArgs.push_back("-T");
+  CmdArgs.push_back(LKS);
+
+  // Create a buffer to write the contents of the linker script.
+  std::string LksBuffer;
+  llvm::raw_string_ostream LksStream(LksBuffer);
+
+  // Get the HIP offload tool chain.
+  auto *HIPTC = static_cast<const toolchains::CudaToolChain *>(
+      C.getSingleOffloadToolChain<Action::OFK_HIP>());
+  assert(HIPTC->getTriple().getArch() == llvm::Triple::amdgcn &&
+         "Wrong platform");
+  (void)HIPTC;
+
+  // Construct clang-offload-bundler command to bundle object files for
+  // for different GPU archs.
+  ArgStringList BundlerArgs;
+  BundlerArgs.push_back(Args.MakeArgString("-type=o"));
+
+  // ToDo: Remove the dummy host binary entry which is required by
+  // clang-offload-bundler.
+  std::string BundlerTargetArg = "-targets=host-x86_64-unknown-linux";
+  std::string BundlerInputArg = "-inputs=/dev/null";
+
+  for (const auto &II : Inputs) {
+    const Action *A = II.getAction();
+    // Is this a device linking action?
+    if (A && isa<LinkJobAction>(A) && A->isDeviceOffloading(Action::OFK_HIP)) {
+      BundlerTargetArg = BundlerTargetArg + ",hip-amdgcn-amd-amdhsa-" +
+                         StringRef(A->getOffloadingArch()).str();
+      BundlerInputArg = BundlerInputArg + "," + II.getFilename();
+    }
+  }
+  BundlerArgs.push_back(Args.MakeArgString(BundlerTargetArg));
+  BundlerArgs.push_back(Args.MakeArgString(BundlerInputArg));
+
+  std::string BundleFileName = C.getDriver().GetTemporaryPath("BUNDLE", "o");
+  const char *BundleFile =
+      C.addTempFile(C.getArgs().MakeArgString(BundleFileName.c_str()));
+  auto BundlerOutputArg =
+      Args.MakeArgString(std::string("-outputs=").append(BundleFile));
+  BundlerArgs.push_back(BundlerOutputArg);
+
+  SmallString<128> BundlerPath(C.getDriver().Dir);
+  llvm::sys::path::append(BundlerPath, "clang-offload-bundler");
+  const char *Bundler = Args.MakeArgString(BundlerPath);
+  C.addCommand(llvm::make_unique<Command>(JA, T, Bundler, BundlerArgs, Inputs));
+
+  // Add commands to embed target binaries. We ensure that each section and
+  // image is 16-byte aligned. This is not mandatory, but increases the
+  // likelihood of data to be aligned with a cache block in several main host
+  // machines.
+  LksStream << "/*\n";
+  LksStream << "       HIP Offload Linker Script\n";
+  LksStream << " *** Automatically generated by Clang ***\n";
+  LksStream << "*/\n";
+  LksStream << "TARGET(binary)\n";
+  LksStream << "INPUT(" << BundleFileName << ")\n";
+  LksStream << "SECTIONS\n";
+  LksStream << "{\n";
+  LksStream << "  .hip_fatbin :\n";
+  LksStream << "  ALIGN(0x10)\n";
+  LksStream << "  {\n";
+  LksStream << "    PROVIDE_HIDDEN(__hip_fatbin = .);\n";
+  LksStream << "    " << BundleFileName << "\n";
+  LksStream << "  }\n";
+  LksStream << "}\n";
+  LksStream << "INSERT BEFORE .data\n";
+  LksStream.flush();
+
+  // Dump the contents of the linker script if the user requested that. We
+  // support this option to enable testing of behavior with -###.
+  if (C.getArgs().hasArg(options::OPT_fhip_dump_offload_linker_script))
     llvm::errs() << LksBuffer;
 
   // If this is a dry run, do not create the linker script file.

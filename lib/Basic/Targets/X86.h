@@ -81,7 +81,6 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
   bool HasSHA = false;
   bool HasMPX = false;
   bool HasSHSTK = false;
-  bool HasIBT = false;
   bool HasSGX = false;
   bool HasCX16 = false;
   bool HasFXSR = false;
@@ -92,6 +91,7 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
   bool HasMWAITX = false;
   bool HasCLZERO = false;
   bool HasCLDEMOTE = false;
+  bool HasPCONFIG = false;
   bool HasPKU = false;
   bool HasCLFLUSHOPT = false;
   bool HasCLWB = false;
@@ -103,9 +103,13 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
   bool HasLAHFSAHF = false;
   bool HasWBNOINVD = false;
   bool HasWAITPKG = false;
+  bool HasMOVDIRI = false;
+  bool HasMOVDIR64B = false;
+  bool HasPTWRITE = false;
+  bool HasINVPCID = false;
 
 protected:
-  /// \brief Enumeration of all of the X86 CPUs supported by Clang.
+  /// Enumeration of all of the X86 CPUs supported by Clang.
   ///
   /// Each enumeration represents a particular CPU supported by Clang. These
   /// loosely correspond to the options passed to '-march' or '-mtune' flags.
@@ -128,7 +132,7 @@ public:
       : TargetInfo(Triple) {
     LongDoubleFormat = &llvm::APFloat::x87DoubleExtended();
   }
-  
+
   unsigned getFloatEvalMethod() const override {
     // X87 evaluates with 80 bits "long double" precision.
     return SSELevel == NoSSE ? 2 : 0;
@@ -145,6 +149,14 @@ public:
   bool validateCpuSupports(StringRef Name) const override;
 
   bool validateCpuIs(StringRef Name) const override;
+
+  bool validateCPUSpecificCPUDispatch(StringRef Name) const override;
+
+  char CPUSpecificManglingCharacter(StringRef Name) const override;
+
+  void getCPUSpecificCPUDispatchFeatures(
+      StringRef Name,
+      llvm::SmallVectorImpl<StringRef> &Features) const override;
 
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &info) const override;
@@ -167,10 +179,15 @@ public:
   bool validateInputSize(StringRef Constraint, unsigned Size) const override;
 
   virtual bool
-  checkCFProtectionReturnSupported(DiagnosticsEngine &Diags) const override;
+  checkCFProtectionReturnSupported(DiagnosticsEngine &Diags) const override {
+    return true;
+  };
 
   virtual bool
-  checkCFProtectionBranchSupported(DiagnosticsEngine &Diags) const override;
+  checkCFProtectionBranchSupported(DiagnosticsEngine &Diags) const override {
+    return true;
+  };
+
 
   virtual bool validateOperandSize(StringRef Constraint, unsigned Size) const;
 
@@ -221,7 +238,7 @@ public:
 
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
-  
+
   static void setSSELevel(llvm::StringMap<bool> &Features, X86SSEEnum Level,
                           bool Enabled);
 
@@ -560,7 +577,7 @@ public:
     IntPtrType = SignedLong;
     PtrDiffType = SignedLong;
   }
-  
+
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
     X86_32TargetInfo::getTargetDefines(Opts, Builder);
@@ -647,7 +664,7 @@ public:
   bool hasInt128Type() const override { return true; }
 
   unsigned getUnwindWordWidth() const override { return 64; }
-  
+
   unsigned getRegisterWidth() const override { return 64; }
 
   bool validateGlobalRegisterVariable(StringRef RegName, unsigned RegSize,
@@ -735,7 +752,7 @@ public:
 
   TargetInfo::CallingConvKind
   getCallingConvKind(bool ClangABICompat4) const override {
-    return CCK_MicrosoftX86_64;
+    return CCK_MicrosoftWin64;
   }
 };
 

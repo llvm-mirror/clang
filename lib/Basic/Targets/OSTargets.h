@@ -369,7 +369,7 @@ protected:
 public:
   NetBSDTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : OSTargetInfo<Target>(Triple, Opts) {
-    this->MCountName = "_mcount";
+    this->MCountName = "__mcount";
   }
 };
 
@@ -551,7 +551,8 @@ protected:
     Builder.defineMacro("_LARGEFILE_SOURCE");
     Builder.defineMacro("_LARGEFILE64_SOURCE");
     Builder.defineMacro("__EXTENSIONS__");
-    Builder.defineMacro("_REENTRANT");
+    if (Opts.POSIXThreads)
+      Builder.defineMacro("_REENTRANT");
     if (this->HasFloat128)
       Builder.defineMacro("__FLOAT128__");
   }
@@ -616,8 +617,10 @@ protected:
         Builder.defineMacro("_HAS_CHAR16_T_LANGUAGE_SUPPORT", Twine(1));
 
       if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015)) {
-        if (Opts.CPlusPlus17)
-          Builder.defineMacro("_MSVC_LANG", "201403L");
+        if (Opts.CPlusPlus2a)
+          Builder.defineMacro("_MSVC_LANG", "201704L");
+        else if (Opts.CPlusPlus17)
+          Builder.defineMacro("_MSVC_LANG", "201703L");
         else if (Opts.CPlusPlus14)
           Builder.defineMacro("_MSVC_LANG", "201402L");
       }

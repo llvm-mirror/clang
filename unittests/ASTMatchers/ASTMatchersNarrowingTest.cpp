@@ -894,6 +894,10 @@ TEST(isConstexpr, MatchesConstexprDeclarations) {
                       varDecl(hasName("foo"), isConstexpr())));
   EXPECT_TRUE(matches("constexpr int bar();",
                       functionDecl(hasName("bar"), isConstexpr())));
+  EXPECT_TRUE(matchesConditionally("void baz() { if constexpr(1 > 0) {} }",
+                                   ifStmt(isConstexpr()), true, "-std=c++17"));
+  EXPECT_TRUE(matchesConditionally("void baz() { if (1 > 0) {} }",
+                                   ifStmt(isConstexpr()), false, "-std=c++17"));
 }
 
 TEST(TemplateArgumentCountIs, Matches) {
@@ -1350,6 +1354,16 @@ TEST(Matcher, HandlesNullQualTypes) {
       ))))));
 }
 
+TEST(ObjCIvarRefExprMatcher, IvarExpr) {
+  std::string ObjCString =
+    "@interface A @end "
+    "@implementation A { A *x; } - (void) func { x = 0; } @end";
+  EXPECT_TRUE(matchesObjC(ObjCString, objcIvarRefExpr()));
+  EXPECT_TRUE(matchesObjC(ObjCString, objcIvarRefExpr(
+        hasDeclaration(namedDecl(hasName("x"))))));
+  EXPECT_FALSE(matchesObjC(ObjCString, objcIvarRefExpr(
+        hasDeclaration(namedDecl(hasName("y"))))));
+}
 
 TEST(StatementCountIs, FindsNoStatementsInAnEmptyCompoundStatement) {
   EXPECT_TRUE(matches("void f() { }",
@@ -2152,6 +2166,14 @@ TEST(IsAssignmentOperator, Basic) {
                       CXXAsgmtOperator));
   EXPECT_TRUE(
       notMatches("void x() { int a; if(a == 0) return; }", BinAsgmtOperator));
+}
+
+TEST(Matcher, isMain) {
+  EXPECT_TRUE(
+    matches("int main() {}", functionDecl(isMain())));
+
+  EXPECT_TRUE(
+    notMatches("int main2() {}", functionDecl(isMain())));
 }
 
 } // namespace ast_matchers

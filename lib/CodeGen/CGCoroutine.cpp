@@ -44,6 +44,15 @@ struct clang::CodeGen::CGCoroData {
   // A branch to this block is emitted when coroutine needs to suspend.
   llvm::BasicBlock *SuspendBB = nullptr;
 
+  // The promise type's 'unhandled_exception' handler, if it defines one.
+  Stmt *ExceptionHandler = nullptr;
+
+  // A temporary i1 alloca that stores whether 'await_resume' threw an
+  // exception. If it did, 'true' is stored in this variable, and the coroutine
+  // body must be skipped. If the promise type does not define an exception
+  // handler, this is null.
+  llvm::Value *ResumeEHVar = nullptr;
+
   // Stores the jump destination just before the coroutine memory is freed.
   // This is the destination that every suspend point jumps to for the cleanup
   // branch.
@@ -84,10 +93,10 @@ static void createCoroData(CodeGenFunction &CGF,
                            CallExpr const *CoroIdExpr = nullptr) {
   if (CurCoro.Data) {
     if (CurCoro.Data->CoroIdExpr)
-      CGF.CGM.Error(CoroIdExpr->getLocStart(),
+      CGF.CGM.Error(CoroIdExpr->getBeginLoc(),
                     "only one __builtin_coro_id can be used in a function");
     else if (CoroIdExpr)
-      CGF.CGM.Error(CoroIdExpr->getLocStart(),
+      CGF.CGM.Error(CoroIdExpr->getBeginLoc(),
                     "__builtin_coro_id shall not be used in a C++ coroutine");
     else
       llvm_unreachable("EmitCoroutineBodyStatement called twice?");
@@ -119,6 +128,16 @@ static SmallString<32> buildSuspendPrefixStr(CGCoroData &Coro, AwaitKind Kind) {
     Twine(No).toVector(Prefix);
   }
   return Prefix;
+}
+
+static bool memberCallExpressionCanThrow(const Expr *E) {
+  if (const auto *CE = dyn_cast<CXXMemberCallExpr>(E))
+    if (const auto *Proto =
+            CE->getMethodDecl()->getType()->getAs<FunctionProtoType>())
+      if (isNoexceptExceptionSpec(Proto->getExceptionSpecType()) &&
+          Proto->canThrow() == CT_Cannot)
+        return false;
+  return true;
 }
 
 // Emit suspend expression which roughly looks like:
@@ -208,11 +227,36 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
 
   // Emit await_resume expression.
   CGF.EmitBlock(ReadyBlock);
+
+  // Exception handling requires additional IR. If the 'await_resume' function
+  // is marked as 'noexcept', we avoid generating this additional IR.
+  CXXTryStmt *TryStmt = nullptr;
+  if (Coro.ExceptionHandler && Kind == AwaitKind::Init &&
+      memberCallExpressionCanThrow(S.getResumeExpr())) {
+    Coro.ResumeEHVar =
+        CGF.CreateTempAlloca(Builder.getInt1Ty(), Prefix + Twine("resume.eh"));
+    Builder.CreateFlagStore(true, Coro.ResumeEHVar);
+
+    auto Loc = S.getResumeExpr()->getExprLoc();
+    auto *Catch = new (CGF.getContext())
+        CXXCatchStmt(Loc, /*exDecl=*/nullptr, Coro.ExceptionHandler);
+    auto *TryBody =
+        CompoundStmt::Create(CGF.getContext(), S.getResumeExpr(), Loc, Loc);
+    TryStmt = CXXTryStmt::Create(CGF.getContext(), Loc, TryBody, Catch);
+    CGF.EnterCXXTryStmt(*TryStmt);
+  }
+
   LValueOrRValue Res;
   if (forLValue)
     Res.LV = CGF.EmitLValue(S.getResumeExpr());
   else
     Res.RV = CGF.EmitAnyExpr(S.getResumeExpr(), aggSlot, ignoreResult);
+
+  if (TryStmt) {
+    Builder.CreateFlagStore(false, Coro.ResumeEHVar);
+    CGF.ExitCXXTryStmt(*TryStmt);
+  }
+
   return Res;
 }
 
@@ -400,7 +444,7 @@ struct CallCoroDelete final : public EHScopeStack::Cleanup {
     // We should have captured coro.free from the emission of deallocate.
     auto *CoroFree = CGF.CurCoro.Data->LastCoroFree;
     if (!CoroFree) {
-      CGF.CGM.Error(Deallocate->getLocStart(),
+      CGF.CGM.Error(Deallocate->getBeginLoc(),
                     "Deallocation expressoin does not refer to coro.free");
       return;
     }
@@ -588,19 +632,40 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     EHStack.pushCleanup<CallCoroEnd>(EHCleanup);
 
     CurCoro.Data->CurrentAwaitKind = AwaitKind::Init;
+    CurCoro.Data->ExceptionHandler = S.getExceptionHandler();
     EmitStmt(S.getInitSuspendStmt());
     CurCoro.Data->FinalJD = getJumpDestInCurrentScope(FinalBB);
 
     CurCoro.Data->CurrentAwaitKind = AwaitKind::Normal;
 
-    if (auto *OnException = S.getExceptionHandler()) {
-      auto Loc = S.getLocStart();
-      CXXCatchStmt Catch(Loc, /*exDecl=*/nullptr, OnException);
-      auto *TryStmt = CXXTryStmt::Create(getContext(), Loc, S.getBody(), &Catch);
+    if (CurCoro.Data->ExceptionHandler) {
+      // If we generated IR to record whether an exception was thrown from
+      // 'await_resume', then use that IR to determine whether the coroutine
+      // body should be skipped.
+      // If we didn't generate the IR (perhaps because 'await_resume' was marked
+      // as 'noexcept'), then we skip this check.
+      BasicBlock *ContBB = nullptr;
+      if (CurCoro.Data->ResumeEHVar) {
+        BasicBlock *BodyBB = createBasicBlock("coro.resumed.body");
+        ContBB = createBasicBlock("coro.resumed.cont");
+        Value *SkipBody = Builder.CreateFlagLoad(CurCoro.Data->ResumeEHVar,
+                                                 "coro.resumed.eh");
+        Builder.CreateCondBr(SkipBody, ContBB, BodyBB);
+        EmitBlock(BodyBB);
+      }
+
+      auto Loc = S.getBeginLoc();
+      CXXCatchStmt Catch(Loc, /*exDecl=*/nullptr,
+                         CurCoro.Data->ExceptionHandler);
+      auto *TryStmt =
+          CXXTryStmt::Create(getContext(), Loc, S.getBody(), &Catch);
 
       EnterCXXTryStmt(*TryStmt);
       emitBodyAndFallthrough(*this, S, TryStmt->getTryBlock());
       ExitCXXTryStmt(*TryStmt);
+
+      if (ContBB)
+        EmitBlock(ContBB);
     }
     else {
       emitBodyAndFallthrough(*this, S, S.getBody());
@@ -642,8 +707,8 @@ RValue CodeGenFunction::EmitCoroutineIntrinsic(const CallExpr *E,
     if (CurCoro.Data && CurCoro.Data->CoroBegin) {
       return RValue::get(CurCoro.Data->CoroBegin);
     }
-    CGM.Error(E->getLocStart(), "this builtin expect that __builtin_coro_begin "
-      "has been used earlier in this function");
+    CGM.Error(E->getBeginLoc(), "this builtin expect that __builtin_coro_begin "
+                                "has been used earlier in this function");
     auto NullPtr = llvm::ConstantPointerNull::get(Builder.getInt8PtrTy());
     return RValue::get(NullPtr);
   }
@@ -657,7 +722,7 @@ RValue CodeGenFunction::EmitCoroutineIntrinsic(const CallExpr *E,
       Args.push_back(CurCoro.Data->CoroId);
       break;
     }
-    CGM.Error(E->getLocStart(), "this builtin expect that __builtin_coro_id has"
+    CGM.Error(E->getBeginLoc(), "this builtin expect that __builtin_coro_id has"
                                 " been used earlier in this function");
     // Fallthrough to the next case to add TokenNone as the first argument.
     LLVM_FALLTHROUGH;

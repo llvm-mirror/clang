@@ -29,20 +29,19 @@ const Builtin::Info AArch64TargetInfo::BuiltinInfo[] = {
    {#ID, TYPE, ATTRS, nullptr, ALL_LANGUAGES, nullptr},
 #define LANGBUILTIN(ID, TYPE, ATTRS, LANG)                                     \
   {#ID, TYPE, ATTRS, nullptr, LANG, nullptr},
+#define TARGET_HEADER_BUILTIN(ID, TYPE, ATTRS, HEADER, LANGS, FEATURE)         \
+  {#ID, TYPE, ATTRS, HEADER, LANGS, FEATURE},
 #include "clang/Basic/BuiltinsAArch64.def"
 };
 
 AArch64TargetInfo::AArch64TargetInfo(const llvm::Triple &Triple,
                                      const TargetOptions &Opts)
     : TargetInfo(Triple), ABI("aapcs") {
-  if (getTriple().getOS() == llvm::Triple::NetBSD ||
-      getTriple().getOS() == llvm::Triple::OpenBSD) {
-    // NetBSD apparently prefers consistency across ARM targets to
-    // consistency across 64-bit targets.
+  if (getTriple().getOS() == llvm::Triple::OpenBSD) {
     Int64Type = SignedLongLong;
     IntMaxType = SignedLongLong;
   } else {
-    if (!getTriple().isOSDarwin())
+    if (!getTriple().isOSDarwin() && getTriple().getOS() != llvm::Triple::NetBSD)
       WCharType = UnsignedInt;
 
     Int64Type = SignedLong;
@@ -532,6 +531,11 @@ void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
                                                 MacroBuilder &Builder) const {
   WindowsTargetInfo::getTargetDefines(Opts, Builder);
   getVisualStudioDefines(Opts, Builder);
+}
+
+TargetInfo::CallingConvKind
+MicrosoftARM64TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
+  return CCK_MicrosoftWin64;
 }
 
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,

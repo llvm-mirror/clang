@@ -9,9 +9,11 @@
 
 #include "clang/Basic/VirtualFileSystem.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "gtest/gtest.h"
 #include <map>
@@ -64,6 +66,21 @@ public:
     return std::string();
   }
   std::error_code setCurrentWorkingDirectory(const Twine &Path) override {
+    return std::error_code();
+  }
+  // Map any symlink to "/symlink".
+  std::error_code getRealPath(const Twine &Path,
+                              SmallVectorImpl<char> &Output) const override {
+    auto I = FilesAndDirs.find(Path.str());
+    if (I == FilesAndDirs.end())
+      return make_error_code(llvm::errc::no_such_file_or_directory);
+    if (I->second.isSymlink()) {
+      Output.clear();
+      Twine("/symlink").toVector(Output);
+      return std::error_code();
+    }
+    Output.clear();
+    Path.toVector(Output);
     return std::error_code();
   }
 
@@ -135,6 +152,13 @@ public:
     addEntry(Path, S);
   }
 };
+
+/// Replace back-slashes by front-slashes.
+std::string getPosixPath(std::string S) {
+  SmallString<128> Result;
+  llvm::sys::path::native(S, Result, llvm::sys::path::Style::posix);
+  return Result.str();
+}
 } // end anonymous namespace
 
 TEST(VirtualFileSystemTest, StatusQueries) {
@@ -193,6 +217,35 @@ TEST(VirtualFileSystemTest, BaseOnlyOverlay) {
   Status2 = O->status("/foo");
   EXPECT_FALSE(Status2.getError());
   EXPECT_TRUE(Status->equivalent(*Status2));
+}
+
+TEST(VirtualFileSystemTest, GetRealPathInOverlay) {
+  IntrusiveRefCntPtr<DummyFileSystem> Lower(new DummyFileSystem());
+  Lower->addRegularFile("/foo");
+  Lower->addSymlink("/lower_link");
+  IntrusiveRefCntPtr<DummyFileSystem> Upper(new DummyFileSystem());
+
+  IntrusiveRefCntPtr<vfs::OverlayFileSystem> O(
+      new vfs::OverlayFileSystem(Lower));
+  O->pushOverlay(Upper);
+
+  // Regular file.
+  SmallString<16> RealPath;
+  EXPECT_FALSE(O->getRealPath("/foo", RealPath));
+  EXPECT_EQ(RealPath.str(), "/foo");
+
+  // Expect no error getting real path for symlink in lower overlay.
+  EXPECT_FALSE(O->getRealPath("/lower_link", RealPath));
+  EXPECT_EQ(RealPath.str(), "/symlink");
+
+  // Try a non-existing link.
+  EXPECT_EQ(O->getRealPath("/upper_link", RealPath),
+            errc::no_such_file_or_directory);
+
+  // Add a new symlink in upper.
+  Upper->addSymlink("/upper_link");
+  EXPECT_FALSE(O->getRealPath("/upper_link", RealPath));
+  EXPECT_EQ(RealPath.str(), "/symlink");
 }
 
 TEST(VirtualFileSystemTest, OverlayFiles) {
@@ -737,7 +790,9 @@ TEST_F(InMemoryFileSystemTest, DirectoryIteration) {
 
   I = FS.dir_begin("/b", EC);
   ASSERT_FALSE(EC);
-  ASSERT_EQ("/b/c", I->getName());
+  // When on Windows, we end up with "/b\\c" as the name.  Convert to Posix
+  // path for the sake of the comparison.
+  ASSERT_EQ("/b/c", getPosixPath(I->getName()));
   I.increment(EC);
   ASSERT_FALSE(EC);
   ASSERT_EQ(vfs::directory_iterator(), I);
@@ -749,24 +804,44 @@ TEST_F(InMemoryFileSystemTest, WorkingDirectory) {
 
   auto Stat = FS.status("/b/c");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
-  ASSERT_EQ("c", Stat->getName());
+  ASSERT_EQ("/b/c", Stat->getName());
   ASSERT_EQ("/b", *FS.getCurrentWorkingDirectory());
 
   Stat = FS.status("c");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
 
-  auto ReplaceBackslashes = [](std::string S) {
-    std::replace(S.begin(), S.end(), '\\', '/');
-    return S;
-  };
   NormalizedFS.setCurrentWorkingDirectory("/b/c");
   NormalizedFS.setCurrentWorkingDirectory(".");
-  ASSERT_EQ("/b/c", ReplaceBackslashes(
-                        NormalizedFS.getCurrentWorkingDirectory().get()));
+  ASSERT_EQ("/b/c",
+            getPosixPath(NormalizedFS.getCurrentWorkingDirectory().get()));
   NormalizedFS.setCurrentWorkingDirectory("..");
-  ASSERT_EQ("/b", ReplaceBackslashes(
-                      NormalizedFS.getCurrentWorkingDirectory().get()));
+  ASSERT_EQ("/b",
+            getPosixPath(NormalizedFS.getCurrentWorkingDirectory().get()));
 }
+
+#if !defined(_WIN32)
+TEST_F(InMemoryFileSystemTest, GetRealPath) {
+  SmallString<16> Path;
+  EXPECT_EQ(FS.getRealPath("b", Path), errc::operation_not_permitted);
+
+  auto GetRealPath = [this](StringRef P) {
+    SmallString<16> Output;
+    auto EC = FS.getRealPath(P, Output);
+    EXPECT_FALSE(EC);
+    return Output.str().str();
+  };
+
+  FS.setCurrentWorkingDirectory("a");
+  EXPECT_EQ(GetRealPath("b"), "a/b");
+  EXPECT_EQ(GetRealPath("../b"), "b");
+  EXPECT_EQ(GetRealPath("b/./c"), "a/b/c");
+
+  FS.setCurrentWorkingDirectory("/a");
+  EXPECT_EQ(GetRealPath("b"), "/a/b");
+  EXPECT_EQ(GetRealPath("../b"), "/b");
+  EXPECT_EQ(GetRealPath("b/./c"), "/a/b/c");
+}
+#endif // _WIN32
 
 TEST_F(InMemoryFileSystemTest, AddFileWithUser) {
   FS.addFile("/a/b/c", 0, MemoryBuffer::getMemBuffer("abc"), 0xFEEDFACE);
@@ -848,6 +923,39 @@ TEST_F(InMemoryFileSystemTest, AddDirectoryThenAddChild) {
   Stat = FS.status("/a/b");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
   ASSERT_TRUE(Stat->isRegularFile());
+}
+
+// Test that the name returned by status() is in the same form as the path that
+// was requested (to match the behavior of RealFileSystem).
+TEST_F(InMemoryFileSystemTest, StatusName) {
+  NormalizedFS.addFile("/a/b/c", 0, MemoryBuffer::getMemBuffer("abc"),
+                       /*User=*/None,
+                       /*Group=*/None, sys::fs::file_type::regular_file);
+  NormalizedFS.setCurrentWorkingDirectory("/a/b");
+
+  // Access using InMemoryFileSystem::status.
+  auto Stat = NormalizedFS.status("../b/c");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n"
+                                << NormalizedFS.toString();
+  ASSERT_TRUE(Stat->isRegularFile());
+  ASSERT_EQ("../b/c", Stat->getName());
+
+  // Access using InMemoryFileAdaptor::status.
+  auto File = NormalizedFS.openFileForRead("../b/c");
+  ASSERT_FALSE(File.getError()) << File.getError() << "\n"
+                                << NormalizedFS.toString();
+  Stat = (*File)->status();
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n"
+                                << NormalizedFS.toString();
+  ASSERT_TRUE(Stat->isRegularFile());
+  ASSERT_EQ("../b/c", Stat->getName());
+
+  // Access using a directory iterator.
+  std::error_code EC;
+  clang::vfs::directory_iterator It = NormalizedFS.dir_begin("../b", EC);
+  // When on Windows, we end up with "../b\\c" as the name.  Convert to Posix
+  // path for the sake of the comparison.
+  ASSERT_EQ("../b/c", getPosixPath(It->getName()));
 }
 
 // NOTE: in the tests below, we use '//root/' as our root directory, since it is
@@ -1359,4 +1467,36 @@ TEST_F(VFSFromYAMLTest, RecursiveDirectoryIterationLevel) {
     EXPECT_EQ(I.level(), l);
   }
   EXPECT_EQ(I, E);
+}
+
+TEST_F(VFSFromYAMLTest, RelativePaths) {
+  IntrusiveRefCntPtr<DummyFileSystem> Lower(new DummyFileSystem());
+  // Filename at root level without a parent directory.
+  IntrusiveRefCntPtr<vfs::FileSystem> FS = getFromYAMLString(
+      "{ 'roots': [\n"
+      "  { 'type': 'file', 'name': 'file-not-in-directory.h',\n"
+      "    'external-contents': '//root/external/file'\n"
+      "  }\n"
+      "] }", Lower);
+  EXPECT_EQ(nullptr, FS.get());
+
+  // Relative file path.
+  FS = getFromYAMLString(
+      "{ 'roots': [\n"
+      "  { 'type': 'file', 'name': 'relative/file/path.h',\n"
+      "    'external-contents': '//root/external/file'\n"
+      "  }\n"
+      "] }", Lower);
+  EXPECT_EQ(nullptr, FS.get());
+
+  // Relative directory path.
+  FS = getFromYAMLString(
+       "{ 'roots': [\n"
+       "  { 'type': 'directory', 'name': 'relative/directory/path.h',\n"
+       "    'contents': []\n"
+       "  }\n"
+       "] }", Lower);
+  EXPECT_EQ(nullptr, FS.get());
+
+  EXPECT_EQ(3, NumDiagnostics);
 }

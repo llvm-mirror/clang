@@ -320,6 +320,88 @@ namespace injected_class_name {
   using T = decltype(b);
 }
 
+namespace member_guides {
+  // PR34520
+  template<class>
+  struct Foo {
+    template <class T> struct Bar {
+      Bar(...) {}
+    };
+    Bar(int) -> Bar<int>;
+  };
+  Foo<int>::Bar b = 0;
+
+  struct A {
+    template<typename T> struct Public; // expected-note {{declared public}}
+    Public(float) -> Public<float>;
+  protected: // expected-note {{declared protected by intervening access specifier}}
+    template<typename T> struct Protected; // expected-note 2{{declared protected}}
+    Protected(float) -> Protected<float>;
+    Public(int) -> Public<int>; // expected-error {{different access}}
+  private: // expected-note {{declared private by intervening access specifier}}
+    template<typename T> struct Private; // expected-note {{declared private}}
+    Protected(int) -> Protected<int>; // expected-error {{different access}}
+  public: // expected-note 2{{declared public by intervening access specifier}}
+    template<typename T> Public(T) -> Public<T>;
+    template<typename T> Protected(T) -> Protected<T>; // expected-error {{different access}}
+    template<typename T> Private(T) -> Private<T>; // expected-error {{different access}}
+  };
+}
+
+namespace rdar41903969 {
+template <class T> struct A {};
+template <class T> struct B;
+template <class T> struct C {
+  C(A<T>&);
+  C(B<T>&);
+};
+
+void foo(A<int> &a, B<int> &b) {
+  (void)C{b};
+  (void)C{a};
+}
+
+template<typename T> struct X {
+  X(std::initializer_list<T>) = delete;
+  X(const X&);
+};
+
+template <class T> struct D : X<T> {};
+
+void bar(D<int>& d) {
+  (void)X{d};
+}
+}
+
+namespace rdar41330135 {
+template <int> struct A {};
+template <class T>
+struct S {
+  template <class U>
+  S(T a, U t, A<sizeof(t)>);
+};
+template <class T> struct D {
+  D(T t, A<sizeof(t)>);
+};
+int f() {
+  S s(0, 0, A<sizeof(int)>());
+  D d(0, A<sizeof(int)>());
+}
+
+namespace test_dupls {
+template<unsigned long> struct X {};
+template<typename T> struct A {
+  A(T t, X<sizeof(t)>);
+};
+A a(0, {});
+template<typename U> struct B {
+  B(U u, X<sizeof(u)>);
+};
+B b(0, {});
+}
+
+}
+
 #else
 
 // expected-no-diagnostics

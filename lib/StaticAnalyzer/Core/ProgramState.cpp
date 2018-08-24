@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -126,16 +127,27 @@ ProgramStateRef ProgramState::bindLoc(Loc LV,
   return newState;
 }
 
-ProgramStateRef ProgramState::bindDefault(SVal loc,
-                                          SVal V,
-                                          const LocationContext *LCtx) const {
+ProgramStateRef
+ProgramState::bindDefaultInitial(SVal loc, SVal V,
+                                 const LocationContext *LCtx) const {
   ProgramStateManager &Mgr = getStateManager();
   const MemRegion *R = loc.castAs<loc::MemRegionVal>().getRegion();
-  const StoreRef &newStore = Mgr.StoreMgr->BindDefault(getStore(), R, V);
+  const StoreRef &newStore = Mgr.StoreMgr->BindDefaultInitial(getStore(), R, V);
   ProgramStateRef new_state = makeWithStore(newStore);
-  return Mgr.getOwningEngine() ?
-           Mgr.getOwningEngine()->processRegionChange(new_state, R, LCtx) :
-           new_state;
+  return Mgr.getOwningEngine()
+             ? Mgr.getOwningEngine()->processRegionChange(new_state, R, LCtx)
+             : new_state;
+}
+
+ProgramStateRef
+ProgramState::bindDefaultZero(SVal loc, const LocationContext *LCtx) const {
+  ProgramStateManager &Mgr = getStateManager();
+  const MemRegion *R = loc.castAs<loc::MemRegionVal>().getRegion();
+  const StoreRef &newStore = Mgr.StoreMgr->BindDefaultZero(getStore(), R);
+  ProgramStateRef new_state = makeWithStore(newStore);
+  return Mgr.getOwningEngine()
+             ? Mgr.getOwningEngine()->processRegionChange(new_state, R, LCtx)
+             : new_state;
 }
 
 typedef ArrayRef<const MemRegion *> RegionList;
@@ -325,9 +337,8 @@ ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
 
   // Get the offset: the minimum value of the array index type.
   BasicValueFactory &BVF = svalBuilder.getBasicValueFactory();
-  // FIXME: This should be using ValueManager::ArrayindexTy...somehow.
   if (indexTy.isNull())
-    indexTy = Ctx.IntTy;
+    indexTy = svalBuilder.getArrayIndexType();
   nonloc::ConcreteInt Min(BVF.getMinValue(indexTy));
 
   // Adjust the index.
@@ -482,6 +493,10 @@ void ProgramState::printTaint(raw_ostream &Out,
 
 void ProgramState::dumpTaint() const {
   printTaint(llvm::errs());
+}
+
+AnalysisManager& ProgramState::getAnalysisManager() const {
+  return stateMgr->getOwningEngine()->getAnalysisManager();
 }
 
 //===----------------------------------------------------------------------===//

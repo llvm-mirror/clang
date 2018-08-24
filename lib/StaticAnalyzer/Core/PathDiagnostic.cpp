@@ -16,6 +16,7 @@
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
@@ -29,6 +30,7 @@
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -148,11 +150,11 @@ getFirstStackedCallToHeaderFile(PathDiagnosticCallPiece *CP,
   if (CallLoc.isMacroID())
     return nullptr;
 
-  assert(SMgr.isInMainFile(CallLoc) &&
-         "The call piece should be in the main file.");
+  assert(AnalysisManager::isInCodeFile(CallLoc, SMgr) &&
+         "The call piece should not be in a header file.");
 
   // Check if CP represents a path through a function outside of the main file.
-  if (!SMgr.isInMainFile(CP->callEnterWithin.asLocation()))
+  if (!AnalysisManager::isInCodeFile(CP->callEnterWithin.asLocation(), SMgr))
     return CP;
 
   const PathPieces &Path = CP->path;
@@ -404,11 +406,15 @@ static bool compareCrossTUSourceLocs(FullSourceLoc XL, FullSourceLoc YL) {
   std::pair<bool, bool> InSameTU = SM.isInTheSameTranslationUnit(XOffs, YOffs);
   if (InSameTU.first)
     return XL.isBeforeInTranslationUnitThan(YL);
-  const FileEntry *XFE = SM.getFileEntryForID(XL.getFileID());
-  const FileEntry *YFE = SM.getFileEntryForID(YL.getFileID());
+  const FileEntry *XFE = SM.getFileEntryForID(XL.getSpellingLoc().getFileID());
+  const FileEntry *YFE = SM.getFileEntryForID(YL.getSpellingLoc().getFileID());
   if (!XFE || !YFE)
     return XFE && !YFE;
-  return XFE->getName() < YFE->getName();
+  int NameCmp = XFE->getName().compare(YFE->getName());
+  if (NameCmp != 0)
+    return NameCmp == -1;
+  // Last resort: Compare raw file IDs that are possibly expansions.
+  return XL.getFileID() < YL.getFileID();
 }
 
 static bool compare(const PathDiagnostic &X, const PathDiagnostic &Y) {
@@ -530,7 +536,7 @@ PathDiagnosticConsumer::FilesMade::getFiles(const PathDiagnostic &PD) {
 static SourceLocation getValidSourceLocation(const Stmt* S,
                                              LocationOrAnalysisDeclContext LAC,
                                              bool UseEnd = false) {
-  SourceLocation L = UseEnd ? S->getLocEnd() : S->getLocStart();
+  SourceLocation L = UseEnd ? S->getEndLoc() : S->getBeginLoc();
   assert(!LAC.isNull() && "A valid LocationContext or AnalysisDeclContext should "
                           "be passed to PathDiagnosticLocation upon creation.");
 
@@ -556,13 +562,13 @@ static SourceLocation getValidSourceLocation(const Stmt* S,
       if (!Parent) {
         const Stmt *Body = ADC->getBody();
         if (Body)
-          L = Body->getLocStart();
+          L = Body->getBeginLoc();
         else
-          L = ADC->getDecl()->getLocEnd();
+          L = ADC->getDecl()->getEndLoc();
         break;
       }
 
-      L = UseEnd ? Parent->getLocEnd() : Parent->getLocStart();
+      L = UseEnd ? Parent->getEndLoc() : Parent->getBeginLoc();
     } while (!L.isValid());
   }
 
@@ -629,7 +635,7 @@ getLocationForCaller(const StackFrameContext *SFC,
 PathDiagnosticLocation
 PathDiagnosticLocation::createBegin(const Decl *D,
                                     const SourceManager &SM) {
-  return PathDiagnosticLocation(D->getLocStart(), SM, SingleLocK);
+  return PathDiagnosticLocation(D->getBeginLoc(), SM, SingleLocK);
 }
 
 PathDiagnosticLocation
@@ -689,7 +695,7 @@ PathDiagnosticLocation::createDeclBegin(const LocationContext *LC,
   // FIXME: Should handle CXXTryStmt if analyser starts supporting C++.
   if (const auto *CS = dyn_cast_or_null<CompoundStmt>(LC->getDecl()->getBody()))
     if (!CS->body_empty()) {
-      SourceLocation Loc = (*CS->body_begin())->getLocStart();
+      SourceLocation Loc = (*CS->body_begin())->getBeginLoc();
       return PathDiagnosticLocation(Loc, SM, SingleLocK);
     }
 
@@ -730,10 +736,10 @@ PathDiagnosticLocation::create(const ProgramPoint& P,
   } else if (Optional<BlockEntrance> BE = P.getAs<BlockEntrance>()) {
     CFGElement BlockFront = BE->getBlock()->front();
     if (auto StmtElt = BlockFront.getAs<CFGStmt>()) {
-      return PathDiagnosticLocation(StmtElt->getStmt()->getLocStart(), SMng);
+      return PathDiagnosticLocation(StmtElt->getStmt()->getBeginLoc(), SMng);
     } else if (auto NewAllocElt = BlockFront.getAs<CFGNewAllocator>()) {
       return PathDiagnosticLocation(
-          NewAllocElt->getAllocatorExpr()->getLocStart(), SMng);
+          NewAllocElt->getAllocatorExpr()->getBeginLoc(), SMng);
     }
     llvm_unreachable("Unexpected CFG element at front of block");
   } else {
@@ -839,7 +845,7 @@ PathDiagnosticLocation
     if (P.getAs<PostStmtPurgeDeadSymbols>())
       return PathDiagnosticLocation::createEnd(S, SM, LC);
 
-    if (S->getLocStart().isValid())
+    if (S->getBeginLoc().isValid())
       return PathDiagnosticLocation(S, SM, LC);
     return PathDiagnosticLocation(getValidSourceLocation(S, LC), SM);
   }
@@ -898,7 +904,7 @@ PathDiagnosticRange
           const auto *DS = cast<DeclStmt>(S);
           if (DS->isSingleDecl()) {
             // Should always be the case, but we'll be defensive.
-            return SourceRange(DS->getLocStart(),
+            return SourceRange(DS->getBeginLoc(),
                                DS->getSingleDecl()->getLocation());
           }
           break;
@@ -999,11 +1005,49 @@ void PathDiagnosticCallPiece::setCallee(const CallEnter &CE,
         CalleeCtx->getAnalysisDeclContext()->isBodyAutosynthesized());
 }
 
+static void describeTemplateParameters(raw_ostream &Out,
+                                       const ArrayRef<TemplateArgument> TAList,
+                                       const LangOptions &LO,
+                                       StringRef Prefix = StringRef(),
+                                       StringRef Postfix = StringRef());
+
+static void describeTemplateParameter(raw_ostream &Out,
+                                      const TemplateArgument &TArg,
+                                      const LangOptions &LO) {
+
+  if (TArg.getKind() == TemplateArgument::ArgKind::Pack) {
+    describeTemplateParameters(Out, TArg.getPackAsArray(), LO);
+  } else {
+    TArg.print(PrintingPolicy(LO), Out);
+  }
+}
+
+static void describeTemplateParameters(raw_ostream &Out,
+                                       const ArrayRef<TemplateArgument> TAList,
+                                       const LangOptions &LO,
+                                       StringRef Prefix, StringRef Postfix) {
+  if (TAList.empty())
+    return;
+
+  Out << Prefix;
+  for (int I = 0, Last = TAList.size() - 1; I != Last; ++I) {
+    describeTemplateParameter(Out, TAList[I], LO);
+    Out << ", ";
+  }
+  describeTemplateParameter(Out, TAList[TAList.size() - 1], LO);
+  Out << Postfix;
+}
+
 static void describeClass(raw_ostream &Out, const CXXRecordDecl *D,
                           StringRef Prefix = StringRef()) {
   if (!D->getIdentifier())
     return;
-  Out << Prefix << '\'' << *D << '\'';
+  Out << Prefix << '\'' << *D;
+  if (const auto T = dyn_cast<ClassTemplateSpecializationDecl>(D))
+    describeTemplateParameters(Out, T->getTemplateArgs().asArray(),
+                               D->getASTContext().getLangOpts(), "<", ">");
+
+  Out << '\'';
 }
 
 static bool describeCodeDecl(raw_ostream &Out, const Decl *D,
@@ -1061,7 +1105,16 @@ static bool describeCodeDecl(raw_ostream &Out, const Decl *D,
     return true;
   }
 
-  Out << Prefix << '\'' << cast<NamedDecl>(*D) << '\'';
+  Out << Prefix << '\'' << cast<NamedDecl>(*D);
+
+  // Adding template parameters.
+  if (const auto FD = dyn_cast<FunctionDecl>(D))
+    if (const TemplateArgumentList *TAList =
+                                    FD->getTemplateSpecializationArgs())
+      describeTemplateParameters(Out, TAList->asArray(),
+                                 FD->getASTContext().getLangOpts(), "<", ">");
+
+  Out << '\'';
   return true;
 }
 
@@ -1271,4 +1324,85 @@ std::string StackHintGeneratorForSymbol::getMessageForArg(const Expr *ArgE,
      << " parameter";
 
   return os.str();
+}
+
+LLVM_DUMP_METHOD void PathPieces::dump() const {
+  unsigned index = 0;
+  for (PathPieces::const_iterator I = begin(), E = end(); I != E; ++I) {
+    llvm::errs() << "[" << index++ << "]  ";
+    (*I)->dump();
+    llvm::errs() << "\n";
+  }
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticCallPiece::dump() const {
+  llvm::errs() << "CALL\n--------------\n";
+
+  if (const Stmt *SLoc = getLocation().getStmtOrNull())
+    SLoc->dump();
+  else if (const auto *ND = dyn_cast_or_null<NamedDecl>(getCallee()))
+    llvm::errs() << *ND << "\n";
+  else
+    getLocation().dump();
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticEventPiece::dump() const {
+  llvm::errs() << "EVENT\n--------------\n";
+  llvm::errs() << getString() << "\n";
+  llvm::errs() << " ---- at ----\n";
+  getLocation().dump();
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticControlFlowPiece::dump() const {
+  llvm::errs() << "CONTROL\n--------------\n";
+  getStartLocation().dump();
+  llvm::errs() << " ---- to ----\n";
+  getEndLocation().dump();
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticMacroPiece::dump() const {
+  llvm::errs() << "MACRO\n--------------\n";
+  // FIXME: Print which macro is being invoked.
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticNotePiece::dump() const {
+  llvm::errs() << "NOTE\n--------------\n";
+  llvm::errs() << getString() << "\n";
+  llvm::errs() << " ---- at ----\n";
+  getLocation().dump();
+}
+
+LLVM_DUMP_METHOD void PathDiagnosticLocation::dump() const {
+  if (!isValid()) {
+    llvm::errs() << "<INVALID>\n";
+    return;
+  }
+
+  switch (K) {
+  case RangeK:
+    // FIXME: actually print the range.
+    llvm::errs() << "<range>\n";
+    break;
+  case SingleLocK:
+    asLocation().dump();
+    llvm::errs() << "\n";
+    break;
+  case StmtK:
+    if (S)
+      S->dump();
+    else
+      llvm::errs() << "<NULL STMT>\n";
+    break;
+  case DeclK:
+    if (const auto *ND = dyn_cast_or_null<NamedDecl>(D))
+      llvm::errs() << *ND << "\n";
+    else if (isa<BlockDecl>(D))
+      // FIXME: Make this nicer.
+      llvm::errs() << "<block>\n";
+    else if (D)
+      llvm::errs() << "<unknown decl>\n";
+    else
+      llvm::errs() << "<NULL DECL>\n";
+    break;
+  }
 }

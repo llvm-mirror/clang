@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 %s -cl-std=CL2.0 -emit-llvm -o - -O0 -triple spir-unknown-unknown | FileCheck -check-prefixes=COMMON,SPIR %s
 // RUN: %clang_cc1 %s -cl-std=CL2.0 -emit-llvm -o - -O0 -triple amdgcn-amd-amdhsa | FileCheck -check-prefixes=COMMON,AMDGCN %s
+// RUN: %clang_cc1 %s -cl-std=CL2.0 -emit-llvm -o - -O0 -debug-info-kind=limited -triple spir-unknown-unknown | FileCheck -check-prefixes=CHECK-DEBUG %s
+// RUN: %clang_cc1 %s -cl-std=CL2.0 -emit-llvm -o - -O0 -debug-info-kind=limited -triple amdgcn-amd-amdhsa | FileCheck -check-prefixes=CHECK-DEBUG %s
 
 // COMMON: @__block_literal_global = internal addrspace(1) constant { i32, i32 } { i32 8, i32 4 }
 // COMMON-NOT: .str
@@ -60,3 +62,11 @@ void foo(){
 // AMDGCN:  %[[block_capture:.*]] = load i32, i32* %[[block_capture_addr]]
 
 // COMMON-NOT: define{{.*}}@__foo_block_invoke_kernel
+
+// CHECK-DEBUG: !DIDerivedType(tag: DW_TAG_member, name: "__size"
+// CHECK-DEBUG: !DIDerivedType(tag: DW_TAG_member, name: "__align"
+
+// CHECK-DEBUG-NOT: !DIDerivedType(tag: DW_TAG_member, name: "__isa"
+// CHECK-DEBUG-NOT: !DIDerivedType(tag: DW_TAG_member, name: "__flags"
+// CHECK-DEBUG-NOT: !DIDerivedType(tag: DW_TAG_member, name: "__reserved"
+// CHECK-DEBUG-NOT: !DIDerivedType(tag: DW_TAG_member, name: "__FuncPtr"

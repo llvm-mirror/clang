@@ -1200,6 +1200,51 @@ Objective-C objects. ``__has_feature(objc_arc_fields)`` indicates that C structs
 are allowed to have fields that are pointers to Objective-C objects managed by
 automatic reference counting.
 
+.. _objc-weak:
+
+Weak references
+---------------
+
+Clang supports ARC-style weak and unsafe references in Objective-C even
+outside of ARC mode.  Weak references must be explicitly enabled with
+the ``-fobjc-weak`` option; use ``__has_feature((objc_arc_weak))``
+to test whether they are enabled.  Unsafe references are enabled
+unconditionally.  ARC-style weak and unsafe references cannot be used
+when Objective-C garbage collection is enabled.
+
+Except as noted below, the language rules for the ``__weak`` and
+``__unsafe_unretained`` qualifiers (and the ``weak`` and
+``unsafe_unretained`` property attributes) are just as laid out
+in the :doc:`ARC specification <AutomaticReferenceCounting>`.
+In particular, note that some classes do not support forming weak
+references to their instances, and note that special care must be
+taken when storing weak references in memory where initialization
+and deinitialization are outside the responsibility of the compiler
+(such as in ``malloc``-ed memory).
+
+Loading from a ``__weak`` variable always implicitly retains the
+loaded value.  In non-ARC modes, this retain is normally balanced
+by an implicit autorelease.  This autorelease can be suppressed
+by performing the load in the receiver position of a ``-retain``
+message send (e.g. ``[weakReference retain]``); note that this performs
+only a single retain (the retain done when primitively loading from
+the weak reference).
+
+For the most part, ``__unsafe_unretained`` in non-ARC modes is just the
+default behavior of variables and therefore is not needed.  However,
+it does have an effect on the semantics of block captures: normally,
+copying a block which captures an Objective-C object or block pointer
+causes the captured pointer to be retained or copied, respectively,
+but that behavior is suppressed when the captured variable is qualified
+with ``__unsafe_unretained``.
+
+Note that the ``__weak`` qualifier formerly meant the GC qualifier in
+all non-ARC modes and was silently ignored outside of GC modes.  It now
+means the ARC-style qualifier in all non-GC modes and is no longer
+allowed if not enabled by either ``-fobjc-arc`` or ``-fobjc-weak``.
+It is expected that ``-fobjc-weak`` will eventually be enabled by default
+in all non-GC Objective-C modes.
+
 .. _objc-fixed-enum:
 
 Enumerations with a fixed underlying type
@@ -1694,6 +1739,70 @@ The '``__builtin_bitreverse``' family of builtins is used to reverse
 the bitpattern of an integer value; for example ``0b10110110`` becomes
 ``0b01101101``.
 
+``__builtin_rotateleft``
+------------------------
+
+* ``__builtin_rotateleft8``
+* ``__builtin_rotateleft16``
+* ``__builtin_rotateleft32``
+* ``__builtin_rotateleft64``
+
+**Syntax**:
+
+.. code-block:: c++
+
+     __builtin_rotateleft32(x, y)
+
+**Examples**:
+
+.. code-block:: c++
+
+      uint8_t rot_x = __builtin_rotateleft8(x, y);
+      uint16_t rot_x = __builtin_rotateleft16(x, y);
+      uint32_t rot_x = __builtin_rotateleft32(x, y);
+      uint64_t rot_x = __builtin_rotateleft64(x, y);
+
+**Description**:
+
+The '``__builtin_rotateleft``' family of builtins is used to rotate
+the bits in the first argument by the amount in the second argument. 
+For example, ``0b10000110`` rotated left by 11 becomes ``0b00110100``.
+The shift value is treated as an unsigned amount modulo the size of
+the arguments. Both arguments and the result have the bitwidth specified
+by the name of the builtin.
+
+``__builtin_rotateright``
+_------------------------
+
+* ``__builtin_rotateright8``
+* ``__builtin_rotateright16``
+* ``__builtin_rotateright32``
+* ``__builtin_rotateright64``
+
+**Syntax**:
+
+.. code-block:: c++
+
+     __builtin_rotateright32(x, y)
+
+**Examples**:
+
+.. code-block:: c++
+
+      uint8_t rot_x = __builtin_rotateright8(x, y);
+      uint16_t rot_x = __builtin_rotateright16(x, y);
+      uint32_t rot_x = __builtin_rotateright32(x, y);
+      uint64_t rot_x = __builtin_rotateright64(x, y);
+
+**Description**:
+
+The '``__builtin_rotateright``' family of builtins is used to rotate
+the bits in the first argument by the amount in the second argument. 
+For example, ``0b10000110`` rotated right by 3 becomes ``0b11010000``.
+The shift value is treated as an unsigned amount modulo the size of
+the arguments. Both arguments and the result have the bitwidth specified
+by the name of the builtin.
+
 ``__builtin_unreachable``
 -------------------------
 
@@ -1974,6 +2083,32 @@ is disallowed in general).
 
 Support for constant expression evaluation for the above builtins be detected
 with ``__has_feature(cxx_constexpr_string_builtins)``.
+
+Atomic Min/Max builtins with memory ordering
+--------------------------------------------
+
+There are two atomic builtins with min/max in-memory comparison and swap.
+The syntax and semantics are similar to GCC-compatible __atomic_* builtins.
+
+* ``__atomic_fetch_min`` 
+* ``__atomic_fetch_max`` 
+
+The builtins work with signed and unsigned integers and require to specify memory ordering.
+The return value is the original value that was stored in memory before comparison.
+
+Example:
+
+.. code-block:: c
+
+  unsigned int val = __atomic_fetch_min(unsigned int *pi, unsigned int ui, __ATOMIC_RELAXED);
+
+The third argument is one of the memory ordering specifiers ``__ATOMIC_RELAXED``,
+``__ATOMIC_CONSUME``, ``__ATOMIC_ACQUIRE``, ``__ATOMIC_RELEASE``,
+``__ATOMIC_ACQ_REL``, or ``__ATOMIC_SEQ_CST`` following C++11 memory model semantics.
+
+In terms or aquire-release ordering barriers these two operations are always
+considered as operations with *load-store* semantics, even when the original value
+is not actually modified after comparison.
 
 .. _langext-__c11_atomic:
 
@@ -2734,4 +2869,3 @@ Specifying Linker Options on ELF Targets
 The ``#pragma comment(lib, ...)`` directive is supported on all ELF targets.
 The second parameter is the library name (without the traditional Unix prefix of
 ``lib``).  This allows you to provide an implicit link of dependent libraries.
-

@@ -1,4 +1,4 @@
-//===--- IndexDataConsumer.h - Abstract index data consumer ---------------===//
+//===--- IndexDataConsumer.h - Abstract index data consumer -----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -54,9 +54,6 @@ public:
                                      SymbolRoleSet Roles, SourceLocation Loc);
 
   virtual void finish() {}
-
-private:
-  virtual void _anchor();
 };
 
 } // namespace index

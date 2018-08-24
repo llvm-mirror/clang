@@ -45,6 +45,11 @@ Compilation::Compilation(const Driver &D, const ToolChain &_DefaultToolChain,
 }
 
 Compilation::~Compilation() {
+  // Remove temporary files. This must be done before arguments are freed, as
+  // the file names might be derived from the input arguments.
+  if (!TheDriver.isSaveTempsEnabled() && !ForceKeepTempFiles)
+    CleanupFileList(TempFiles);
+
   delete TranslatedArgs;
   delete Args;
 
@@ -196,10 +201,10 @@ static bool ActionFailed(const Action *A,
   if (FailingCommands.empty())
     return false;
 
-  // CUDA can have the same input source code compiled multiple times so do not
-  // compiled again if there are already failures. It is OK to abort the CUDA
-  // pipeline on errors.
-  if (A->isOffloading(Action::OFK_Cuda))
+  // CUDA/HIP can have the same input source code compiled multiple times so do
+  // not compiled again if there are already failures. It is OK to abort the
+  // CUDA pipeline on errors.
+  if (A->isOffloading(Action::OFK_Cuda) || A->isOffloading(Action::OFK_HIP))
     return true;
 
   for (const auto &CI : FailingCommands)
@@ -245,6 +250,10 @@ void Compilation::initCompilationForDiagnostics() {
   AllActions.clear();
   Jobs.clear();
 
+  // Remove temporary files.
+  if (!TheDriver.isSaveTempsEnabled() && !ForceKeepTempFiles)
+    CleanupFileList(TempFiles);
+
   // Clear temporary/results file lists.
   TempFiles.clear();
   ResultFiles.clear();
@@ -262,6 +271,9 @@ void Compilation::initCompilationForDiagnostics() {
 
   // Redirect stdout/stderr to /dev/null.
   Redirects = {None, {""}, {""}};
+
+  // Temporary files added by diagnostics should be kept.
+  ForceKeepTempFiles = true;
 }
 
 StringRef Compilation::getSysRoot() const {

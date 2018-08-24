@@ -252,7 +252,7 @@ private:
 
 public:
   /// Create a new verifying diagnostic client, which will issue errors to
-  /// the currently-attached diagnostic client when a diagnostic does not match 
+  /// the currently-attached diagnostic client when a diagnostic does not match
   /// what is expected (as indicated in the source file).
   VerifyDiagnosticConsumer(DiagnosticsEngine &Diags);
   ~VerifyDiagnosticConsumer() override;
@@ -273,7 +273,7 @@ public:
     IsUnparsedNoDirectives
   };
 
-  /// \brief Update lists of parsed and unparsed files.
+  /// Update lists of parsed and unparsed files.
   void UpdateParsedFileStatus(SourceManager &SM, FileID FID, ParsedStatus PS);
 
   bool HandleComment(Preprocessor &PP, SourceRange Comment) override;

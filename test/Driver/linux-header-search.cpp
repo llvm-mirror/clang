@@ -7,6 +7,7 @@
 // RUN:     -target x86_64-unknown-linux-gnu \
 // RUN:     -stdlib=libc++ \
 // RUN:     -ccc-install-dir %S/Inputs/basic_linux_tree/usr/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
 // RUN:     --sysroot=%S/Inputs/basic_linux_libcxx_tree \
 // RUN:     --gcc-toolchain="" \
 // RUN:   | FileCheck --check-prefix=CHECK-BASIC-LIBCXX-SYSROOT %s
@@ -18,6 +19,7 @@
 // RUN:     -target x86_64-unknown-linux-gnu \
 // RUN:     -stdlib=libc++ \
 // RUN:     -ccc-install-dir %S/Inputs/basic_linux_libcxx_tree/usr/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
 // RUN:     --sysroot=%S/Inputs/basic_linux_libcxx_tree \
 // RUN:     --gcc-toolchain="" \
 // RUN:   | FileCheck --check-prefix=CHECK-BASIC-LIBCXX-INSTALL %s
@@ -30,6 +32,7 @@
 // RUN:     -target x86_64-unknown-linux-gnu \
 // RUN:     -stdlib=libc++ \
 // RUN:     -ccc-install-dir %S/Inputs/basic_linux_tree/usr/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
 // RUN:     --sysroot=%S/Inputs/basic_linux_libcxxv2_tree \
 // RUN:     --gcc-toolchain="" \
 // RUN:   | FileCheck --check-prefix=CHECK-BASIC-LIBCXXV2-SYSROOT %s
@@ -41,6 +44,7 @@
 // RUN:     -target x86_64-unknown-linux-gnu \
 // RUN:     -stdlib=libc++ \
 // RUN:     -ccc-install-dir %S/Inputs/basic_linux_libcxxv2_tree/usr/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
 // RUN:     --sysroot=%S/Inputs/basic_linux_libcxxv2_tree \
 // RUN:     --gcc-toolchain="" \
 // RUN:   | FileCheck --check-prefix=CHECK-BASIC-LIBCXXV2-INSTALL %s
@@ -54,6 +58,7 @@
 // RUN:     -target x86_64-unknown-linux-gnu \
 // RUN:     -stdlib=libc++ \
 // RUN:     -ccc-install-dir %S/Inputs/basic_linux_tree/usr/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
 // RUN:     --sysroot=%S/Inputs/basic_linux_libstdcxx_libcxxv2_tree \
 // RUN:     --gcc-toolchain="" \
 // RUN:   | FileCheck --check-prefix=CHECK-BASIC-LIBSTDCXX-LIBCXXV2-SYSROOT %s
@@ -488,3 +493,27 @@
 // CHECK-DEBIAN-SPARC64: "-internal-externc-isystem" "[[SYSROOT]]/usr/include/sparc64-linux-gnu"
 // CHECK-DEBIAN-SPARC64: "-internal-externc-isystem" "[[SYSROOT]]/include"
 // CHECK-DEBIAN-SPARC64: "-internal-externc-isystem" "[[SYSROOT]]/usr/include"
+
+// Check header search on OpenEmbedded ARM.
+// RUN: %clang -no-canonical-prefixes %s -### -fsyntax-only 2>&1 \
+// RUN:     -target arm-oe-linux-gnueabi -stdlib=libstdc++ \
+// RUN:     --sysroot=%S/Inputs/openembedded_arm_linux_tree \
+// RUN:     --gcc-toolchain="" \
+// RUN:   | FileCheck --check-prefix=CHECK-OE-ARM %s
+
+// CHECK-OE-ARM: "{{[^"]*}}clang{{[^"]*}}" "-cc1"
+// CHECK-OE-ARM: "-isysroot" "[[SYSROOT:[^"]+]]"
+// CHECK-OE-ARM: "-internal-isystem" "[[SYSROOT]]/usr/lib/arm-oe-linux-gnueabi/6.3.0/../../../include/c++/6.3.0"
+// CHECK-OE-ARM: "-internal-isystem" "[[SYSROOT]]/usr/lib/arm-oe-linux-gnueabi/6.3.0/../../../include/c++/6.3.0/backward"
+
+// Check header search on OpenEmbedded AArch64.
+// RUN: %clang -no-canonical-prefixes %s -### -fsyntax-only 2>&1 \
+// RUN:     -target aarch64-oe-linux -stdlib=libstdc++ \
+// RUN:     --sysroot=%S/Inputs/openembedded_aarch64_linux_tree \
+// RUN:     --gcc-toolchain="" \
+// RUN:   | FileCheck --check-prefix=CHECK-OE-AARCH64 %s
+
+// CHECK-OE-AARCH64: "{{[^"]*}}clang{{[^"]*}}" "-cc1"
+// CHECK-OE-AARCH64: "-isysroot" "[[SYSROOT:[^"]+]]"
+// CHECK-OE-AARCH64: "-internal-isystem" "[[SYSROOT]]/usr/lib64/aarch64-oe-linux/6.3.0/../../../include/c++/6.3.0"
+// CHECK-OE-AARCH64: "-internal-isystem" "[[SYSROOT]]/usr/lib64/aarch64-oe-linux/6.3.0/../../../include/c++/6.3.0/backward"

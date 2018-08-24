@@ -33,7 +33,7 @@ namespace clang {
 class AnalysisDeclContext;
 class FunctionDecl;
 class LocationContext;
-  
+
 /// ProgramPoints can be "tagged" as representing points specific to a given
 /// analysis entity.  Tags are abstract annotations, with an associated
 /// description and potentially other information.
@@ -41,12 +41,12 @@ class ProgramPointTag {
 public:
   ProgramPointTag(void *tagKind = nullptr) : TagKind(tagKind) {}
   virtual ~ProgramPointTag();
-  virtual StringRef getTagDescription() const = 0;    
+  virtual StringRef getTagDescription() const = 0;
 
 protected:
   /// Used to implement 'isKind' in subclasses.
   const void *getTagKind() { return TagKind; }
-  
+
 private:
   const void *TagKind;
 };
@@ -111,7 +111,7 @@ protected:
         assert(getLocationContext() == l);
         assert(getData1() == P);
       }
-        
+
   ProgramPoint(const void *P1,
                const void *P2,
                Kind k,
@@ -135,7 +135,7 @@ public:
                         getLocationContext(), tag);
   }
 
-  /// \brief Convert to the specified ProgramPoint type, asserting that this
+  /// Convert to the specified ProgramPoint type, asserting that this
   /// ProgramPoint is of the desired type.
   template<typename T>
   T castAs() const {
@@ -146,7 +146,7 @@ public:
     return t;
   }
 
-  /// \brief Convert to the specified ProgramPoint type, returning None if this
+  /// Convert to the specified ProgramPoint type, returning None if this
   /// ProgramPoint is not of the desired type.
   template<typename T>
   Optional<T> getAs() const {
@@ -167,7 +167,7 @@ public:
     return (Kind) x;
   }
 
-  /// \brief Is this a program point corresponding to purge/removal of dead
+  /// Is this a program point corresponding to purge/removal of dead
   /// symbols and bindings.
   bool isPurgeKind() {
     Kind K = getKind();
@@ -179,6 +179,10 @@ public:
 
   const LocationContext *getLocationContext() const {
     return L.getPointer();
+  }
+
+  const StackFrameContext *getStackFrame() const {
+    return getLocationContext()->getStackFrame();
   }
 
   // For use with DenseMap.  This hash is probably slow.
@@ -219,7 +223,7 @@ class BlockEntrance : public ProgramPoint {
 public:
   BlockEntrance(const CFGBlock *B, const LocationContext *L,
                 const ProgramPointTag *tag = nullptr)
-    : ProgramPoint(B, BlockEntranceKind, L, tag) {    
+    : ProgramPoint(B, BlockEntranceKind, L, tag) {
     assert(B && "BlockEntrance requires non-null block");
   }
 
@@ -231,7 +235,7 @@ public:
     const CFGBlock *B = getBlock();
     return B->empty() ? Optional<CFGElement>() : B->front();
   }
-  
+
 private:
   friend class ProgramPoint;
   BlockEntrance() = default;
@@ -346,7 +350,7 @@ protected:
   LocationCheck(const Stmt *S, const LocationContext *L,
                 ProgramPoint::Kind K, const ProgramPointTag *tag)
     : StmtPoint(S, nullptr, K, L, tag) {}
-    
+
 private:
   friend class ProgramPoint;
   static bool isKind(const ProgramPoint &location) {
@@ -354,13 +358,13 @@ private:
     return k == PreLoadKind || k == PreStoreKind;
   }
 };
-  
+
 class PreLoad : public LocationCheck {
 public:
   PreLoad(const Stmt *S, const LocationContext *L,
           const ProgramPointTag *tag = nullptr)
     : LocationCheck(S, L, PreLoadKind, tag) {}
-  
+
 private:
   friend class ProgramPoint;
   PreLoad() = default;
@@ -374,7 +378,7 @@ public:
   PreStore(const Stmt *S, const LocationContext *L,
            const ProgramPointTag *tag = nullptr)
   : LocationCheck(S, L, PreStoreKind, tag) {}
-  
+
 private:
   friend class ProgramPoint;
   PreStore() = default;
@@ -397,11 +401,11 @@ private:
   }
 };
 
-/// \brief Represents a program point after a store evaluation.
+/// Represents a program point after a store evaluation.
 class PostStore : public PostStmt {
 public:
   /// Construct the post store point.
-  /// \param Loc can be used to store the information about the location 
+  /// \param Loc can be used to store the information about the location
   /// used in the form it was uttered in the code.
   PostStore(const Stmt *S, const LocationContext *L, const void *Loc,
             const ProgramPointTag *tag = nullptr)
@@ -410,7 +414,7 @@ public:
     setData2(Loc);
   }
 
-  /// \brief Returns the information about the location used in the store,
+  /// Returns the information about the location used in the store,
   /// how it was uttered in the code.
   const void *getLocationValue() const {
     return getData2();
@@ -475,7 +479,7 @@ public:
   BlockEdge(const CFGBlock *B1, const CFGBlock *B2, const LocationContext *L)
     : ProgramPoint(B1, B2, BlockEdgeKind, L) {
     assert(B1 && "BlockEdge: source block must be non-null");
-    assert(B2 && "BlockEdge: destination block must be non-null");    
+    assert(B2 && "BlockEdge: destination block must be non-null");
   }
 
   const CFGBlock *getSrc() const {
@@ -496,7 +500,7 @@ private:
 
 class PostInitializer : public ProgramPoint {
 public:
-  /// \brief Construct a PostInitializer point that represents a location after
+  /// Construct a PostInitializer point that represents a location after
   ///   CXXCtorInitializer expression evaluation.
   ///
   /// \param I The initializer.
@@ -510,7 +514,7 @@ public:
     return static_cast<const CXXCtorInitializer *>(getData1());
   }
 
-  /// \brief Returns the location of the field.
+  /// Returns the location of the field.
   const void *getLocationValue() const {
     return getData2();
   }
@@ -599,7 +603,7 @@ private:
 /// CallEnter uses the caller's location context.
 class CallEnter : public ProgramPoint {
 public:
-  CallEnter(const Stmt *stmt, const StackFrameContext *calleeCtx, 
+  CallEnter(const Stmt *stmt, const StackFrameContext *calleeCtx,
             const LocationContext *callerCtx)
     : ProgramPoint(stmt, calleeCtx, CallEnterKind, callerCtx, nullptr) {}
 
@@ -745,7 +749,7 @@ static bool isEqual(const clang::ProgramPoint &L,
 }
 
 };
-  
+
 template <>
 struct isPodLike<clang::ProgramPoint> { static const bool value = true; };
 

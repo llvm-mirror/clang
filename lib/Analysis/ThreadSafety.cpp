@@ -86,11 +86,11 @@ static void warnInvalidLock(ThreadSafetyHandler &Handler,
 
 namespace {
 
-/// \brief A set of CapabilityInfo objects, which are compiled from the
+/// A set of CapabilityInfo objects, which are compiled from the
 /// requires attributes on a function.
 class CapExprSet : public SmallVector<CapabilityExpr, 4> {
 public:
-  /// \brief Push M onto list, but discard duplicates.
+  /// Push M onto list, but discard duplicates.
   void push_back_nodup(const CapabilityExpr &CapE) {
     iterator It = std::find_if(begin(), end(),
                                [=](const CapabilityExpr &CapE2) {
@@ -104,14 +104,12 @@ public:
 class FactManager;
 class FactSet;
 
-/// \brief This is a helper class that stores a fact that is known at a
+/// This is a helper class that stores a fact that is known at a
 /// particular point in program execution.  Currently, a fact is a capability,
 /// along with additional information, such as where it was acquired, whether
 /// it is exclusive or shared, etc.
 ///
-/// FIXME: this analysis does not currently support either re-entrant
-/// locking or lock "upgrading" and "downgrading" between exclusive and
-/// shared.
+/// FIXME: this analysis does not currently support re-entrant locking.
 class FactEntry : public CapabilityExpr {
 private:
   /// Exclusive or shared.
@@ -157,7 +155,7 @@ public:
 
 using FactID = unsigned short;
 
-/// \brief FactManager manages the memory for all facts that are created during
+/// FactManager manages the memory for all facts that are created during
 /// the analysis of a single routine.
 class FactManager {
 private:
@@ -173,7 +171,7 @@ public:
   FactEntry &operator[](FactID F) { return *Facts[F]; }
 };
 
-/// \brief A FactSet is the set of facts that are known to be true at a
+/// A FactSet is the set of facts that are known to be true at a
 /// particular program point.  FactSets must be small, because they are
 /// frequently copied, and are thus implemented as a set of indices into a
 /// table maintained by a FactManager.  A typical FactSet only holds 1 or 2
@@ -821,13 +819,13 @@ static void findBlockLocations(CFG *CFGraph,
     // Find the source location of the last statement in the block, if the
     // block is not empty.
     if (const Stmt *S = CurrBlock->getTerminator()) {
-      CurrBlockInfo->EntryLoc = CurrBlockInfo->ExitLoc = S->getLocStart();
+      CurrBlockInfo->EntryLoc = CurrBlockInfo->ExitLoc = S->getBeginLoc();
     } else {
       for (CFGBlock::const_reverse_iterator BI = CurrBlock->rbegin(),
            BE = CurrBlock->rend(); BI != BE; ++BI) {
         // FIXME: Handle other CFGElement kinds.
         if (Optional<CFGStmt> CS = BI->getAs<CFGStmt>()) {
-          CurrBlockInfo->ExitLoc = CS->getStmt()->getLocStart();
+          CurrBlockInfo->ExitLoc = CS->getStmt()->getBeginLoc();
           break;
         }
       }
@@ -839,7 +837,7 @@ static void findBlockLocations(CFG *CFGraph,
       for (const auto &BI : *CurrBlock) {
         // FIXME: Handle other CFGElement kinds.
         if (Optional<CFGStmt> CS = BI.getAs<CFGStmt>()) {
-          CurrBlockInfo->EntryLoc = CS->getStmt()->getLocStart();
+          CurrBlockInfo->EntryLoc = CS->getStmt()->getBeginLoc();
           break;
         }
       }
@@ -948,7 +946,7 @@ public:
   }
 };
 
-/// \brief Class which implements the core thread safety analysis routines.
+/// Class which implements the core thread safety analysis routines.
 class ThreadSafetyAnalyzer {
   friend class BuildLockset;
   friend class threadSafety::BeforeSet;
@@ -1130,7 +1128,7 @@ void BeforeSet::checkBeforeAfter(const ValueDecl* StartVd,
     Info->Visited = 0;
 }
 
-/// \brief Gets the value decl pointer from DeclRefExprs or MemberExprs.
+/// Gets the value decl pointer from DeclRefExprs or MemberExprs.
 static const ValueDecl *getValueDecl(const Expr *Exp) {
   if (const auto *CE = dyn_cast<ImplicitCastExpr>(Exp))
     return getValueDecl(CE->getSubExpr());
@@ -1223,7 +1221,7 @@ bool ThreadSafetyAnalyzer::inCurrentScope(const CapabilityExpr &CapE) {
   return false;
 }
 
-/// \brief Add a new lock to the lockset, warning if the lock is already there.
+/// Add a new lock to the lockset, warning if the lock is already there.
 /// \param ReqAttr -- true if this is part of an initial Requires attribute.
 void ThreadSafetyAnalyzer::addLock(FactSet &FSet,
                                    std::unique_ptr<FactEntry> Entry,
@@ -1261,7 +1259,7 @@ void ThreadSafetyAnalyzer::addLock(FactSet &FSet,
   }
 }
 
-/// \brief Remove a lock from the lockset, warning if the lock is not there.
+/// Remove a lock from the lockset, warning if the lock is not there.
 /// \param UnlockLoc The source location of the unlock (only used in error msg)
 void ThreadSafetyAnalyzer::removeLock(FactSet &FSet, const CapabilityExpr &Cp,
                                       SourceLocation UnlockLoc,
@@ -1287,7 +1285,7 @@ void ThreadSafetyAnalyzer::removeLock(FactSet &FSet, const CapabilityExpr &Cp,
                      DiagKind);
 }
 
-/// \brief Extract the list of mutexIDs from the attribute on an expression,
+/// Extract the list of mutexIDs from the attribute on an expression,
 /// and push them onto Mtxs, discarding any duplicates.
 template <typename AttrType>
 void ThreadSafetyAnalyzer::getMutexIDs(CapExprSet &Mtxs, AttrType *Attr,
@@ -1318,7 +1316,7 @@ void ThreadSafetyAnalyzer::getMutexIDs(CapExprSet &Mtxs, AttrType *Attr,
   }
 }
 
-/// \brief Extract the list of mutexIDs from a trylock attribute.  If the
+/// Extract the list of mutexIDs from a trylock attribute.  If the
 /// trylock applies to the given edge, then push them onto Mtxs, discarding
 /// any duplicates.
 template <class AttrType>
@@ -1418,7 +1416,7 @@ const CallExpr* ThreadSafetyAnalyzer::getTrylockCallExpr(const Stmt *Cond,
   return nullptr;
 }
 
-/// \brief Find the lockset that holds on the edge between PredBlock
+/// Find the lockset that holds on the edge between PredBlock
 /// and CurrBlock.  The edge set is the exit set of PredBlock (passed
 /// as the ExitSet parameter) plus any trylocks, which are conditionally held.
 void ThreadSafetyAnalyzer::getEdgeLockset(FactSet& Result,
@@ -1491,7 +1489,7 @@ void ThreadSafetyAnalyzer::getEdgeLockset(FactSet& Result,
 
 namespace {
 
-/// \brief We use this class to visit different types of expressions in
+/// We use this class to visit different types of expressions in
 /// CFGBlocks, and build up the lockset.
 /// An expression may cause us to add or remove locks from the lockset, or else
 /// output error messages related to missing locks.
@@ -1533,7 +1531,7 @@ public:
 
 } // namespace
 
-/// \brief Warn if the LSet does not contain a lock sufficient to protect access
+/// Warn if the LSet does not contain a lock sufficient to protect access
 /// of at least the passed in AccessKind.
 void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
                                       AccessKind AK, Expr *MutexExp,
@@ -1597,7 +1595,7 @@ void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
   }
 }
 
-/// \brief Warn if the LSet contains the given lock.
+/// Warn if the LSet contains the given lock.
 void BuildLockset::warnIfMutexHeld(const NamedDecl *D, const Expr *Exp,
                                    Expr *MutexExp, StringRef DiagKind) {
   CapabilityExpr Cp = Analyzer->SxBuilder.translateAttrExpr(MutexExp, D, Exp);
@@ -1615,7 +1613,7 @@ void BuildLockset::warnIfMutexHeld(const NamedDecl *D, const Expr *Exp,
   }
 }
 
-/// \brief Checks guarded_by and pt_guarded_by attributes.
+/// Checks guarded_by and pt_guarded_by attributes.
 /// Whenever we identify an access (read or write) to a DeclRefExpr that is
 /// marked with guarded_by, we must ensure the appropriate mutexes are held.
 /// Similarly, we check if the access is to an expression that dereferences
@@ -1671,7 +1669,7 @@ void BuildLockset::checkAccess(const Expr *Exp, AccessKind AK,
                        ClassifyDiagnostic(I), Loc);
 }
 
-/// \brief Checks pt_guarded_by and pt_guarded_var attributes.
+/// Checks pt_guarded_by and pt_guarded_var attributes.
 /// POK is the same  operationKind that was passed to checkAccess.
 void BuildLockset::checkPtAccess(const Expr *Exp, AccessKind AK,
                                  ProtectedOperationKind POK) {
@@ -1710,7 +1708,7 @@ void BuildLockset::checkPtAccess(const Expr *Exp, AccessKind AK,
                        ClassifyDiagnostic(I), Exp->getExprLoc());
 }
 
-/// \brief Process a function call, method call, constructor call,
+/// Process a function call, method call, constructor call,
 /// or destructor call.  This involves looking at the attributes on the
 /// corresponding function/method/constructor/destructor, issuing warnings,
 /// and updating the locksets accordingly.
@@ -1737,8 +1735,7 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
     }
   }
 
-  for(Attr *Atconst : D->attrs()) {
-    auto *At = const_cast<Attr *>(Atconst);
+  for(const Attr *At : D->attrs()) {
     switch (At->getKind()) {
       // When we encounter a lock function, we need to add the lock to our
       // lockset.
@@ -1838,6 +1835,16 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
     }
   }
 
+  // Remove locks first to allow lock upgrading/downgrading.
+  // FIXME -- should only fully remove if the attribute refers to 'this'.
+  bool Dtor = isa<CXXDestructorDecl>(D);
+  for (const auto &M : ExclusiveLocksToRemove)
+    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Exclusive, CapDiagKind);
+  for (const auto &M : SharedLocksToRemove)
+    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Shared, CapDiagKind);
+  for (const auto &M : GenericLocksToRemove)
+    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Generic, CapDiagKind);
+
   // Add locks.
   for (const auto &M : ExclusiveLocksToAdd)
     Analyzer->addLock(FSet, llvm::make_unique<LockableFactEntry>(
@@ -1864,19 +1871,9 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
                           Scp, MLoc, ExclusiveLocksToAdd, SharedLocksToAdd),
                       CapDiagKind);
   }
-
-  // Remove locks.
-  // FIXME -- should only fully remove if the attribute refers to 'this'.
-  bool Dtor = isa<CXXDestructorDecl>(D);
-  for (const auto &M : ExclusiveLocksToRemove)
-    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Exclusive, CapDiagKind);
-  for (const auto &M : SharedLocksToRemove)
-    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Shared, CapDiagKind);
-  for (const auto &M : GenericLocksToRemove)
-    Analyzer->removeLock(FSet, M, Loc, Dtor, LK_Generic, CapDiagKind);
 }
 
-/// \brief For unary operations which read and write a variable, we need to
+/// For unary operations which read and write a variable, we need to
 /// check whether we hold any required mutexes. Reads are checked in
 /// VisitCastExpr.
 void BuildLockset::VisitUnaryOperator(UnaryOperator *UO) {
@@ -2083,13 +2080,13 @@ void BuildLockset::VisitDeclStmt(DeclStmt *S) {
         CXXConstructorDecl *CtorD = findConstructorForByValueReturn(RD);
         if (!CtorD || !CtorD->hasAttrs())
           continue;
-        handleCall(buildFakeCtorCall(CtorD, {E}, E->getLocStart()), CtorD, VD);
+        handleCall(buildFakeCtorCall(CtorD, {E}, E->getBeginLoc()), CtorD, VD);
       }
     }
   }
 }
 
-/// \brief Compute the intersection of two locksets and issue warnings for any
+/// Compute the intersection of two locksets and issue warnings for any
 /// locks in the symmetric difference.
 ///
 /// This function is used at a merge point in the CFG when comparing the lockset
@@ -2166,7 +2163,7 @@ static bool neverReturns(const CFGBlock *B) {
   return false;
 }
 
-/// \brief Check a function's CFG for thread-safety violations.
+/// Check a function's CFG for thread-safety violations.
 ///
 /// We traverse the blocks in the CFG, compute the set of mutexes that are held
 /// at the end of each block, and issue warnings for thread safety violations.
@@ -2245,8 +2242,8 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
         // We must ignore such methods.
         if (A->args_size() == 0)
           return;
-        // FIXME -- deal with exclusive vs. shared unlock functions?
-        getMutexIDs(ExclusiveLocksToAdd, A, nullptr, D);
+        getMutexIDs(A->isShared() ? SharedLocksToAdd : ExclusiveLocksToAdd, A,
+                    nullptr, D);
         getMutexIDs(LocksReleased, A, nullptr, D);
         CapDiagKind = ClassifyDiagnostic(A);
       } else if (const auto *A = dyn_cast<AcquireCapabilityAttr>(Attr)) {
@@ -2399,7 +2396,7 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
           // Create a dummy expression,
           auto *VD = const_cast<VarDecl *>(AD.getVarDecl());
           DeclRefExpr DRE(VD, false, VD->getType().getNonReferenceType(),
-                          VK_LValue, AD.getTriggerStmt()->getLocEnd());
+                          VK_LValue, AD.getTriggerStmt()->getEndLoc());
           LocksetBuilder.handleCall(&DRE, DD);
           break;
         }
@@ -2462,7 +2459,7 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
   Handler.leaveFunction(CurrentFunction);
 }
 
-/// \brief Check a function's CFG for thread-safety violations.
+/// Check a function's CFG for thread-safety violations.
 ///
 /// We traverse the blocks in the CFG, compute the set of mutexes that are held
 /// at the end of each block, and issue warnings for thread safety violations.
@@ -2478,7 +2475,7 @@ void threadSafety::runThreadSafetyAnalysis(AnalysisDeclContext &AC,
 
 void threadSafety::threadSafetyCleanup(BeforeSet *Cache) { delete Cache; }
 
-/// \brief Helper function that returns a LockKind required for the given level
+/// Helper function that returns a LockKind required for the given level
 /// of access.
 LockKind threadSafety::getLockKindFromAccessKind(AccessKind AK) {
   switch (AK) {

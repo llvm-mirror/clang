@@ -13,8 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Basic/ObjCRuntime.h"
-#include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstddef>
 #include <string>
@@ -27,7 +27,7 @@ std::string ObjCRuntime::getAsString() const {
     llvm::raw_string_ostream Out(Result);
     Out << *this;
   }
-  return Result;  
+  return Result;
 }
 
 raw_ostream &clang::operator<<(raw_ostream &out, const ObjCRuntime &value) {

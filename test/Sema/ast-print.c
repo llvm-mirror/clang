@@ -4,6 +4,8 @@
 // RUN: echo >> %t.c "// expected""-warning@* {{use of GNU old-style field designator extension}}"
 // RUN: echo >> %t.c "// expected""-warning@* {{'EnumWithAttributes' is deprecated}}"
 // RUN: echo >> %t.c "// expected""-note@* {{'EnumWithAttributes' has been explicitly marked deprecated here}}"
+// RUN: echo >> %t.c "// expected""-warning@* {{'EnumWithAttributes2' is deprecated}}"
+// RUN: echo >> %t.c "// expected""-note@* {{'EnumWithAttributes2' has been explicitly marked deprecated here}}"
 // RUN: echo >> %t.c "// expected""-warning@* {{'EnumWithAttributes3' is deprecated}}"
 // RUN: echo >> %t.c "// expected""-note@* {{'EnumWithAttributes3' has been explicitly marked deprecated here}}"
 // RUN: %clang_cc1 -fsyntax-only %t.c -verify
@@ -83,12 +85,10 @@ enum EnumWithAttributes { // expected-warning {{'EnumWithAttributes' is deprecat
   EnumWithAttributesFoo __attribute__((deprecated)),
   // CHECK-NEXT: EnumWithAttributesBar __attribute__((unavailable(""))) = 50
   EnumWithAttributesBar __attribute__((unavailable)) = 50
-  // CHECK-NEXT: };
-  // CHECK-NEXT: enum EnumWithAttributes *EnumWithAttributesPtr;
+  // CHECK-NEXT: } *EnumWithAttributesPtr;
 } __attribute__((deprecated)) *EnumWithAttributesPtr; // expected-note {{'EnumWithAttributes' has been explicitly marked deprecated here}}
 
-// FIXME: If enum is forward-declared at file scope, attributes are lost.
-// CHECK-LABEL: enum EnumWithAttributes2 *EnumWithAttributes2Ptr;
+// CHECK-LABEL: enum __attribute__((deprecated(""))) EnumWithAttributes2 *EnumWithAttributes2Ptr;
 // expected-warning@+2 {{'EnumWithAttributes2' is deprecated}}
 // expected-note@+1 {{'EnumWithAttributes2' has been explicitly marked deprecated here}}
 enum __attribute__((deprecated)) EnumWithAttributes2 *EnumWithAttributes2Ptr;

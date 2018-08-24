@@ -35,7 +35,8 @@ class CodeGenModule;
 class CGOpenCLRuntime {
 protected:
   CodeGenModule &CGM;
-  llvm::Type *PipeTy;
+  llvm::Type *PipeROTy;
+  llvm::Type *PipeWOTy;
   llvm::PointerType *SamplerTy;
 
   /// Structure for enqueued block information.
@@ -47,9 +48,12 @@ protected:
   /// Maps block expression to block information.
   llvm::DenseMap<const Expr *, EnqueuedBlockInfo> EnqueuedBlockMap;
 
+  virtual llvm::Type *getPipeType(const PipeType *T, StringRef Name,
+                                  llvm::Type *&PipeTy);
+
 public:
-  CGOpenCLRuntime(CodeGenModule &CGM) : CGM(CGM), PipeTy(nullptr),
-    SamplerTy(nullptr) {}
+  CGOpenCLRuntime(CodeGenModule &CGM) : CGM(CGM),
+    PipeROTy(nullptr), PipeWOTy(nullptr), SamplerTy(nullptr) {}
   virtual ~CGOpenCLRuntime();
 
   /// Emit the IR required for a work-group-local variable declaration, and add
@@ -64,11 +68,11 @@ public:
 
   llvm::PointerType *getSamplerType(const Type *T);
 
-  // \brief Returns a value which indicates the size in bytes of the pipe
+  // Returns a value which indicates the size in bytes of the pipe
   // element.
   virtual llvm::Value *getPipeElemSize(const Expr *PipeArg);
 
-  // \brief Returns a value which indicates the alignment in bytes of the pipe
+  // Returns a value which indicates the alignment in bytes of the pipe
   // element.
   virtual llvm::Value *getPipeElemAlign(const Expr *PipeArg);
 
@@ -79,7 +83,7 @@ public:
   EnqueuedBlockInfo emitOpenCLEnqueuedBlock(CodeGenFunction &CGF,
                                             const Expr *E);
 
-  /// \brief Record invoke function and block literal emitted during normal
+  /// Record invoke function and block literal emitted during normal
   /// codegen for a block expression. The information is used by
   /// emitOpenCLEnqueuedBlock to emit wrapper kernel.
   ///
