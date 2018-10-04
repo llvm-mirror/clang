@@ -41,15 +41,7 @@ public:
   CXXCatchStmt(EmptyShell Empty)
   : Stmt(CXXCatchStmtClass), ExceptionDecl(nullptr), HandlerBlock(nullptr) {}
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return CatchLoc; }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY {
     return HandlerBlock->getEndLoc();
   }
@@ -94,15 +86,7 @@ public:
   static CXXTryStmt *Create(const ASTContext &C, EmptyShell Empty,
                             unsigned numHandlers);
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return getTryLoc(); }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
 
   SourceLocation getTryLoc() const { return TryLoc; }
   SourceLocation getEndLoc() const {
@@ -134,14 +118,15 @@ public:
 };
 
 /// CXXForRangeStmt - This represents C++0x [stmt.ranged]'s ranged for
-/// statement, represented as 'for (range-declarator : range-expression)'.
+/// statement, represented as 'for (range-declarator : range-expression)'
+/// or 'for (init-statement range-declarator : range-expression)'.
 ///
 /// This is stored in a partially-desugared form to allow full semantic
 /// analysis of the constituent components. The original syntactic components
 /// can be extracted using getLoopVariable and getRangeInit.
 class CXXForRangeStmt : public Stmt {
   SourceLocation ForLoc;
-  enum { RANGE, BEGINSTMT, ENDSTMT, COND, INC, LOOPVAR, BODY, END };
+  enum { INIT, RANGE, BEGINSTMT, ENDSTMT, COND, INC, LOOPVAR, BODY, END };
   // SubExprs[RANGE] is an expression or declstmt.
   // SubExprs[COND] and SubExprs[INC] are expressions.
   Stmt *SubExprs[END];
@@ -151,16 +136,17 @@ class CXXForRangeStmt : public Stmt {
 
   friend class ASTStmtReader;
 public:
-  CXXForRangeStmt(DeclStmt *Range, DeclStmt *Begin, DeclStmt *End,
-                  Expr *Cond, Expr *Inc, DeclStmt *LoopVar, Stmt *Body,
-                  SourceLocation FL, SourceLocation CAL, SourceLocation CL,
-                  SourceLocation RPL);
+  CXXForRangeStmt(Stmt *InitStmt, DeclStmt *Range, DeclStmt *Begin,
+                  DeclStmt *End, Expr *Cond, Expr *Inc, DeclStmt *LoopVar,
+                  Stmt *Body, SourceLocation FL, SourceLocation CAL,
+                  SourceLocation CL, SourceLocation RPL);
   CXXForRangeStmt(EmptyShell Empty) : Stmt(CXXForRangeStmtClass, Empty) { }
 
-
+  Stmt *getInit() { return SubExprs[INIT]; }
   VarDecl *getLoopVariable();
   Expr *getRangeInit();
 
+  const Stmt *getInit() const { return SubExprs[INIT]; }
   const VarDecl *getLoopVariable() const;
   const Expr *getRangeInit() const;
 
@@ -195,6 +181,7 @@ public:
   }
   const Stmt *getBody() const { return SubExprs[BODY]; }
 
+  void setInit(Stmt *S) { SubExprs[INIT] = S; }
   void setRangeInit(Expr *E) { SubExprs[RANGE] = reinterpret_cast<Stmt*>(E); }
   void setRangeStmt(Stmt *S) { SubExprs[RANGE] = S; }
   void setBeginStmt(Stmt *S) { SubExprs[BEGINSTMT] = S; }
@@ -209,15 +196,7 @@ public:
   SourceLocation getColonLoc() const { return ColonLoc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return ForLoc; }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY {
     return SubExprs[BODY]->getEndLoc();
   }
@@ -303,15 +282,7 @@ public:
     return reinterpret_cast<CompoundStmt *>(SubStmt);
   }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return KeywordLoc; }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY {
     return SubStmt->getEndLoc();
   }
@@ -432,17 +403,9 @@ public:
     return {getStoredStmts() + SubStmt::FirstParamMove, NumParams};
   }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY {
     return getBody() ? getBody()->getBeginLoc()
                      : getPromiseDecl()->getBeginLoc();
-  }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
   }
   SourceLocation getEndLoc() const LLVM_READONLY {
     return getBody() ? getBody()->getEndLoc() : getPromiseDecl()->getEndLoc();
@@ -505,15 +468,7 @@ public:
   bool isImplicit() const { return IsImplicit; }
   void setIsImplicit(bool value = true) { IsImplicit = value; }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return CoreturnLoc; }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY {
     return getOperand() ? getOperand()->getEndLoc() : getBeginLoc();
   }

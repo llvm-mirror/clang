@@ -59,6 +59,8 @@ static CudaVersion ParseCudaVersionFile(llvm::StringRef V) {
     return CudaVersion::CUDA_91;
   if (Major == 9 && Minor == 2)
     return CudaVersion::CUDA_92;
+  if (Major == 10 && Minor == 0)
+    return CudaVersion::CUDA_100;
   return CudaVersion::UNKNOWN;
 }
 
@@ -165,7 +167,7 @@ CudaInstallationDetector::CudaInstallationDetector(
       if (FS.exists(FilePath)) {
         for (const char *GpuArchName :
              {"sm_30", "sm_32", "sm_35", "sm_37", "sm_50", "sm_52", "sm_53",
-              "sm_60", "sm_61", "sm_62", "sm_70", "sm_72"}) {
+              "sm_60", "sm_61", "sm_62", "sm_70", "sm_72", "sm_75"}) {
           const CudaArch GpuArch = StringToCudaArch(GpuArchName);
           if (Version >= MinVersionForCudaArch(GpuArch) &&
               Version <= MaxVersionForCudaArch(GpuArch))
@@ -509,6 +511,11 @@ void NVPTX::OpenMPLinker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-arch");
   CmdArgs.push_back(Args.MakeArgString(GPUArch));
 
+  // Assume that the directory specified with --libomptarget_nvptx_path
+  // contains the static library libomptarget-nvptx.a.
+  if (const Arg *A = Args.getLastArg(options::OPT_libomptarget_nvptx_path_EQ))
+    CmdArgs.push_back(Args.MakeArgString(Twine("-L") + A->getValue()));
+
   // Add paths specified in LIBRARY_PATH environment variable as -L options.
   addDirectoryList(Args, CmdArgs, "-L", "LIBRARY_PATH");
 
@@ -621,13 +628,16 @@ void CudaToolChain::addClangTargetOptions(
     return;
   }
 
-  CC1Args.push_back("-mlink-cuda-bitcode");
+  CC1Args.push_back("-mlink-builtin-bitcode");
   CC1Args.push_back(DriverArgs.MakeArgString(LibDeviceFile));
 
   // Libdevice in CUDA-7.0 requires PTX version that's more recent than LLVM
   // defaults to. Use PTX4.2 by default, which is the PTX version that came with
   // CUDA-7.0.
   const char *PtxFeature = "+ptx42";
+  // TODO(tra): CUDA-10+ needs PTX 6.3 to support new features. However that
+  // requires fair amount of work on LLVM side. We'll keep using PTX 6.1 until
+  // all prerequisites are in place.
   if (CudaInstallation.version() >= CudaVersion::CUDA_91) {
     // CUDA-9.1 uses new instructions that are only available in PTX6.1+
     PtxFeature = "+ptx61";
@@ -642,12 +652,9 @@ void CudaToolChain::addClangTargetOptions(
 
   if (DeviceOffloadingKind == Action::OFK_OpenMP) {
     SmallVector<StringRef, 8> LibraryPaths;
-    // Add path to lib and/or lib64 folders.
-    SmallString<256> DefaultLibPath =
-      llvm::sys::path::parent_path(getDriver().Dir);
-    llvm::sys::path::append(DefaultLibPath,
-        Twine("lib") + CLANG_LIBDIR_SUFFIX);
-    LibraryPaths.emplace_back(DefaultLibPath.c_str());
+
+    if (const Arg *A = DriverArgs.getLastArg(options::OPT_libomptarget_nvptx_path_EQ))
+      LibraryPaths.push_back(A->getValue());
 
     // Add user defined library paths from LIBRARY_PATH.
     llvm::Optional<std::string> LibPath =
@@ -660,6 +667,12 @@ void CudaToolChain::addClangTargetOptions(
         LibraryPaths.emplace_back(Path.trim());
     }
 
+    // Add path to lib / lib64 folder.
+    SmallString<256> DefaultLibPath =
+        llvm::sys::path::parent_path(getDriver().Dir);
+    llvm::sys::path::append(DefaultLibPath, Twine("lib") + CLANG_LIBDIR_SUFFIX);
+    LibraryPaths.emplace_back(DefaultLibPath.c_str());
+
     std::string LibOmpTargetName =
       "libomptarget-nvptx-" + GpuArch.str() + ".bc";
     bool FoundBCLibrary = false;
@@ -667,7 +680,7 @@ void CudaToolChain::addClangTargetOptions(
       SmallString<128> LibOmpTargetFile(LibraryPath);
       llvm::sys::path::append(LibOmpTargetFile, LibOmpTargetName);
       if (llvm::sys::fs::exists(LibOmpTargetFile)) {
-        CC1Args.push_back("-mlink-cuda-bitcode");
+        CC1Args.push_back("-mlink-builtin-bitcode");
         CC1Args.push_back(DriverArgs.MakeArgString(LibOmpTargetFile));
         FoundBCLibrary = true;
         break;

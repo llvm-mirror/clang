@@ -932,14 +932,11 @@ void ASTContext::mergeDefinitionIntoModule(NamedDecl *ND, Module *M,
     if (auto *Listener = getASTMutationListener())
       Listener->RedefinedHiddenDefinition(ND, M);
 
-  if (getLangOpts().ModulesLocalVisibility)
-    MergedDefModules[ND].push_back(M);
-  else
-    ND->setVisibleDespiteOwningModule();
+  MergedDefModules[cast<NamedDecl>(ND->getCanonicalDecl())].push_back(M);
 }
 
 void ASTContext::deduplicateMergedDefinitonsFor(NamedDecl *ND) {
-  auto It = MergedDefModules.find(ND);
+  auto It = MergedDefModules.find(cast<NamedDecl>(ND->getCanonicalDecl()));
   if (It == MergedDefModules.end())
     return;
 
@@ -3876,7 +3873,7 @@ QualType ASTContext::getEnumType(const EnumDecl *Decl) const {
   return QualType(newType, 0);
 }
 
-QualType ASTContext::getAttributedType(AttributedType::Kind attrKind,
+QualType ASTContext::getAttributedType(attr::Kind attrKind,
                                        QualType modifiedType,
                                        QualType equivalentType) {
   llvm::FoldingSetNodeID id;
@@ -4550,8 +4547,8 @@ ASTContext::getObjCTypeParamType(const ObjCTypeParamDecl *Decl,
     if (!protocols.empty()) {
       // Apply the protocol qualifers.
       bool hasError;
-      Canonical = applyObjCProtocolQualifiers(Canonical, protocols, hasError,
-          true/*allowOnPointerType*/);
+      Canonical = getCanonicalType(applyObjCProtocolQualifiers(
+          Canonical, protocols, hasError, true /*allowOnPointerType*/));
       assert(!hasError && "Error when apply protocol qualifier to bound type");
     }
   }
@@ -9725,6 +9722,14 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
     bool IsExpInstDef =
         isa<FunctionDecl>(D) &&
         cast<FunctionDecl>(D)->getTemplateSpecializationKind() ==
+            TSK_ExplicitInstantiationDefinition;
+
+    // Implicit member function definitions, such as operator= might not be
+    // marked as template specializations, since they're not coming from a
+    // template but synthesized directly on the class.
+    IsExpInstDef |=
+        isa<CXXMethodDecl>(D) &&
+        cast<CXXMethodDecl>(D)->getParent()->getTemplateSpecializationKind() ==
             TSK_ExplicitInstantiationDefinition;
 
     if (getExternalSource()->DeclIsFromPCHWithObjectFile(D) && !IsExpInstDef)

@@ -17,6 +17,7 @@
 #include "clang-c/Index.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/LLVM.h"
+#include "clang/Lex/MacroInfo.h"
 #include "clang/Sema/CodeCompleteOptions.h"
 #include "clang/Sema/DeclSpec.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -321,6 +322,9 @@ public:
 
     /// Code completion where an Objective-C category name is expected.
     CCC_ObjCCategoryName,
+
+    /// Code completion inside the filename part of a #include directive.
+    CCC_IncludedFile,
 
     /// An unknown context, in which we are recovering from a parsing
     /// error and don't know which completions we should give.
@@ -843,6 +847,11 @@ public:
   /// corresponding `using decl::qualified::name;` nearby.
   const UsingShadowDecl *ShadowDecl = nullptr;
 
+  /// If the result is RK_Macro, this can store the information about the macro
+  /// definition. This should be set in most cases but can be missing when
+  /// the macro has been undefined.
+  const MacroInfo *MacroDefInfo = nullptr;
+
   /// Build a result that refers to a declaration.
   CodeCompletionResult(const NamedDecl *Declaration, unsigned Priority,
                        NestedNameSpecifier *Qualifier = nullptr,
@@ -867,11 +876,13 @@ public:
 
   /// Build a result that refers to a macro.
   CodeCompletionResult(const IdentifierInfo *Macro,
+                       const MacroInfo *MI = nullptr,
                        unsigned Priority = CCP_Macro)
       : Macro(Macro), Priority(Priority), Kind(RK_Macro),
         CursorKind(CXCursor_MacroDefinition), Hidden(false),
         QualifierIsInformative(false), StartsNestedNameSpecifier(false),
-        AllParametersAreInformative(false), DeclaringEntity(false) {}
+        AllParametersAreInformative(false), DeclaringEntity(false),
+        MacroDefInfo(MI) {}
 
   /// Build a result that refers to a pattern.
   CodeCompletionResult(CodeCompletionString *Pattern,
@@ -1114,9 +1125,13 @@ public:
   /// \param Candidates an array of overload candidates.
   ///
   /// \param NumCandidates the number of overload candidates
+  ///
+  /// \param OpenParLoc location of the opening parenthesis of the argument
+  ///        list.
   virtual void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
                                          OverloadCandidate *Candidates,
-                                         unsigned NumCandidates) {}
+                                         unsigned NumCandidates,
+                                         SourceLocation OpenParLoc) {}
   //@}
 
   /// Retrieve the allocator that will be used to allocate
@@ -1166,7 +1181,8 @@ public:
 
   void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
                                  OverloadCandidate *Candidates,
-                                 unsigned NumCandidates) override;
+                                 unsigned NumCandidates,
+                                 SourceLocation OpenParLoc) override;
 
   bool isResultFilteredOut(StringRef Filter, CodeCompletionResult Results) override;
 

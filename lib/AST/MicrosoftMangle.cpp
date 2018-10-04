@@ -375,6 +375,8 @@ private:
   void mangleObjCProtocol(const ObjCProtocolDecl *PD);
   void mangleObjCLifetime(const QualType T, Qualifiers Quals,
                           SourceRange Range);
+  void mangleObjCKindOfType(const ObjCObjectType *T, Qualifiers Quals,
+                            SourceRange Range);
 };
 }
 
@@ -1384,9 +1386,16 @@ void MicrosoftCXXNameMangler::mangleTemplateArgs(
   assert(TPL->size() == TemplateArgs.size() &&
          "size mismatch between args and parms!");
 
-  unsigned Idx = 0;
-  for (const TemplateArgument &TA : TemplateArgs.asArray())
-    mangleTemplateArg(TD, TA, TPL->getParam(Idx++));
+  for (size_t i = 0; i < TemplateArgs.size(); ++i) {
+    const TemplateArgument &TA = TemplateArgs[i];
+
+    // Separate consecutive packs by $$Z.
+    if (i > 0 && TA.getKind() == TemplateArgument::Pack &&
+        TemplateArgs[i - 1].getKind() == TemplateArgument::Pack)
+      Out << "$$Z";
+
+    mangleTemplateArg(TD, TA, TPL->getParam(i));
+  }
 }
 
 void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
@@ -1542,6 +1551,23 @@ void MicrosoftCXXNameMangler::mangleObjCLifetime(const QualType Type,
   Extra.manglePointerCVQualifiers(Quals);
   Extra.manglePointerExtQualifiers(Quals, Type);
   Extra.mangleType(Type, Range);
+
+  mangleArtificalTagType(TTK_Struct, TemplateMangling, {"__ObjC"});
+}
+
+void MicrosoftCXXNameMangler::mangleObjCKindOfType(const ObjCObjectType *T,
+                                                   Qualifiers Quals,
+                                                   SourceRange Range) {
+  llvm::SmallString<64> TemplateMangling;
+  llvm::raw_svector_ostream Stream(TemplateMangling);
+  MicrosoftCXXNameMangler Extra(Context, Stream);
+
+  Stream << "?$";
+  Extra.mangleSourceName("KindOf");
+  Extra.mangleType(QualType(T, 0)
+                       .stripObjCKindOfType(getASTContext())
+                       ->getAs<ObjCObjectType>(),
+                   Quals, Range);
 
   mangleArtificalTagType(TTK_Struct, TemplateMangling, {"__ObjC"});
 }
@@ -2617,9 +2643,12 @@ void MicrosoftCXXNameMangler::mangleType(const ObjCInterfaceType *T, Qualifiers,
   mangle(T->getDecl(), ".objc_cls_");
 }
 
-void MicrosoftCXXNameMangler::mangleType(const ObjCObjectType *T, Qualifiers,
-                                         SourceRange Range) {
-  if (T->qual_empty())
+void MicrosoftCXXNameMangler::mangleType(const ObjCObjectType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  if (T->isKindOfType())
+    return mangleObjCKindOfType(T, Quals, Range);
+
+  if (T->qual_empty() && !T->isSpecialized())
     return mangleType(T->getBaseType(), Range, QMM_Drop);
 
   ArgBackRefMap OuterArgsContext;
@@ -2640,6 +2669,11 @@ void MicrosoftCXXNameMangler::mangleType(const ObjCObjectType *T, Qualifiers,
 
   for (const auto &Q : T->quals())
     mangleObjCProtocol(Q);
+
+  if (T->isSpecialized())
+    for (const auto &TA : T->getTypeArgs())
+      mangleType(TA, Range, QMM_Drop);
+
   Out << '@';
 
   Out << '@';
@@ -3217,10 +3251,13 @@ void MicrosoftMangleContextImpl::mangleInitFiniStub(const VarDecl *D,
   msvc_hashing_ostream MHO(Out);
   MicrosoftCXXNameMangler Mangler(*this, MHO);
   Mangler.getStream() << "??__" << CharCode;
-  Mangler.mangleName(D);
   if (D->isStaticDataMember()) {
+    Mangler.getStream() << '?';
+    Mangler.mangleName(D);
     Mangler.mangleVariableEncoding(D);
-    Mangler.getStream() << '@';
+    Mangler.getStream() << "@@";
+  } else {
+    Mangler.mangleName(D);
   }
   // This is the function class mangling.  These stubs are global, non-variadic,
   // cdecl functions that return void and take no args.

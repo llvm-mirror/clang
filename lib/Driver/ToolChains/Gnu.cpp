@@ -237,7 +237,7 @@ static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
   case llvm::Triple::aarch64:
     return "aarch64linux";
   case llvm::Triple::aarch64_be:
-    return "aarch64_be_linux";
+    return "aarch64linuxb";
   case llvm::Triple::arm:
   case llvm::Triple::thumb:
     return "armelf_linux_eabi";
@@ -322,14 +322,6 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // and for "clang -w foo.o -o foo". Other warning options are already
   // handled somewhere else.
   Args.ClaimAllArgs(options::OPT_w);
-
-  const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
-  if (llvm::sys::path::stem(Exec) == "lld") {
-    CmdArgs.push_back("-flavor");
-    CmdArgs.push_back("old-gnu");
-    CmdArgs.push_back("-target");
-    CmdArgs.push_back(Args.MakeArgString(getToolChain().getTripleString()));
-  }
 
   if (!D.SysRoot.empty())
     CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
@@ -539,6 +531,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   AddHIPLinkerScript(getToolChain(), C, Output, Inputs, Args, CmdArgs, JA,
                      *this);
 
+  const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
   C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
 }
 
@@ -1771,7 +1764,7 @@ void Generic_GCC::GCCInstallationDetector::AddDefaultGCCPrefixes(
     std::error_code EC;
     for (vfs::directory_iterator LI = D.getVFS().dir_begin(PrefixDir, EC), LE;
          !EC && LI != LE; LI = LI.increment(EC)) {
-      StringRef VersionText = llvm::sys::path::filename(LI->getName());
+      StringRef VersionText = llvm::sys::path::filename(LI->path());
       GCCVersion CandidateVersion = GCCVersion::Parse(VersionText);
 
       // Filter out obviously bad entries.
@@ -2216,17 +2209,17 @@ void Generic_GCC::GCCInstallationDetector::ScanLibDirForGCCTriple(
              LI = D.getVFS().dir_begin(LibDir + "/" + LibSuffix, EC),
              LE;
          !EC && LI != LE; LI = LI.increment(EC)) {
-      StringRef VersionText = llvm::sys::path::filename(LI->getName());
+      StringRef VersionText = llvm::sys::path::filename(LI->path());
       GCCVersion CandidateVersion = GCCVersion::Parse(VersionText);
       if (CandidateVersion.Major != -1) // Filter obviously bad entries.
-        if (!CandidateGCCInstallPaths.insert(LI->getName()).second)
+        if (!CandidateGCCInstallPaths.insert(LI->path()).second)
           continue; // Saw this path before; no need to look at it again.
       if (CandidateVersion.isOlderThan(4, 1, 1))
         continue;
       if (CandidateVersion <= Version)
         continue;
 
-      if (!ScanGCCForMultilibs(TargetTriple, Args, LI->getName(),
+      if (!ScanGCCForMultilibs(TargetTriple, Args, LI->path(),
                                NeedsBiarchSuffix))
         continue;
 
@@ -2554,7 +2547,9 @@ void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
       getTriple().getOS() == llvm::Triple::NaCl ||
       (getTriple().getVendor() == llvm::Triple::MipsTechnologies &&
        !getTriple().hasEnvironment()) ||
-      getTriple().getOS() == llvm::Triple::Solaris;
+      getTriple().getOS() == llvm::Triple::Solaris ||
+      getTriple().getArch() == llvm::Triple::riscv32 ||
+      getTriple().getArch() == llvm::Triple::riscv64;
 
   if (DriverArgs.hasFlag(options::OPT_fuse_init_array,
                          options::OPT_fno_use_init_array, UseInitArrayDefault))

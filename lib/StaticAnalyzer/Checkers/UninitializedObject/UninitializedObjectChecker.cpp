@@ -10,36 +10,8 @@
 // This file defines a checker that reports uninitialized fields in objects
 // created after a constructor call.
 //
-// This checker has several options:
-//   - "Pedantic" (boolean). If its not set or is set to false, the checker
-//     won't emit warnings for objects that don't have at least one initialized
-//     field. This may be set with
-//
-//     `-analyzer-config alpha.cplusplus.UninitializedObject:Pedantic=true`.
-//
-//   - "NotesAsWarnings" (boolean). If set to true, the checker will emit a
-//     warning for each uninitalized field, as opposed to emitting one warning
-//     per constructor call, and listing the uninitialized fields that belongs
-//     to it in notes. Defaults to false.
-//
-//     `-analyzer-config \
-//         alpha.cplusplus.UninitializedObject:NotesAsWarnings=true`.
-//
-//   - "CheckPointeeInitialization" (boolean). If set to false, the checker will
-//     not analyze the pointee of pointer/reference fields, and will only check
-//     whether the object itself is initialized. Defaults to false.
-//
-//     `-analyzer-config \
-//         alpha.cplusplus.UninitializedObject:CheckPointeeInitialization=true`.
-//
-//     TODO: With some clever heuristics, some pointers should be dereferenced
-//     by default. For example, if the pointee is constructed within the
-//     constructor call, it's reasonable to say that no external object
-//     references it, and we wouldn't generate multiple report on the same
-//     pointee.
-//
-// To read about how the checker works, refer to the comments in
-// UninitializedObject.h.
+// To read about command line options and how the checker works, refer to the
+// top of the file and inline comments in UninitializedObject.h.
 //
 // Some of the logic is implemented in UninitializedPointee.cpp, to reduce the
 // complexity of this file.
@@ -62,10 +34,8 @@ class UninitializedObjectChecker : public Checker<check::EndFunction> {
   std::unique_ptr<BuiltinBug> BT_uninitField;
 
 public:
-  // These fields will be initialized when registering the checker.
-  bool IsPedantic;
-  bool ShouldConvertNotesToWarnings;
-  bool CheckPointeeInitialization;
+  // The fields of this struct will be initialized when registering the checker.
+  UninitObjCheckerOptions Opts;
 
   UninitializedObjectChecker()
       : BT_uninitField(new BuiltinBug(this, "Uninitialized fields")) {}
@@ -93,6 +63,35 @@ public:
   }
 };
 
+/// Represents that the FieldNode that comes after this is declared in a base
+/// of the previous FieldNode. As such, this descendant doesn't wrap a
+/// FieldRegion, and is purely a tool to describe a relation between two other
+/// FieldRegion wrapping descendants.
+class BaseClass final : public FieldNode {
+  const QualType BaseClassT;
+
+public:
+  BaseClass(const QualType &T) : FieldNode(nullptr), BaseClassT(T) {
+    assert(!T.isNull());
+    assert(T->getAsCXXRecordDecl());
+  }
+
+  virtual void printNoteMsg(llvm::raw_ostream &Out) const override {
+    llvm_unreachable("This node can never be the final node in the "
+                     "fieldchain!");
+  }
+
+  virtual void printPrefix(llvm::raw_ostream &Out) const override {}
+
+  virtual void printNode(llvm::raw_ostream &Out) const override {
+    Out << BaseClassT->getAsCXXRecordDecl()->getName() << "::";
+  }
+
+  virtual void printSeparator(llvm::raw_ostream &Out) const override {}
+
+  virtual bool isBase() const override { return true; }
+};
+
 } // end of anonymous namespace
 
 // Utility function declarations.
@@ -109,6 +108,10 @@ getObjectVal(const CXXConstructorDecl *CtorDecl, CheckerContext &Context);
 /// it multiple times).
 static bool willObjectBeAnalyzedLater(const CXXConstructorDecl *Ctor,
                                       CheckerContext &Context);
+
+/// Checks whether RD contains a field with a name or type name that matches
+/// \p Pattern.
+static bool shouldIgnoreRecord(const RecordDecl *RD, StringRef Pattern);
 
 //===----------------------------------------------------------------------===//
 //                  Methods for UninitializedObjectChecker.
@@ -136,18 +139,11 @@ void UninitializedObjectChecker::checkEndFunction(
   if (!Object)
     return;
 
-  FindUninitializedFields F(Context.getState(), Object->getRegion(),
-                            CheckPointeeInitialization);
+  FindUninitializedFields F(Context.getState(), Object->getRegion(), Opts);
 
   const UninitFieldMap &UninitFields = F.getUninitFields();
 
   if (UninitFields.empty())
-    return;
-
-  // In non-pedantic mode, if Object's region doesn't contain a single
-  // initialized field, we'll assume that Object was intentionally left
-  // uninitialized.
-  if (!IsPedantic && !F.isAnyFieldInitialized())
     return;
 
   // There are uninitialized fields in the record.
@@ -164,7 +160,7 @@ void UninitializedObjectChecker::checkEndFunction(
 
   // For Plist consumers that don't support notes just yet, we'll convert notes
   // to warnings.
-  if (ShouldConvertNotesToWarnings) {
+  if (Opts.ShouldConvertNotesToWarnings) {
     for (const auto &Pair : UninitFields) {
 
       auto Report = llvm::make_unique<BugReport>(
@@ -199,11 +195,15 @@ void UninitializedObjectChecker::checkEndFunction(
 
 FindUninitializedFields::FindUninitializedFields(
     ProgramStateRef State, const TypedValueRegion *const R,
-    bool CheckPointeeInitialization)
-    : State(State), ObjectR(R),
-      CheckPointeeInitialization(CheckPointeeInitialization) {
+    const UninitObjCheckerOptions &Opts)
+    : State(State), ObjectR(R), Opts(Opts) {
 
   isNonUnionUninit(ObjectR, FieldChainInfo(ChainFactory));
+
+  // In non-pedantic mode, if ObjectR doesn't contain a single initialized
+  // field, we'll assume that Object was intentionally left uninitialized.
+  if (!Opts.IsPedantic && !isAnyFieldInitialized())
+    UninitFields.clear();
 }
 
 bool FindUninitializedFields::addFieldToUninits(FieldChainInfo Chain) {
@@ -225,9 +225,18 @@ bool FindUninitializedFields::isNonUnionUninit(const TypedValueRegion *R,
          !R->getValueType()->isUnionType() &&
          "This method only checks non-union record objects!");
 
-  const RecordDecl *RD =
-      R->getValueType()->getAs<RecordType>()->getDecl()->getDefinition();
-  assert(RD && "Referred record has no definition");
+  const RecordDecl *RD = R->getValueType()->getAsRecordDecl()->getDefinition();
+
+  if (!RD) {
+    IsAnyFieldInitialized = true;
+    return true;
+  }
+
+  if (!Opts.IgnoredRecordsWithFieldPattern.empty() &&
+      shouldIgnoreRecord(RD, Opts.IgnoredRecordsWithFieldPattern)) {
+    IsAnyFieldInitialized = true;
+    return false;
+  }
 
   bool ContainsUninitField = false;
 
@@ -265,15 +274,15 @@ bool FindUninitializedFields::isNonUnionUninit(const TypedValueRegion *R,
       continue;
     }
 
-    if (T->isAnyPointerType() || T->isReferenceType() || T->isBlockPointerType()) {
-      if (isPointerOrReferenceUninit(FR, LocalChain))
+    SVal V = State->getSVal(FieldVal);
+
+    if (isDereferencableType(T) || V.getAs<nonloc::LocAsInteger>()) {
+      if (isDereferencableUninit(FR, LocalChain))
         ContainsUninitField = true;
       continue;
     }
 
     if (isPrimitiveType(T)) {
-      SVal V = State->getSVal(FieldVal);
-
       if (isPrimitiveUninit(V)) {
         if (addFieldToUninits(LocalChain.add(RegularField(FR))))
           ContainsUninitField = true;
@@ -284,19 +293,8 @@ bool FindUninitializedFields::isNonUnionUninit(const TypedValueRegion *R,
     llvm_unreachable("All cases are handled!");
   }
 
-  // Checking bases.
-  // FIXME: As of now, because of `willObjectBeAnalyzedLater`, objects whose
-  // type is a descendant of another type will emit warnings for uninitalized
-  // inherited members.
-  // This is not the only way to analyze bases of an object -- if we didn't
-  // filter them out, and didn't analyze the bases, this checker would run for
-  // each base of the object in order of base initailization and in theory would
-  // find every uninitalized field. This approach could also make handling
-  // diamond inheritances more easily.
-  //
-  // This rule (that a descendant type's cunstructor is responsible for
-  // initializing inherited data members) is not obvious, and should it should
-  // be.
+  // Checking bases. The checker will regard inherited data members as direct
+  // fields.
   const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
   if (!CXXRD)
     return ContainsUninitField;
@@ -306,8 +304,17 @@ bool FindUninitializedFields::isNonUnionUninit(const TypedValueRegion *R,
                                  .castAs<loc::MemRegionVal>()
                                  .getRegionAs<TypedValueRegion>();
 
-    if (isNonUnionUninit(BaseRegion, LocalChain))
-      ContainsUninitField = true;
+    // If the head of the list is also a BaseClass, we'll overwrite it to avoid
+    // note messages like 'this->A::B::x'.
+    if (!LocalChain.isEmpty() && LocalChain.getHead().isBase()) {
+      if (isNonUnionUninit(BaseRegion, LocalChain.replaceHead(
+                                           BaseClass(BaseSpec.getType()))))
+        ContainsUninitField = true;
+    } else {
+      if (isNonUnionUninit(BaseRegion,
+                           LocalChain.add(BaseClass(BaseSpec.getType()))))
+        ContainsUninitField = true;
+    }
   }
 
   return ContainsUninitField;
@@ -332,11 +339,6 @@ bool FindUninitializedFields::isPrimitiveUninit(const SVal &V) {
 //                       Methods for FieldChainInfo.
 //===----------------------------------------------------------------------===//
 
-const FieldRegion *FieldChainInfo::getUninitRegion() const {
-  assert(!Chain.isEmpty() && "Empty fieldchain!");
-  return (*Chain.begin()).getRegion();
-}
-
 bool FieldChainInfo::contains(const FieldRegion *FR) const {
   for (const FieldNode &Node : Chain) {
     if (Node.isSameRegion(FR))
@@ -348,31 +350,11 @@ bool FieldChainInfo::contains(const FieldRegion *FR) const {
 /// Prints every element except the last to `Out`. Since ImmutableLists store
 /// elements in reverse order, and have no reverse iterators, we use a
 /// recursive function to print the fieldchain correctly. The last element in
-/// the chain is to be printed by `print`.
+/// the chain is to be printed by `FieldChainInfo::print`.
 static void printTail(llvm::raw_ostream &Out,
-                      const FieldChainInfo::FieldChainImpl *L);
+                      const FieldChainInfo::FieldChain L);
 
-// TODO: This function constructs an incorrect string if a void pointer is a
-// part of the chain:
-//
-//   struct B { int x; }
-//
-//   struct A {
-//     void *vptr;
-//     A(void* vptr) : vptr(vptr) {}
-//   };
-//
-//   void f() {
-//     B b;
-//     A a(&b);
-//   }
-//
-// The note message will be "uninitialized field 'this->vptr->x'", even though
-// void pointers can't be dereferenced. This should be changed to "uninitialized
-// field 'static_cast<B*>(this->vptr)->x'".
-//
-// TODO: This function constructs an incorrect fieldchain string in the
-// following case:
+// FIXME: This function constructs an incorrect string in the following case:
 //
 //   struct Base { int x; };
 //   struct D1 : Base {}; struct D2 : Base {};
@@ -389,8 +371,7 @@ void FieldChainInfo::printNoteMsg(llvm::raw_ostream &Out) const {
   if (Chain.isEmpty())
     return;
 
-  const FieldChainImpl *L = Chain.getInternalPointer();
-  const FieldNode &LastField = L->getHead();
+  const FieldNode &LastField = getHead();
 
   LastField.printNoteMsg(Out);
   Out << '\'';
@@ -399,20 +380,20 @@ void FieldChainInfo::printNoteMsg(llvm::raw_ostream &Out) const {
     Node.printPrefix(Out);
 
   Out << "this->";
-  printTail(Out, L->getTail());
+  printTail(Out, Chain.getTail());
   LastField.printNode(Out);
   Out << '\'';
 }
 
 static void printTail(llvm::raw_ostream &Out,
-                      const FieldChainInfo::FieldChainImpl *L) {
-  if (!L)
+                      const FieldChainInfo::FieldChain L) {
+  if (L.isEmpty())
     return;
 
-  printTail(Out, L->getTail());
+  printTail(Out, L.getTail());
 
-  L->getHead().printNode(Out);
-  L->getHead().printSeparator(Out);
+  L.getHead().printNode(Out);
+  L.getHead().printSeparator(Out);
 }
 
 //===----------------------------------------------------------------------===//
@@ -462,7 +443,20 @@ static bool willObjectBeAnalyzedLater(const CXXConstructorDecl *Ctor,
   return false;
 }
 
-StringRef clang::ento::getVariableName(const FieldDecl *Field) {
+static bool shouldIgnoreRecord(const RecordDecl *RD, StringRef Pattern) {
+  llvm::Regex R(Pattern);
+
+  for (const FieldDecl *FD : RD->fields()) {
+    if (R.match(FD->getType().getAsString()))
+      return true;
+    if (R.match(FD->getName()))
+      return true;
+  }
+
+  return false;
+}
+
+std::string clang::ento::getVariableName(const FieldDecl *Field) {
   // If Field is a captured lambda variable, Field->getName() will return with
   // an empty string. We can however acquire it's name from the lambda's
   // captures.
@@ -471,7 +465,16 @@ StringRef clang::ento::getVariableName(const FieldDecl *Field) {
   if (CXXParent && CXXParent->isLambda()) {
     assert(CXXParent->captures_begin());
     auto It = CXXParent->captures_begin() + Field->getFieldIndex();
-    return It->getCapturedVar()->getName();
+
+    if (It->capturesVariable())
+      return llvm::Twine("/*captured variable*/" +
+                         It->getCapturedVar()->getName())
+          .str();
+
+    if (It->capturesThis())
+      return "/*'this' capture*/";
+
+    llvm_unreachable("No other capture type is expected!");
   }
 
   return Field->getName();
@@ -479,10 +482,17 @@ StringRef clang::ento::getVariableName(const FieldDecl *Field) {
 
 void ento::registerUninitializedObjectChecker(CheckerManager &Mgr) {
   auto Chk = Mgr.registerChecker<UninitializedObjectChecker>();
-  Chk->IsPedantic = Mgr.getAnalyzerOptions().getBooleanOption(
-      "Pedantic", /*DefaultVal*/ false, Chk);
-  Chk->ShouldConvertNotesToWarnings = Mgr.getAnalyzerOptions().getBooleanOption(
-      "NotesAsWarnings", /*DefaultVal*/ false, Chk);
-  Chk->CheckPointeeInitialization = Mgr.getAnalyzerOptions().getBooleanOption(
+
+  AnalyzerOptions &AnOpts = Mgr.getAnalyzerOptions();
+  UninitObjCheckerOptions &ChOpts = Chk->Opts;
+
+  ChOpts.IsPedantic =
+      AnOpts.getBooleanOption("Pedantic", /*DefaultVal*/ false, Chk);
+  ChOpts.ShouldConvertNotesToWarnings =
+      AnOpts.getBooleanOption("NotesAsWarnings", /*DefaultVal*/ false, Chk);
+  ChOpts.CheckPointeeInitialization = AnOpts.getBooleanOption(
       "CheckPointeeInitialization", /*DefaultVal*/ false, Chk);
+  ChOpts.IgnoredRecordsWithFieldPattern =
+      AnOpts.getOptionAsString("IgnoreRecordsWithField",
+                               /*DefaultVal*/ "", Chk);
 }

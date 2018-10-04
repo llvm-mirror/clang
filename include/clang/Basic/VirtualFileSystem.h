@@ -126,6 +126,21 @@ public:
   virtual std::error_code close() = 0;
 };
 
+/// A member of a directory, yielded by a directory_iterator.
+/// Only information available on most platforms is included.
+class directory_entry {
+  std::string Path;
+  llvm::sys::fs::file_type Type;
+
+public:
+  directory_entry() = default;
+  directory_entry(std::string Path, llvm::sys::fs::file_type Type)
+      : Path(std::move(Path)), Type(Type) {}
+
+  llvm::StringRef path() const { return Path; }
+  llvm::sys::fs::file_type type() const { return Type; }
+};
+
 namespace detail {
 
 /// An interface for virtual file systems to provide an iterator over the
@@ -134,10 +149,10 @@ struct DirIterImpl {
   virtual ~DirIterImpl();
 
   /// Sets \c CurrentEntry to the next entry in the directory on success,
-  /// or returns a system-defined \c error_code.
+  /// to directory_entry() at end,  or returns a system-defined \c error_code.
   virtual std::error_code increment() = 0;
 
-  Status CurrentEntry;
+  directory_entry CurrentEntry;
 };
 
 } // namespace detail
@@ -151,7 +166,7 @@ public:
   directory_iterator(std::shared_ptr<detail::DirIterImpl> I)
       : Impl(std::move(I)) {
     assert(Impl.get() != nullptr && "requires non-null implementation");
-    if (!Impl->CurrentEntry.isStatusKnown())
+    if (Impl->CurrentEntry.path().empty())
       Impl.reset(); // Normalize the end iterator to Impl == nullptr.
   }
 
@@ -162,17 +177,17 @@ public:
   directory_iterator &increment(std::error_code &EC) {
     assert(Impl && "attempting to increment past end");
     EC = Impl->increment();
-    if (!Impl->CurrentEntry.isStatusKnown())
+    if (Impl->CurrentEntry.path().empty())
       Impl.reset(); // Normalize the end iterator to Impl == nullptr.
     return *this;
   }
 
-  const Status &operator*() const { return Impl->CurrentEntry; }
-  const Status *operator->() const { return &Impl->CurrentEntry; }
+  const directory_entry &operator*() const { return Impl->CurrentEntry; }
+  const directory_entry *operator->() const { return &Impl->CurrentEntry; }
 
   bool operator==(const directory_iterator &RHS) const {
     if (Impl && RHS.Impl)
-      return Impl->CurrentEntry.equivalent(RHS.Impl->CurrentEntry);
+      return Impl->CurrentEntry.path() == RHS.Impl->CurrentEntry.path();
     return !Impl && !RHS.Impl;
   }
   bool operator!=(const directory_iterator &RHS) const {
@@ -201,8 +216,8 @@ public:
   /// Equivalent to operator++, with an error code.
   recursive_directory_iterator &increment(std::error_code &EC);
 
-  const Status &operator*() const { return *State->top(); }
-  const Status *operator->() const { return &*State->top(); }
+  const directory_entry &operator*() const { return *State->top(); }
+  const directory_entry *operator->() const { return &*State->top(); }
 
   bool operator==(const recursive_directory_iterator &Other) const {
     return State == Other.State; // identity
@@ -320,9 +335,46 @@ public:
   const_iterator overlays_end() const { return FSList.rend(); }
 };
 
+/// By default, this delegates all calls to the underlying file system. This
+/// is useful when derived file systems want to override some calls and still
+/// proxy other calls.
+class ProxyFileSystem : public FileSystem {
+public:
+  explicit ProxyFileSystem(IntrusiveRefCntPtr<FileSystem> FS)
+      : FS(std::move(FS)) {}
+
+  llvm::ErrorOr<Status> status(const Twine &Path) override {
+    return FS->status(Path);
+  }
+  llvm::ErrorOr<std::unique_ptr<File>>
+  openFileForRead(const Twine &Path) override {
+    return FS->openFileForRead(Path);
+  }
+  directory_iterator dir_begin(const Twine &Dir, std::error_code &EC) override {
+    return FS->dir_begin(Dir, EC);
+  }
+  llvm::ErrorOr<std::string> getCurrentWorkingDirectory() const override {
+    return FS->getCurrentWorkingDirectory();
+  }
+  std::error_code setCurrentWorkingDirectory(const Twine &Path) override {
+    return FS->setCurrentWorkingDirectory(Path);
+  }
+  std::error_code getRealPath(const Twine &Path,
+                              SmallVectorImpl<char> &Output) const override {
+    return FS->getRealPath(Path, Output);
+  }
+
+protected:
+  FileSystem &getUnderlyingFS() { return *FS; }
+
+private:
+  IntrusiveRefCntPtr<FileSystem> FS;
+};
+
 namespace detail {
 
 class InMemoryDirectory;
+class InMemoryFile;
 
 } // namespace detail
 
@@ -331,6 +383,15 @@ class InMemoryFileSystem : public FileSystem {
   std::unique_ptr<detail::InMemoryDirectory> Root;
   std::string WorkingDirectory;
   bool UseNormalizedPaths = true;
+
+  /// If HardLinkTarget is non-null, a hardlink is created to the To path which
+  /// must be a file. If it is null then it adds the file as the public addFile.
+  bool addFile(const Twine &Path, time_t ModificationTime,
+               std::unique_ptr<llvm::MemoryBuffer> Buffer,
+               Optional<uint32_t> User, Optional<uint32_t> Group,
+               Optional<llvm::sys::fs::file_type> Type,
+               Optional<llvm::sys::fs::perms> Perms,
+               const detail::InMemoryFile *HardLinkTarget);
 
 public:
   explicit InMemoryFileSystem(bool UseNormalizedPaths = true);
@@ -347,6 +408,20 @@ public:
                Optional<uint32_t> User = None, Optional<uint32_t> Group = None,
                Optional<llvm::sys::fs::file_type> Type = None,
                Optional<llvm::sys::fs::perms> Perms = None);
+
+  /// Add a hard link to a file.
+  /// Here hard links are not intended to be fully equivalent to the classical
+  /// filesystem. Both the hard link and the file share the same buffer and
+  /// status (and thus have the same UniqueID). Because of this there is no way
+  /// to distinguish between the link and the file after the link has been
+  /// added.
+  ///
+  /// The To path must be an existing file or a hardlink. The From file must not
+  /// have been added before. The To Path must not be a directory. The From Node
+  /// is added as a hard link which points to the resolved file of To Node.
+  /// \return true if the above condition is satisfied and hardlink was
+  /// successfully created, false otherwise.
+  bool addHardLink(const Twine &From, const Twine &To);
 
   /// Add a buffer to the VFS with a path. The VFS does not own the buffer.
   /// If present, User, Group, Type and Perms apply to the newly-created file

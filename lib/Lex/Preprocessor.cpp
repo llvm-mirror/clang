@@ -149,6 +149,10 @@ Preprocessor::Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
     Ident_AbnormalTermination = nullptr;
   }
 
+  // If using a PCH where a #pragma hdrstop is expected, start skipping tokens.
+  if (usingPCHWithPragmaHdrStop())
+    SkippingUntilPragmaHdrStop = true;
+
   // If using a PCH with a through header, start skipping tokens.
   if (!this->PPOpts->PCHThroughHeader.empty() &&
       !this->PPOpts->ImplicitPCHInclude.empty())
@@ -441,6 +445,13 @@ bool Preprocessor::SetCodeCompletionPoint(const FileEntry *File,
   return false;
 }
 
+void Preprocessor::CodeCompleteIncludedFile(llvm::StringRef Dir,
+                                            bool IsAngled) {
+  if (CodeComplete)
+    CodeComplete->CodeCompleteIncludedFile(Dir, IsAngled);
+  setCodeCompletionReached();
+}
+
 void Preprocessor::CodeCompleteNaturalLanguage() {
   if (CodeComplete)
     CodeComplete->CodeCompleteNaturalLanguage();
@@ -576,8 +587,9 @@ void Preprocessor::EnterMainSourceFile() {
   }
 
   // Skip tokens from the Predefines and if needed the main file.
-  if (usingPCHWithThroughHeader() && SkippingUntilPCHThroughHeader)
-    SkipTokensUntilPCHThroughHeader();
+  if ((usingPCHWithThroughHeader() && SkippingUntilPCHThroughHeader) ||
+      (usingPCHWithPragmaHdrStop() && SkippingUntilPragmaHdrStop))
+    SkipTokensWhileUsingPCH();
 }
 
 void Preprocessor::setPCHThroughHeaderFileID(FileID FID) {
@@ -602,12 +614,23 @@ bool Preprocessor::usingPCHWithThroughHeader() {
          PCHThroughHeaderFileID.isValid();
 }
 
-/// Skip tokens until after the #include of the through header.
-/// Tokens in the predefines file and the main file may be skipped. If the end
-/// of the predefines file is reached, skipping continues into the main file.
-/// If the end of the main file is reached, it's a fatal error.
-void Preprocessor::SkipTokensUntilPCHThroughHeader() {
+bool Preprocessor::creatingPCHWithPragmaHdrStop() {
+  return TUKind == TU_Prefix && PPOpts->PCHWithHdrStop;
+}
+
+bool Preprocessor::usingPCHWithPragmaHdrStop() {
+  return TUKind != TU_Prefix && PPOpts->PCHWithHdrStop;
+}
+
+/// Skip tokens until after the #include of the through header or
+/// until after a #pragma hdrstop is seen. Tokens in the predefines file
+/// and the main file may be skipped. If the end of the predefines file
+/// is reached, skipping continues into the main file. If the end of the
+/// main file is reached, it's a fatal error.
+void Preprocessor::SkipTokensWhileUsingPCH() {
   bool ReachedMainFileEOF = false;
+  bool UsingPCHThroughHeader = SkippingUntilPCHThroughHeader;
+  bool UsingPragmaHdrStop = SkippingUntilPragmaHdrStop;
   Token Tok;
   while (true) {
     bool InPredefines = (CurLexer->getFileID() == getPredefinesFileID());
@@ -616,12 +639,18 @@ void Preprocessor::SkipTokensUntilPCHThroughHeader() {
       ReachedMainFileEOF = true;
       break;
     }
-    if (!SkippingUntilPCHThroughHeader)
+    if (UsingPCHThroughHeader && !SkippingUntilPCHThroughHeader)
+      break;
+    if (UsingPragmaHdrStop && !SkippingUntilPragmaHdrStop)
       break;
   }
-  if (ReachedMainFileEOF)
-    Diag(SourceLocation(), diag::err_pp_through_header_not_seen)
-        << PPOpts->PCHThroughHeader << 1;
+  if (ReachedMainFileEOF) {
+    if (UsingPCHThroughHeader)
+      Diag(SourceLocation(), diag::err_pp_through_header_not_seen)
+          << PPOpts->PCHThroughHeader << 1;
+    else if (!PPOpts->PCHWithHdrStopCreate)
+      Diag(SourceLocation(), diag::err_pp_pragma_hdrstop_not_seen);
+  }
 }
 
 void Preprocessor::replayPreambleConditionalStack() {

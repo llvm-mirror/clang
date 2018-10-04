@@ -80,7 +80,9 @@ class CallDescription {
 
   mutable IdentifierInfo *II = nullptr;
   mutable bool IsLookupDone = false;
-  StringRef FuncName;
+  // The list of the qualified names used to identify the specified CallEvent,
+  // e.g. "{a, b}" represent the qualified names, like "a::b".
+  std::vector<const char *> QualifiedName;
   unsigned RequiredArgs;
 
 public:
@@ -88,16 +90,20 @@ public:
 
   /// Constructs a CallDescription object.
   ///
-  /// @param FuncName The name of the function that will be matched.
+  /// @param QualifiedName The list of the name qualifiers of the function that
+  /// will be matched. The user is allowed to skip any of the qualifiers.
+  /// For example, {"std", "basic_string", "c_str"} would match both
+  /// std::basic_string<...>::c_str() and std::__1::basic_string<...>::c_str().
   ///
   /// @param RequiredArgs The number of arguments that is expected to match a
   /// call. Omit this parameter to match every occurrence of call with a given
   /// name regardless the number of arguments.
-  CallDescription(StringRef FuncName, unsigned RequiredArgs = NoArgRequirement)
-      : FuncName(FuncName), RequiredArgs(RequiredArgs) {}
+  CallDescription(ArrayRef<const char *> QualifiedName,
+                  unsigned RequiredArgs = NoArgRequirement)
+      : QualifiedName(QualifiedName), RequiredArgs(RequiredArgs) {}
 
   /// Get the name of the function that this object matches.
-  StringRef getFunctionName() const { return FuncName; }
+  StringRef getFunctionName() const { return QualifiedName.back(); }
 };
 
 template<typename T = CallEvent>

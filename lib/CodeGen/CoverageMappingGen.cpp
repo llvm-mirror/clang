@@ -67,10 +67,6 @@ public:
 
   void setStartLoc(SourceLocation Loc) { LocStart = Loc; }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getStartLoc() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const {
     assert(LocStart && "Region has no start location");
     return *LocStart;
@@ -1008,6 +1004,8 @@ struct CounterCoverageMappingBuilder
 
   void VisitCXXForRangeStmt(const CXXForRangeStmt *S) {
     extendRegion(S);
+    if (S->getInit())
+      Visit(S->getInit());
     Visit(S->getLoopVarStmt());
     Visit(S->getRangeStmt());
 

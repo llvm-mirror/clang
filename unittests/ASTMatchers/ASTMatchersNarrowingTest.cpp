@@ -765,6 +765,11 @@ TEST(IsArrow, MatchesMemberVariablesViaArrow) {
                       memberExpr(isArrow())));
   EXPECT_TRUE(notMatches("class Y { void x() { (*this).y; } int y; };",
                          memberExpr(isArrow())));
+  EXPECT_TRUE(matches("template <class T> class Y { void x() { this->m; } };",
+                      cxxDependentScopeMemberExpr(isArrow())));
+  EXPECT_TRUE(
+      notMatches("template <class T> class Y { void x() { (*this).m; } };",
+                 cxxDependentScopeMemberExpr(isArrow())));
 }
 
 TEST(IsArrow, MatchesStaticMemberVariablesViaArrow) {
@@ -783,6 +788,14 @@ TEST(IsArrow, MatchesMemberCallsViaArrow) {
                       memberExpr(isArrow())));
   EXPECT_TRUE(notMatches("class Y { void x() { Y y; y.x(); } };",
                          memberExpr(isArrow())));
+  EXPECT_TRUE(
+      matches("class Y { template <class T> void x() { this->x<T>(); } };",
+              unresolvedMemberExpr(isArrow())));
+  EXPECT_TRUE(matches("class Y { template <class T> void x() { x<T>(); } };",
+                      unresolvedMemberExpr(isArrow())));
+  EXPECT_TRUE(
+      notMatches("class Y { template <class T> void x() { (*this).x<T>(); } };",
+                 unresolvedMemberExpr(isArrow())));
 }
 
 TEST(ConversionDeclaration, IsExplicit) {
@@ -1517,6 +1530,26 @@ TEST(HasObjectExpression, MatchesBaseOfVariable) {
     "struct X { int m; }; void f(X* x) { x->m; }",
     memberExpr(hasObjectExpression(
       hasType(pointsTo(recordDecl(hasName("X"))))))));
+  EXPECT_TRUE(matches("template <class T> struct X { void f() { T t; t.m; } };",
+                      cxxDependentScopeMemberExpr(hasObjectExpression(
+                          declRefExpr(to(namedDecl(hasName("t"))))))));
+  EXPECT_TRUE(
+      matches("template <class T> struct X { void f() { T t; t->m; } };",
+              cxxDependentScopeMemberExpr(hasObjectExpression(
+                  declRefExpr(to(namedDecl(hasName("t"))))))));
+}
+
+TEST(HasObjectExpression, MatchesBaseOfMemberFunc) {
+  EXPECT_TRUE(matches(
+      "struct X { void f(); }; void g(X x) { x.f(); }",
+      memberExpr(hasObjectExpression(hasType(recordDecl(hasName("X")))))));
+  EXPECT_TRUE(matches("struct X { template <class T> void f(); };"
+                      "template <class T> void g(X x) { x.f<T>(); }",
+                      unresolvedMemberExpr(hasObjectExpression(
+                          hasType(recordDecl(hasName("X")))))));
+  EXPECT_TRUE(matches("template <class T> void f(T t) { t.g(); }",
+                      cxxDependentScopeMemberExpr(hasObjectExpression(
+                          declRefExpr(to(namedDecl(hasName("t"))))))));
 }
 
 TEST(HasObjectExpression,
@@ -1746,6 +1779,48 @@ TEST(IsInTemplateInstantiation, Sharing) {
   EXPECT_TRUE(matches(
     "int j; template<typename T> void A(T t) { j += t; } void x() { A(0); }",
     Matcher));
+}
+
+TEST(IsInstantiationDependent, MatchesNonValueTypeDependent) {
+  EXPECT_TRUE(matches(
+      "template<typename T> void f() { (void) sizeof(sizeof(T() + T())); }",
+      expr(isInstantiationDependent())));
+}
+
+TEST(IsInstantiationDependent, MatchesValueDependent) {
+  EXPECT_TRUE(matches("template<int T> int f() { return T; }",
+                      expr(isInstantiationDependent())));
+}
+
+TEST(IsInstantiationDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isInstantiationDependent())));
+}
+
+TEST(IsTypeDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isTypeDependent())));
+}
+
+TEST(IsTypeDependent, NotMatchesValueDependent) {
+  EXPECT_TRUE(notMatches("template<int T> int f() { return T; }",
+                         expr(isTypeDependent())));
+}
+
+TEST(IsValueDependent, MatchesValueDependent) {
+  EXPECT_TRUE(matches("template<int T> int f() { return T; }",
+                      expr(isValueDependent())));
+}
+
+TEST(IsValueDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isValueDependent())));
+}
+
+TEST(IsValueDependent, MatchesInstantiationDependent) {
+  EXPECT_TRUE(matches(
+      "template<typename T> void f() { (void) sizeof(sizeof(T() + T())); }",
+      expr(isValueDependent())));
 }
 
 TEST(IsExplicitTemplateSpecialization,

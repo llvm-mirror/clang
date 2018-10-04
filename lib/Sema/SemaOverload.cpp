@@ -1105,7 +1105,8 @@ bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
       (!TemplateParameterListsAreEqual(NewTemplate->getTemplateParameters(),
                                        OldTemplate->getTemplateParameters(),
                                        false, TPL_TemplateMatch) ||
-       OldType->getReturnType() != NewType->getReturnType()))
+       !Context.hasSameType(Old->getDeclaredReturnType(),
+                            New->getDeclaredReturnType())))
     return true;
 
   // If the function is a class member, its signature includes the
@@ -10809,8 +10810,7 @@ void TemplateSpecCandidateSet::NoteCandidates(Sema &S, SourceLocation Loc) {
     // in general, want to list every possible builtin candidate.
   }
 
-  llvm::sort(Cands.begin(), Cands.end(),
-             CompareTemplateSpecCandidatesForDisplay(S));
+  llvm::sort(Cands, CompareTemplateSpecCandidatesForDisplay(S));
 
   // FIXME: Perhaps rename OverloadsShown and getShowOverloads()
   // for generalization purposes (?).

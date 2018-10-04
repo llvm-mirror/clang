@@ -887,18 +887,29 @@ private:
   bool save;
 };
 
-/// Process a directive while looking for the through header.
-/// Only #include (to check if it is the through header) and #define (to warn
-/// about macros that don't match the PCH) are handled. All other directives
-/// are completely discarded.
-void Preprocessor::HandleSkippedThroughHeaderDirective(Token &Result,
+/// Process a directive while looking for the through header or a #pragma
+/// hdrstop. The following directives are handled:
+/// #include (to check if it is the through header)
+/// #define (to warn about macros that don't match the PCH)
+/// #pragma (to check for pragma hdrstop).
+/// All other directives are completely discarded.
+void Preprocessor::HandleSkippedDirectiveWhileUsingPCH(Token &Result,
                                                        SourceLocation HashLoc) {
   if (const IdentifierInfo *II = Result.getIdentifierInfo()) {
-    if (II->getPPKeywordID() == tok::pp_include)
-      return HandleIncludeDirective(HashLoc, Result);
-    if (II->getPPKeywordID() == tok::pp_define)
+    if (II->getPPKeywordID() == tok::pp_define) {
       return HandleDefineDirective(Result,
                                    /*ImmediatelyAfterHeaderGuard=*/false);
+    }
+    if (SkippingUntilPCHThroughHeader &&
+        II->getPPKeywordID() == tok::pp_include) {
+      return HandleIncludeDirective(HashLoc, Result);
+    }
+    if (SkippingUntilPragmaHdrStop && II->getPPKeywordID() == tok::pp_pragma) {
+      Token P = LookAhead(0);
+      auto *II = P.getIdentifierInfo();
+      if (II && II->getName() == "hdrstop")
+        return HandlePragmaDirective(HashLoc, PIK_HashPragma);
+    }
   }
   DiscardUntilEndOfDirective();
 }
@@ -964,8 +975,8 @@ void Preprocessor::HandleDirective(Token &Result) {
   // and reset to previous state when returning from this function.
   ResetMacroExpansionHelper helper(this);
 
-  if (SkippingUntilPCHThroughHeader)
-    return HandleSkippedThroughHeaderDirective(Result, SavedHash.getLocation());
+  if (SkippingUntilPCHThroughHeader || SkippingUntilPragmaHdrStop)
+    return HandleSkippedDirectiveWhileUsingPCH(Result, SavedHash.getLocation());
 
   switch (Result.getKind()) {
   case tok::eod:
@@ -1868,15 +1879,43 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
             Callbacks ? &RelativePath : nullptr, &SuggestedModule, &IsMapped);
         if (File) {
           SourceRange Range(FilenameTok.getLocation(), CharEnd);
-          Diag(FilenameTok, diag::err_pp_file_not_found_not_fatal) <<
+          Diag(FilenameTok, diag::err_pp_file_not_found_angled_include_not_fatal) <<
             Filename <<
             FixItHint::CreateReplacement(Range, "\"" + Filename.str() + "\"");
         }
       }
 
+      // Check for likely typos due to leading or trailing non-isAlphanumeric
+      // characters
+      StringRef OriginalFilename = Filename;
+      if (!File) {
+        while (!isAlphanumeric(Filename.front())) {
+          Filename = Filename.drop_front();
+        }
+        while (!isAlphanumeric(Filename.back())) {
+          Filename = Filename.drop_back();
+        }
+
+        File = LookupFile(
+            FilenameLoc,
+            LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename, isAngled,
+            LookupFrom, LookupFromFile, CurDir,
+            Callbacks ? &SearchPath : nullptr,
+            Callbacks ? &RelativePath : nullptr, &SuggestedModule, &IsMapped);
+        if (File) {
+          SourceRange Range(FilenameTok.getLocation(), CharEnd);
+          auto Hint = isAngled ? FixItHint::CreateReplacement(
+                                     Range, "<" + Filename.str() + ">")
+                               : FixItHint::CreateReplacement(
+                                     Range, "\"" + Filename.str() + "\"");
+          Diag(FilenameTok, diag::err_pp_file_not_found_typo_not_fatal)
+              << OriginalFilename << Filename << Hint;
+        }
+      }
+
       // If the file is still not found, just go with the vanilla diagnostic
       if (!File)
-        Diag(FilenameTok, diag::err_pp_file_not_found) << Filename
+        Diag(FilenameTok, diag::err_pp_file_not_found) << OriginalFilename
                                                        << FilenameRange;
     }
   }

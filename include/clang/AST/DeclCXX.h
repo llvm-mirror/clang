@@ -233,15 +233,7 @@ public:
 
   /// Retrieves the source range that contains the entire base specifier.
   SourceRange getSourceRange() const LLVM_READONLY { return Range; }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY { return Range.getBegin(); }
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY { return Range.getEnd(); }
 
   /// Get the location at which the base class type was written.
@@ -982,10 +974,7 @@ public:
   bool needsImplicitDefaultConstructor() const {
     return !data().UserDeclaredConstructor &&
            !(data().DeclaredSpecialMembers & SMF_DefaultConstructor) &&
-           // C++14 [expr.prim.lambda]p20:
-           //   The closure type associated with a lambda-expression has no
-           //   default constructor.
-           !isLambda();
+           (!isLambda() || lambdaIsDefaultConstructibleAndAssignable());
   }
 
   /// Determine whether this class has any user-declared constructors.
@@ -1175,10 +1164,7 @@ public:
            !hasUserDeclaredCopyAssignment() &&
            !hasUserDeclaredMoveConstructor() &&
            !hasUserDeclaredDestructor() &&
-           // C++1z [expr.prim.lambda]p21: "the closure type has a deleted copy
-           // assignment operator". The intent is that this counts as a user
-           // declared copy assignment, but we do not model it that way.
-           !isLambda();
+           (!isLambda() || lambdaIsDefaultConstructibleAndAssignable());
   }
 
   /// Determine whether we need to eagerly declare a move assignment
@@ -1217,6 +1203,10 @@ public:
   /// lambda function object (i.e. function call operator is
   /// a template).
   bool isGenericLambda() const;
+
+  /// Determine whether this lambda should have an implicit default constructor
+  /// and copy and move assignment operators.
+  bool lambdaIsDefaultConstructibleAndAssignable() const;
 
   /// Retrieve the lambda call operator of the closure type
   /// if this is a closure type.
@@ -2117,10 +2107,15 @@ public:
         Base, IsAppleKext);
   }
 
-  /// Determine whether this is a usual deallocation function
-  /// (C++ [basic.stc.dynamic.deallocation]p2), which is an overloaded
-  /// delete or delete[] operator with a particular signature.
-  bool isUsualDeallocationFunction() const;
+  /// Determine whether this is a usual deallocation function (C++
+  /// [basic.stc.dynamic.deallocation]p2), which is an overloaded delete or
+  /// delete[] operator with a particular signature. Populates \p PreventedBy
+  /// with the declarations of the functions of the same kind if they were the
+  /// reason for this function returning false. This is used by
+  /// Sema::isUsualDeallocationFunction to reconsider the answer based on the
+  /// context.
+  bool isUsualDeallocationFunction(
+      SmallVectorImpl<const FunctionDecl *> &PreventedBy) const;
 
   /// Determine whether this is a copy-assignment operator, regardless
   /// of whether it was declared implicitly or explicitly.
@@ -2878,10 +2873,6 @@ public:
     LinkageSpecDeclBits.HasBraces = RBraceLoc.isValid();
   }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY {
     if (hasBraces())
       return getRBraceLoc();

@@ -412,8 +412,9 @@ const char *escape_via_return_local() {
   std::string s;
   return s.c_str(); // expected-note {{Pointer to inner buffer of 'std::string' obtained here}}
                     // expected-note@-1 {{Inner buffer of 'std::string' deallocated by call to destructor}}
-} // expected-warning {{Inner pointer of container used after re/deallocation}}
-// expected-note@-1 {{Inner pointer of container used after re/deallocation}}
+                    // expected-warning@-2 {{Inner pointer of container used after re/deallocation}}
+                    // expected-note@-3 {{Inner pointer of container used after re/deallocation}}
+}
 
 
 char *c();
@@ -423,4 +424,8 @@ void no_CXXRecordDecl() {
   A a, *b;
   *(void **)&b = c() + 1;
   *b = a; // no-crash
+}
+
+void checkReference(std::string &s) {
+  const char *c = s.c_str();
 }

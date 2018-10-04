@@ -403,7 +403,9 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       //   }.bind(...));
       // FIXME: We should find a more generic solution to this problem.
       !(State.Column <= NewLineColumn &&
-        Style.Language == FormatStyle::LK_JavaScript))
+        Style.Language == FormatStyle::LK_JavaScript) &&
+      !(Previous.closesScopeAfterBlock() &&
+        State.Column <= NewLineColumn))
     return true;
 
   // If the template declaration spans multiple lines, force wrap before the
@@ -700,7 +702,8 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
     // Indent relative to the RHS of the expression unless this is a simple
     // assignment without binary expression on the RHS. Also indent relative to
     // unary operators and the colons of constructor initializers.
-    State.Stack.back().LastSpace = State.Column;
+    if (Style.BreakBeforeBinaryOperators == FormatStyle::BOS_None)
+      State.Stack.back().LastSpace = State.Column;
   } else if (Previous.is(TT_InheritanceColon)) {
     State.Stack.back().Indent = State.Column;
     State.Stack.back().LastSpace = State.Column;

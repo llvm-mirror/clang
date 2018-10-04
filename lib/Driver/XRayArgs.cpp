@@ -52,7 +52,8 @@ XRayArgs::XRayArgs(const ToolChain &TC, const ArgList &Args) {
       }
     } else if (Triple.getOS() == llvm::Triple::FreeBSD ||
                Triple.getOS() == llvm::Triple::OpenBSD ||
-               Triple.getOS() == llvm::Triple::NetBSD) {
+               Triple.getOS() == llvm::Triple::NetBSD ||
+               Triple.getOS() == llvm::Triple::Darwin) {
       if (Triple.getArch() != llvm::Triple::x86_64) {
         D.Diag(diag::err_drv_clang_unsupported)
             << (std::string(XRayInstrumentOption) + " on " + Triple.str());
@@ -164,7 +165,7 @@ XRayArgs::XRayArgs(const ToolChain &TC, const ArgList &Args) {
       }
 
     // Then we want to sort and unique the modes we've collected.
-    llvm::sort(Modes.begin(), Modes.end());
+    llvm::sort(Modes);
     Modes.erase(std::unique(Modes.begin(), Modes.end()), Modes.end());
   }
 }
@@ -214,4 +215,19 @@ void XRayArgs::addArgs(const ToolChain &TC, const ArgList &Args,
     ModeOpt += Mode;
     CmdArgs.push_back(Args.MakeArgString(ModeOpt));
   }
+
+  SmallString<64> Bundle("-fxray-instrumentation-bundle=");
+  if (InstrumentationBundle.full()) {
+    Bundle += "all";
+  } else if (InstrumentationBundle.empty()) {
+    Bundle += "none";
+  } else {
+    if (InstrumentationBundle.has(XRayInstrKind::Function))
+      Bundle += "function";
+    if (InstrumentationBundle.has(XRayInstrKind::Custom))
+      Bundle += "custom";
+    if (InstrumentationBundle.has(XRayInstrKind::Typed))
+      Bundle += "typed";
+  }
+  CmdArgs.push_back(Args.MakeArgString(Bundle));
 }

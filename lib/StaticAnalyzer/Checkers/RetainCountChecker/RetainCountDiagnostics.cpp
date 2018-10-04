@@ -29,7 +29,7 @@ static bool isNumericLiteralExpression(const Expr *E) {
 }
 
 std::shared_ptr<PathDiagnosticPiece>
-CFRefReportVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *PrevN,
+CFRefReportVisitor::VisitNode(const ExplodedNode *N,
                               BugReporterContext &BRC, BugReport &BR) {
   // FIXME: We will eventually need to handle non-statement-based events
   // (__attribute__((cleanup))).
@@ -37,7 +37,7 @@ CFRefReportVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *PrevN,
     return nullptr;
 
   // Check if the type state has changed.
-  ProgramStateRef PrevSt = PrevN->getState();
+  ProgramStateRef PrevSt = N->getFirstPred()->getState();
   ProgramStateRef CurrSt = N->getState();
   const LocationContext *LCtx = N->getLocationContext();
 
@@ -119,6 +119,9 @@ CFRefReportVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *PrevN,
 
       if (CurrV.getObjKind() == RetEffect::CF) {
         os << " returns a Core Foundation object of type "
+           << Sym->getType().getAsString() << " with a ";
+      } else if (CurrV.getObjKind() == RetEffect::OS) {
+        os << " returns an OSObject of type "
            << Sym->getType().getAsString() << " with a ";
       } else if (CurrV.getObjKind() == RetEffect::Generalized) {
         os << " returns an object of type " << Sym->getType().getAsString()
@@ -457,8 +460,7 @@ CFRefLeakReportVisitor::getEndPath(BugReporterContext &BRC,
                 "  This violates the naming convention rules"
                 " given in the Memory Management Guide for Cocoa";
         }
-      }
-      else {
+      } else {
         const FunctionDecl *FD = cast<FunctionDecl>(D);
         os << "whose name ('" << *FD
            << "') does not contain 'Copy' or 'Create'.  This violates the naming"

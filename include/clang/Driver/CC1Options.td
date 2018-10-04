@@ -76,14 +76,13 @@ def analyzer_display_progress : Flag<["-"], "analyzer-display-progress">,
 def analyze_function : Separate<["-"], "analyze-function">,
   HelpText<"Run analysis on specific function (for C++ include parameters in name)">;
 def analyze_function_EQ : Joined<["-"], "analyze-function=">, Alias<analyze_function>;
-def analyzer_eagerly_assume : Flag<["-"], "analyzer-eagerly-assume">,
-  HelpText<"Eagerly assume the truth/falseness of some symbolic constraints">;
 def trim_egraph : Flag<["-"], "trim-egraph">,
   HelpText<"Only show error-related paths in the analysis graph">;
 def analyzer_viz_egraph_graphviz : Flag<["-"], "analyzer-viz-egraph-graphviz">,
   HelpText<"Display exploded graph using GraphViz">;
-def analyzer_viz_egraph_ubigraph : Flag<["-"], "analyzer-viz-egraph-ubigraph">,
-  HelpText<"Display exploded graph using Ubigraph">;
+def analyzer_dump_egraph : Separate<["-"], "analyzer-dump-egraph">,
+  HelpText<"Dump exploded graph to the specified file">;
+def analyzer_dump_egraph_EQ : Joined<["-"], "analyzer-dump-egraph=">, Alias<analyzer_dump_egraph>;
 
 def analyzer_inline_max_stack_depth : Separate<["-"], "analyzer-inline-max-stack-depth">,
   HelpText<"Bound on stack depth while inlining (4 by default)">;
@@ -197,10 +196,6 @@ def dwarf_column_info : Flag<["-"], "dwarf-column-info">,
   HelpText<"Turn on column location information.">;
 def split_dwarf : Flag<["-"], "split-dwarf">,
   HelpText<"Split out the dwarf .dwo sections">;
-def gnu_pubnames : Flag<["-"], "gnu-pubnames">,
-  HelpText<"Emit newer GNU style pubnames">;
-def arange_sections : Flag<["-"], "arange_sections">,
-  HelpText<"Emit DWARF .debug_arange sections">;
 def dwarf_ext_refs : Flag<["-"], "dwarf-ext-refs">,
   HelpText<"Generate debug info with external references to clang modules"
            " or precompiled headers">;
@@ -253,7 +248,7 @@ def new_struct_path_tbaa : Flag<["-"], "new-struct-path-tbaa">,
 def masm_verbose : Flag<["-"], "masm-verbose">,
   HelpText<"Generate verbose assembly output">;
 def mcode_model : Separate<["-"], "mcode-model">,
-  HelpText<"The code model to use">, Values<"small,kernel,medium,large">;
+  HelpText<"The code model to use">, Values<"tiny,small,kernel,medium,large">;
 def mdebug_pass : Separate<["-"], "mdebug-pass">,
   HelpText<"Enable additional debug output">;
 def mdisable_fp_elim : Flag<["-"], "mdisable-fp-elim">,
@@ -287,9 +282,11 @@ def mconstructor_aliases : Flag<["-"], "mconstructor-aliases">,
   HelpText<"Emit complete constructors and destructors as aliases when possible">;
 def mlink_bitcode_file : Separate<["-"], "mlink-bitcode-file">,
   HelpText<"Link the given bitcode file before performing optimizations.">;
-def mlink_cuda_bitcode : Separate<["-"], "mlink-cuda-bitcode">,
+def mlink_builtin_bitcode : Separate<["-"], "mlink-builtin-bitcode">,
   HelpText<"Link and internalize needed symbols from the given bitcode file "
            "before performing optimizations.">;
+def mlink_cuda_bitcode : Separate<["-"], "mlink-cuda-bitcode">,
+  Alias<mlink_builtin_bitcode>;
 def vectorize_loops : Flag<["-"], "vectorize-loops">,
   HelpText<"Run the Loop vectorization passes">;
 def vectorize_slp : Flag<["-"], "vectorize-slp">,
@@ -549,6 +546,8 @@ def emit_module : Flag<["-"], "emit-module">,
   HelpText<"Generate pre-compiled module file from a module map">;
 def emit_module_interface : Flag<["-"], "emit-module-interface">,
   HelpText<"Generate pre-compiled module file from a C++ module interface">;
+def emit_header_module : Flag<["-"], "emit-header-module">,
+  HelpText<"Generate pre-compiled module file from a set of header files">;
 def emit_pth : Flag<["-"], "emit-pth">,
   HelpText<"Generate pre-tokenized header file">;
 def emit_pch : Flag<["-"], "emit-pch">,
@@ -610,6 +609,10 @@ def foverride_record_layout_EQ : Joined<["-"], "foverride-record-layout=">,
 def pch_through_header_EQ : Joined<["-"], "pch-through-header=">,
   HelpText<"Stop PCH generation after including this file.  When using a PCH, "
            "skip tokens until after this file is included.">;
+def pch_through_hdrstop_create : Flag<["-"], "pch-through-hdrstop-create">,
+  HelpText<"When creating a PCH, stop PCH generation after #pragma hdrstop.">;
+def pch_through_hdrstop_use : Flag<["-"], "pch-through-hdrstop-use">,
+  HelpText<"When using a PCH, skip tokens until after a #pragma hdrstop.">;
 def fno_pch_timestamp : Flag<["-"], "fno-pch-timestamp">,
   HelpText<"Disable inclusion of timestamp in precompiled headers">;
 def building_pch_with_obj : Flag<["-"], "building-pch-with-obj">,

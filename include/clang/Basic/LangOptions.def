@@ -203,6 +203,7 @@ LANGOPT(OpenMPSimd        , 1, 0, "Use SIMD only OpenMP support.")
 LANGOPT(OpenMPUseTLS      , 1, 0, "Use TLS for threadprivates or runtime calls")
 LANGOPT(OpenMPIsDevice    , 1, 0, "Generate code only for OpenMP target device")
 LANGOPT(OpenMPCUDAMode    , 1, 0, "Generate code for OpenMP pragmas in SIMT/SPMD mode")
+LANGOPT(OpenMPCUDAForceFullRuntime , 1, 0, "Force to use full runtime in all constructs when offloading to CUDA devices")
 LANGOPT(OpenMPHostCXXExceptions    , 1, 0, "C++ exceptions handling in the host code.")
 LANGOPT(RenderScript      , 1, 0, "RenderScript")
 
@@ -307,6 +308,8 @@ COMPATIBLE_VALUE_LANGOPT(FunctionAlignment, 5, 0, "Default alignment for functio
 LANGOPT(FixedPoint, 1, 0, "fixed point types")
 LANGOPT(PaddingOnUnsignedFixedPoint, 1, 0,
         "unsigned fixed point types having one extra padding bit")
+
+LANGOPT(RegisterStaticDestructors, 1, 1, "Register C++ static destructors")
 
 #undef LANGOPT
 #undef COMPATIBLE_LANGOPT

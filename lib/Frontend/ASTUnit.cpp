@@ -1911,8 +1911,10 @@ namespace {
 
     void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
                                    OverloadCandidate *Candidates,
-                                   unsigned NumCandidates) override {
-      Next.ProcessOverloadCandidates(S, CurrentArg, Candidates, NumCandidates);
+                                   unsigned NumCandidates,
+                                   SourceLocation OpenParLoc) override {
+      Next.ProcessOverloadCandidates(S, CurrentArg, Candidates, NumCandidates,
+                                     OpenParLoc);
     }
 
     CodeCompletionAllocator &getAllocator() override {
@@ -1974,6 +1976,7 @@ static void CalculateHiddenNames(const CodeCompletionContext &Context,
   case CodeCompletionContext::CCC_ObjCInstanceMessage:
   case CodeCompletionContext::CCC_ObjCClassMessage:
   case CodeCompletionContext::CCC_ObjCCategoryName:
+  case CodeCompletionContext::CCC_IncludedFile:
     // We're looking for nothing, or we're looking for names that cannot
     // be hidden.
     return;

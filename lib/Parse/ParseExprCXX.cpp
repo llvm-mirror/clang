@@ -1685,10 +1685,18 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
 
     if (Tok.isNot(tok::r_paren)) {
       if (ParseExpressionList(Exprs, CommaLocs, [&] {
-            Actions.CodeCompleteConstructor(
+            QualType PreferredType = Actions.ProduceConstructorSignatureHelp(
                 getCurScope(), TypeRep.get()->getCanonicalTypeInternal(),
-                DS.getEndLoc(), Exprs);
+                DS.getEndLoc(), Exprs, T.getOpenLocation());
+            CalledSignatureHelp = true;
+            Actions.CodeCompleteExpression(getCurScope(), PreferredType);
           })) {
+        if (PP.isCodeCompletionReached() && !CalledSignatureHelp) {
+          Actions.ProduceConstructorSignatureHelp(
+              getCurScope(), TypeRep.get()->getCanonicalTypeInternal(),
+              DS.getEndLoc(), Exprs, T.getOpenLocation());
+          CalledSignatureHelp = true;
+        }
         SkipUntil(tok::r_paren, StopAtSemi);
         return ExprError();
       }
@@ -1730,10 +1738,14 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
 /// \param Loc The location of the start of the statement that requires this
 /// condition, e.g., the "for" in a for loop.
 ///
+/// \param FRI If non-null, a for range declaration is permitted, and if
+/// present will be parsed and stored here, and a null result will be returned.
+///
 /// \returns The parsed condition.
 Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
                                                 SourceLocation Loc,
-                                                Sema::ConditionKind CK) {
+                                                Sema::ConditionKind CK,
+                                                ForRangeInfo *FRI) {
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
 
   if (Tok.is(tok::code_completion)) {
@@ -1753,7 +1765,7 @@ Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
   };
 
   // Determine what kind of thing we have.
-  switch (isCXXConditionDeclarationOrInitStatement(InitStmt)) {
+  switch (isCXXConditionDeclarationOrInitStatement(InitStmt, FRI)) {
   case ConditionOrInitStatement::Expression: {
     ProhibitAttributes(attrs);
 
@@ -1789,6 +1801,15 @@ Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
                                attrs, /*RequireSemi=*/true);
     *InitStmt = Actions.ActOnDeclStmt(DG, DeclStart, DeclEnd);
     return ParseCXXCondition(nullptr, Loc, CK);
+  }
+
+  case ConditionOrInitStatement::ForRangeDecl: {
+    assert(FRI && "should not parse a for range declaration here");
+    SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
+    DeclGroupPtrTy DG = ParseSimpleDeclaration(
+        DeclaratorContext::ForContext, DeclEnd, attrs, false, FRI);
+    FRI->LoopVar = Actions.ActOnDeclStmt(DG, DeclStart, Tok.getLocation());
+    return Sema::ConditionResult();
   }
 
   case ConditionOrInitStatement::ConditionDecl:
@@ -2817,12 +2838,22 @@ Parser::ParseCXXNewExpression(bool UseGlobal, SourceLocation Start) {
     if (Tok.isNot(tok::r_paren)) {
       CommaLocsTy CommaLocs;
       if (ParseExpressionList(ConstructorArgs, CommaLocs, [&] {
-            ParsedType TypeRep = Actions.ActOnTypeName(getCurScope(),
-                                                       DeclaratorInfo).get();
-            Actions.CodeCompleteConstructor(
+            ParsedType TypeRep =
+                Actions.ActOnTypeName(getCurScope(), DeclaratorInfo).get();
+            QualType PreferredType = Actions.ProduceConstructorSignatureHelp(
                 getCurScope(), TypeRep.get()->getCanonicalTypeInternal(),
-                DeclaratorInfo.getEndLoc(), ConstructorArgs);
-      })) {
+                DeclaratorInfo.getEndLoc(), ConstructorArgs, ConstructorLParen);
+            CalledSignatureHelp = true;
+            Actions.CodeCompleteExpression(getCurScope(), PreferredType);
+          })) {
+        if (PP.isCodeCompletionReached() && !CalledSignatureHelp) {
+          ParsedType TypeRep =
+              Actions.ActOnTypeName(getCurScope(), DeclaratorInfo).get();
+          Actions.ProduceConstructorSignatureHelp(
+              getCurScope(), TypeRep.get()->getCanonicalTypeInternal(),
+              DeclaratorInfo.getEndLoc(), ConstructorArgs, ConstructorLParen);
+          CalledSignatureHelp = true;
+        }
         SkipUntil(tok::semi, StopAtSemi | StopBeforeMatch);
         return ExprError();
       }

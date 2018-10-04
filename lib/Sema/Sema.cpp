@@ -827,7 +827,9 @@ void Sema::emitAndClearUnusedLocalTypedefWarnings() {
 /// is parsed. Note that the ASTContext may have already injected some
 /// declarations.
 void Sema::ActOnStartOfTranslationUnit() {
-  if (getLangOpts().ModulesTS) {
+  if (getLangOpts().ModulesTS &&
+      (getLangOpts().getCompilingModule() == LangOptions::CMK_ModuleInterface ||
+       getLangOpts().getCompilingModule() == LangOptions::CMK_None)) {
     SourceLocation StartOfTU =
         SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
 
@@ -922,10 +924,9 @@ void Sema::ActOnEndOfTranslationUnit() {
 
   // All delayed member exception specs should be checked or we end up accepting
   // incompatible declarations.
-  // FIXME: This is wrong for TUKind == TU_Prefix. In that case, we need to
-  // write out the lists to the AST file (if any).
+  assert(DelayedOverridingExceptionSpecChecks.empty());
+  assert(DelayedEquivalentExceptionSpecChecks.empty());
   assert(DelayedDefaultedMemberExceptionSpecs.empty());
-  assert(DelayedExceptionSpecChecks.empty());
 
   // All dllexport classes should have been processed already.
   assert(DelayedDllExportClasses.empty());
@@ -978,7 +979,8 @@ void Sema::ActOnEndOfTranslationUnit() {
     // module declaration by now.
     if (getLangOpts().getCompilingModule() ==
             LangOptions::CMK_ModuleInterface &&
-        ModuleScopes.back().Module->Kind != Module::ModuleInterfaceUnit) {
+        (ModuleScopes.empty() ||
+         ModuleScopes.back().Module->Kind != Module::ModuleInterfaceUnit)) {
       // FIXME: Make a better guess as to where to put the module declaration.
       Diag(getSourceManager().getLocForStartOfFile(
                getSourceManager().getMainFileID()),
@@ -1889,6 +1891,14 @@ bool Sema::checkOpenCLDisabledTypeDeclSpec(const DeclSpec &DS, QualType QT) {
   if (auto TagT = dyn_cast<TagType>(QT.getCanonicalType().getTypePtr()))
     Decl = TagT->getDecl();
   auto Loc = DS.getTypeSpecTypeLoc();
+
+  // Check extensions for vector types.
+  // e.g. double4 is not allowed when cl_khr_fp64 is absent.
+  if (QT->isExtVectorType()) {
+    auto TypePtr = QT->castAs<ExtVectorType>()->getElementType().getTypePtr();
+    return checkOpenCLDisabledTypeOrDecl(TypePtr, Loc, QT, OpenCLTypeExtMap);
+  }
+
   if (checkOpenCLDisabledTypeOrDecl(Decl, Loc, QT, OpenCLDeclExtMap))
     return true;
 

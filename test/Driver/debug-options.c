@@ -119,6 +119,25 @@
 // RUN: %clang -### -c -gline-tables-only -g0 %s 2>&1 \
 // RUN:             | FileCheck -check-prefix=GLTO_NO %s
 //
+// RUN: %clang -### -c -gline-directives-only %s -target x86_64-apple-darwin 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLIO_ONLY %s
+// RUN: %clang -### -c -gline-directives-only %s -target i686-pc-openbsd 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLIO_ONLY_DWARF2 %s
+// RUN: %clang -### -c -gline-directives-only %s -target x86_64-pc-freebsd10.0 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLIO_ONLY_DWARF2 %s
+// RUN: %clang -### -c -gline-directives-only -g %s -target x86_64-linux-gnu 2>&1 \
+// RUN:             | FileCheck -check-prefix=G_ONLY %s
+// RUN: %clang -### -c -gline-directives-only -g %s -target x86_64-apple-darwin16 2>&1 \
+// RUN:             | FileCheck -check-prefix=G_STANDALONE -check-prefix=G_DWARF4 %s
+// RUN: %clang -### -c -gline-directives-only -g %s -target i686-pc-openbsd 2>&1 \
+// RUN:             | FileCheck -check-prefix=G_ONLY_DWARF2 %s
+// RUN: %clang -### -c -gline-directives-only -g %s -target x86_64-pc-freebsd10.0 2>&1 \
+// RUN:             | FileCheck -check-prefix=G_ONLY_DWARF2 %s
+// RUN: %clang -### -c -gline-directives-only -g %s -target i386-pc-solaris 2>&1 \
+// RUN:             | FileCheck -check-prefix=G_ONLY_DWARF2 %s
+// RUN: %clang -### -c -gline-directives-only -g0 %s 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLIO_NO %s
+//
 // RUN: %clang -### -c -grecord-gcc-switches %s 2>&1 \
 //             | FileCheck -check-prefix=GRECORD %s
 // RUN: %clang -### -c -gno-record-gcc-switches %s 2>&1 \
@@ -133,9 +152,21 @@
 // RUN: %clang -### -c -gstrict-dwarf -gno-strict-dwarf %s 2>&1 \
 // RUN:        | FileCheck -check-prefix=GIGNORE %s
 //
-// RUN: %clang -### -c -ggnu-pubnames %s 2>&1 | FileCheck -check-prefix=GOPT %s
-// RUN: %clang -### -c %s 2>&1 | FileCheck -check-prefix=NOGOPT %s
-// RUN: %clang -### -c -ggnu-pubnames -gno-gnu-pubnames %s 2>&1 | FileCheck -check-prefix=NOGOPT %s
+// RUN: %clang -### -c -ggnu-pubnames %s 2>&1 | FileCheck -check-prefix=GPUB %s
+// RUN: %clang -### -c -ggdb %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+// RUN: %clang -### -c -ggnu-pubnames -gno-gnu-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+// RUN: %clang -### -c -ggnu-pubnames -gno-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+//
+// RUN: %clang -### -c -gpubnames %s 2>&1 | FileCheck -check-prefix=PUB %s
+// RUN: %clang -### -c -ggdb %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+// RUN: %clang -### -c -gpubnames -gno-gnu-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+// RUN: %clang -### -c -gpubnames -gno-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+//
+// RUN: %clang -### -c -gsplit-dwarf %s 2>&1 | FileCheck -check-prefix=GPUB %s
+// RUN: %clang -### -c -gsplit-dwarf -gno-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
+//
+// RUN: %clang -### -c -glldb %s 2>&1 | FileCheck -check-prefix=GPUB %s
+// RUN: %clang -### -c -glldb -gno-pubnames %s 2>&1 | FileCheck -check-prefix=NOPUB %s
 //
 // RUN: %clang -### -c -gdwarf-aranges %s 2>&1 | FileCheck -check-prefix=GARANGE %s
 //
@@ -169,6 +200,9 @@
 // RUN: %clang -### -gmodules -gline-tables-only %s 2>&1 \
 // RUN:        | FileCheck -check-prefix=GLTO_ONLY %s
 //
+// RUN: %clang -### -gmodules -gline-directives-only %s 2>&1 \
+// RUN:        | FileCheck -check-prefix=GLIO_ONLY %s
+//
 // G: "-cc1"
 // G: "-debug-info-kind=limited"
 //
@@ -195,6 +229,15 @@
 // GLTO_ONLY_DWARF2: "-debug-info-kind=line-tables-only"
 // GLTO_ONLY_DWARF2: "-dwarf-version=2"
 //
+// GLIO_ONLY: "-cc1"
+// GLIO_ONLY-NOT: "-dwarf-ext-refs"
+// GLIO_ONLY: "-debug-info-kind=line-directives-only"
+// GLIO_ONLY-NOT: "-dwarf-ext-refs"
+//
+// GLIO_ONLY_DWARF2: "-cc1"
+// GLIO_ONLY_DWARF2: "-debug-info-kind=line-directives-only"
+// GLIO_ONLY_DWARF2: "-dwarf-version=2"
+//
 // G_ONLY: "-cc1"
 // G_ONLY: "-debug-info-kind=limited"
 //
@@ -216,6 +259,10 @@
 // GLTO_NO: "-cc1"
 // GLTO_NO-NOT: -debug-info-kind=
 //
+// This tests asserts that "-gline-directives-only" "-g0" disables debug info.
+// GLIO_NO: "-cc1"
+// GLIO_NO-NOT: -debug-info-kind=
+//
 // GRECORD: "-dwarf-debug-flags"
 // GRECORD: -### -c -grecord-gcc-switches
 //
@@ -229,8 +276,11 @@
 //
 // GIGNORE-NOT: "argument unused during compilation"
 //
-// GOPT: -ggnu-pubnames
-// NOGOPT-NOT: -ggnu-pubnames
+// GPUB: -ggnu-pubnames
+// NOPUB-NOT: -ggnu-pubnames
+// NOPUB-NOT: -gpubnames
+//
+// PUB: -gpubnames
 //
 // GARANGE: -generate-arange-section
 //

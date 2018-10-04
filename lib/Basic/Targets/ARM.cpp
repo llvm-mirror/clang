@@ -189,6 +189,8 @@ StringRef ARMTargetInfo::getCPUAttr() const {
     return "8_3A";
   case llvm::ARM::ArchKind::ARMV8_4A:
     return "8_4A";
+  case llvm::ARM::ArchKind::ARMV8_5A:
+    return "8_5A";
   case llvm::ARM::ArchKind::ARMV8MBaseline:
     return "8M_BASE";
   case llvm::ARM::ArchKind::ARMV8MMainline:
@@ -661,7 +663,7 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
   }
 
   // ACLE 6.4.9 32-bit SIMD instructions
-  if (ArchVersion >= 6 && (CPUProfile != "M" || CPUAttr == "7EM"))
+  if ((CPUProfile != "M" && ArchVersion >= 6) || (CPUProfile == "M" && DSP))
     Builder.defineMacro("__ARM_FEATURE_SIMD32", "1");
 
   // ACLE 6.4.10 Hardware Integer Divide

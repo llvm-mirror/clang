@@ -764,7 +764,8 @@ public:
   /// bitcast to the new variable.
   llvm::GlobalVariable *
   CreateOrReplaceCXXRuntimeVariable(StringRef Name, llvm::Type *Ty,
-                                    llvm::GlobalValue::LinkageTypes Linkage);
+                                    llvm::GlobalValue::LinkageTypes Linkage,
+                                    unsigned Alignment);
 
   llvm::Function *
   CreateGlobalInitOrDestructFunction(llvm::FunctionType *ty, const Twine &name,
@@ -1222,6 +1223,10 @@ public:
   /// Emit a code for declare reduction construct.
   void EmitOMPDeclareReduction(const OMPDeclareReductionDecl *D,
                                CodeGenFunction *CGF = nullptr);
+
+  /// Emit a code for requires directive.
+  /// \param D Requires declaration
+  void EmitOMPRequiresDecl(const OMPRequiresDecl *D);
 
   /// Returns whether the given record has hidden LTO visibility and therefore
   /// may participate in (single-module) CFI and whole-program vtable

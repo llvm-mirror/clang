@@ -2517,7 +2517,9 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
        Right.MatchingParen->BlockKind != BK_Block))
     return !Style.Cpp11BracedListStyle;
   if (Left.is(TT_BlockComment))
-    return !Left.TokenText.endswith("=*/");
+    // No whitespace in x(/*foo=*/1), except for JavaScript.
+    return Style.Language == FormatStyle::LK_JavaScript ||
+           !Left.TokenText.endswith("=*/");
   if (Right.is(tok::l_paren)) {
     if ((Left.is(tok::r_paren) && Left.is(TT_AttributeParen)) ||
         (Left.is(tok::r_square) && Left.is(TT_AttributeSquare)))
@@ -3086,6 +3088,12 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
       return Style.BreakBeforeBinaryOperators != FormatStyle::BOS_None;
     if (Right.is(Keywords.kw_as))
       return false; // must not break before as in 'x as type' casts
+    if (Right.isOneOf(Keywords.kw_extends, Keywords.kw_infer)) {
+      // extends and infer can appear as keywords in conditional types:
+      //   https://www.typescriptlang.org/docs/handbook/release-notes/typescript-2-8.html#conditional-types
+      // do not break before them, as the expressions are subject to ASI.
+      return false;
+    }
     if (Left.is(Keywords.kw_as))
       return true;
     if (Left.is(TT_JsNonNullAssertion))

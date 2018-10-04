@@ -347,6 +347,10 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       !isInSanitizerBlacklist(SanitizerKind::Memory, Fn, Loc))
     Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
 
+  if (getLangOpts().Sanitize.has(SanitizerKind::KernelMemory) &&
+      !isInSanitizerBlacklist(SanitizerKind::KernelMemory, Fn, Loc))
+    Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+
   if (getLangOpts().Sanitize.has(SanitizerKind::SafeStack) &&
       !isInSanitizerBlacklist(SanitizerKind::SafeStack, Fn, Loc))
     Fn->addFnAttr(llvm::Attribute::SafeStack);
@@ -355,6 +359,12 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       !isInSanitizerBlacklist(SanitizerKind::ShadowCallStack, Fn, Loc))
     Fn->addFnAttr(llvm::Attribute::ShadowCallStack);
 
+  auto RASignKind = getCodeGenOpts().getSignReturnAddress();
+  if (RASignKind != CodeGenOptions::SignReturnAddressScope::None)
+    Fn->addFnAttr("sign-return-address",
+                  RASignKind == CodeGenOptions::SignReturnAddressScope::All
+                      ? "all"
+                      : "non-leaf");
   return Fn;
 }
 

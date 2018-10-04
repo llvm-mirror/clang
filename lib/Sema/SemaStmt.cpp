@@ -1164,7 +1164,21 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
 
       SmallVector<DeclarationName,8> UnhandledNames;
 
-      for (EI = EnumVals.begin(); EI != EIEnd; EI++){
+      for (EI = EnumVals.begin(); EI != EIEnd; EI++) {
+        // Don't warn about omitted unavailable EnumConstantDecls.
+        switch (EI->second->getAvailability()) {
+        case AR_Deprecated:
+          // Omitting a deprecated constant is ok; it should never materialize.
+        case AR_Unavailable:
+          continue;
+
+        case AR_NotYetIntroduced:
+          // Partially available enum constants should be present. Note that we
+          // suppress -Wunguarded-availability diagnostics for such uses.
+        case AR_Available:
+          break;
+        }
+
         // Drop unneeded case values
         while (CI != CaseVals.end() && CI->first < EI->first)
           CI++;
@@ -1633,6 +1647,8 @@ namespace {
     void VisitCXXForRangeStmt(const CXXForRangeStmt *S) {
       // Only visit the initialization of a for loop; the body
       // has a different break/continue scope.
+      if (const Stmt *Init = S->getInit())
+        Visit(Init);
       if (const Stmt *Range = S->getRangeStmt())
         Visit(Range);
       if (const Stmt *Begin = S->getBeginStmt())
@@ -2051,15 +2067,20 @@ static bool ObjCEnumerationCollection(Expr *Collection) {
 /// The body of the loop is not available yet, since it cannot be analysed until
 /// we have determined the type of the for-range-declaration.
 StmtResult Sema::ActOnCXXForRangeStmt(Scope *S, SourceLocation ForLoc,
-                                      SourceLocation CoawaitLoc, Stmt *First,
-                                      SourceLocation ColonLoc, Expr *Range,
-                                      SourceLocation RParenLoc,
+                                      SourceLocation CoawaitLoc, Stmt *InitStmt,
+                                      Stmt *First, SourceLocation ColonLoc,
+                                      Expr *Range, SourceLocation RParenLoc,
                                       BuildForRangeKind Kind) {
   if (!First)
     return StmtError();
 
-  if (Range && ObjCEnumerationCollection(Range))
+  if (Range && ObjCEnumerationCollection(Range)) {
+    // FIXME: Support init-statements in Objective-C++20 ranged for statement.
+    if (InitStmt)
+      return Diag(InitStmt->getBeginLoc(), diag::err_objc_for_range_init_stmt)
+                 << InitStmt->getSourceRange();
     return ActOnObjCForCollectionStmt(ForLoc, First, Range, RParenLoc);
+  }
 
   DeclStmt *DS = dyn_cast<DeclStmt>(First);
   assert(DS && "first part of for range not a decl stmt");
@@ -2105,10 +2126,10 @@ StmtResult Sema::ActOnCXXForRangeStmt(Scope *S, SourceLocation ForLoc,
     return StmtError();
   }
 
-  return BuildCXXForRangeStmt(ForLoc, CoawaitLoc, ColonLoc, RangeDecl.get(),
-                              /*BeginStmt=*/nullptr, /*EndStmt=*/nullptr,
-                              /*Cond=*/nullptr, /*Inc=*/nullptr,
-                              DS, RParenLoc, Kind);
+  return BuildCXXForRangeStmt(
+      ForLoc, CoawaitLoc, InitStmt, ColonLoc, RangeDecl.get(),
+      /*BeginStmt=*/nullptr, /*EndStmt=*/nullptr,
+      /*Cond=*/nullptr, /*Inc=*/nullptr, DS, RParenLoc, Kind);
 }
 
 /// Create the initialization, compare, and increment steps for
@@ -2135,6 +2156,56 @@ BuildNonArrayForRange(Sema &SemaRef, Expr *BeginRange, Expr *EndRange,
                                  Sema::LookupMemberName);
   LookupResult EndMemberLookup(SemaRef, EndNameInfo, Sema::LookupMemberName);
 
+  auto BuildBegin = [&] {
+    *BEF = BEF_begin;
+    Sema::ForRangeStatus RangeStatus =
+        SemaRef.BuildForRangeBeginEndCall(ColonLoc, ColonLoc, BeginNameInfo,
+                                          BeginMemberLookup, CandidateSet,
+                                          BeginRange, BeginExpr);
+
+    if (RangeStatus != Sema::FRS_Success) {
+      if (RangeStatus == Sema::FRS_DiagnosticIssued)
+        SemaRef.Diag(BeginRange->getBeginLoc(), diag::note_in_for_range)
+            << ColonLoc << BEF_begin << BeginRange->getType();
+      return RangeStatus;
+    }
+    if (!CoawaitLoc.isInvalid()) {
+      // FIXME: getCurScope() should not be used during template instantiation.
+      // We should pick up the set of unqualified lookup results for operator
+      // co_await during the initial parse.
+      *BeginExpr = SemaRef.ActOnCoawaitExpr(SemaRef.getCurScope(), ColonLoc,
+                                            BeginExpr->get());
+      if (BeginExpr->isInvalid())
+        return Sema::FRS_DiagnosticIssued;
+    }
+    if (FinishForRangeVarDecl(SemaRef, BeginVar, BeginExpr->get(), ColonLoc,
+                              diag::err_for_range_iter_deduction_failure)) {
+      NoteForRangeBeginEndFunction(SemaRef, BeginExpr->get(), *BEF);
+      return Sema::FRS_DiagnosticIssued;
+    }
+    return Sema::FRS_Success;
+  };
+
+  auto BuildEnd = [&] {
+    *BEF = BEF_end;
+    Sema::ForRangeStatus RangeStatus =
+        SemaRef.BuildForRangeBeginEndCall(ColonLoc, ColonLoc, EndNameInfo,
+                                          EndMemberLookup, CandidateSet,
+                                          EndRange, EndExpr);
+    if (RangeStatus != Sema::FRS_Success) {
+      if (RangeStatus == Sema::FRS_DiagnosticIssued)
+        SemaRef.Diag(EndRange->getBeginLoc(), diag::note_in_for_range)
+            << ColonLoc << BEF_end << EndRange->getType();
+      return RangeStatus;
+    }
+    if (FinishForRangeVarDecl(SemaRef, EndVar, EndExpr->get(), ColonLoc,
+                              diag::err_for_range_iter_deduction_failure)) {
+      NoteForRangeBeginEndFunction(SemaRef, EndExpr->get(), *BEF);
+      return Sema::FRS_DiagnosticIssued;
+    }
+    return Sema::FRS_Success;
+  };
+
   if (CXXRecordDecl *D = RangeType->getAsCXXRecordDecl()) {
     // - if _RangeT is a class type, the unqualified-ids begin and end are
     //   looked up in the scope of class _RangeT as if by class member access
@@ -2142,68 +2213,62 @@ BuildNonArrayForRange(Sema &SemaRef, Expr *BeginRange, Expr *EndRange,
     //   declaration, begin-expr and end-expr are __range.begin() and
     //   __range.end(), respectively;
     SemaRef.LookupQualifiedName(BeginMemberLookup, D);
+    if (BeginMemberLookup.isAmbiguous())
+      return Sema::FRS_DiagnosticIssued;
+
     SemaRef.LookupQualifiedName(EndMemberLookup, D);
+    if (EndMemberLookup.isAmbiguous())
+      return Sema::FRS_DiagnosticIssued;
 
     if (BeginMemberLookup.empty() != EndMemberLookup.empty()) {
-      SourceLocation RangeLoc = BeginVar->getLocation();
-      *BEF = BeginMemberLookup.empty() ? BEF_end : BEF_begin;
+      // Look up the non-member form of the member we didn't find, first.
+      // This way we prefer a "no viable 'end'" diagnostic over a "i found
+      // a 'begin' but ignored it because there was no member 'end'"
+      // diagnostic.
+      auto BuildNonmember = [&](
+          BeginEndFunction BEFFound, LookupResult &Found,
+          llvm::function_ref<Sema::ForRangeStatus()> BuildFound,
+          llvm::function_ref<Sema::ForRangeStatus()> BuildNotFound) {
+        LookupResult OldFound = std::move(Found);
+        Found.clear();
 
-      SemaRef.Diag(RangeLoc, diag::err_for_range_member_begin_end_mismatch)
-          << RangeLoc << BeginRange->getType() << *BEF;
-      return Sema::FRS_DiagnosticIssued;
+        if (Sema::ForRangeStatus Result = BuildNotFound())
+          return Result;
+
+        switch (BuildFound()) {
+        case Sema::FRS_Success:
+          return Sema::FRS_Success;
+
+        case Sema::FRS_NoViableFunction:
+          SemaRef.Diag(BeginRange->getBeginLoc(), diag::err_for_range_invalid)
+              << BeginRange->getType() << BEFFound;
+          CandidateSet->NoteCandidates(SemaRef, OCD_AllCandidates, BeginRange);
+          LLVM_FALLTHROUGH;
+
+        case Sema::FRS_DiagnosticIssued:
+          for (NamedDecl *D : OldFound) {
+            SemaRef.Diag(D->getLocation(),
+                         diag::note_for_range_member_begin_end_ignored)
+                << BeginRange->getType() << BEFFound;
+          }
+          return Sema::FRS_DiagnosticIssued;
+        }
+        llvm_unreachable("unexpected ForRangeStatus");
+      };
+      if (BeginMemberLookup.empty())
+        return BuildNonmember(BEF_end, EndMemberLookup, BuildEnd, BuildBegin);
+      return BuildNonmember(BEF_begin, BeginMemberLookup, BuildBegin, BuildEnd);
     }
   } else {
     // - otherwise, begin-expr and end-expr are begin(__range) and
     //   end(__range), respectively, where begin and end are looked up with
     //   argument-dependent lookup (3.4.2). For the purposes of this name
     //   lookup, namespace std is an associated namespace.
-
   }
 
-  *BEF = BEF_begin;
-  Sema::ForRangeStatus RangeStatus =
-      SemaRef.BuildForRangeBeginEndCall(ColonLoc, ColonLoc, BeginNameInfo,
-                                        BeginMemberLookup, CandidateSet,
-                                        BeginRange, BeginExpr);
-
-  if (RangeStatus != Sema::FRS_Success) {
-    if (RangeStatus == Sema::FRS_DiagnosticIssued)
-      SemaRef.Diag(BeginRange->getBeginLoc(), diag::note_in_for_range)
-          << ColonLoc << BEF_begin << BeginRange->getType();
-    return RangeStatus;
-  }
-  if (!CoawaitLoc.isInvalid()) {
-    // FIXME: getCurScope() should not be used during template instantiation.
-    // We should pick up the set of unqualified lookup results for operator
-    // co_await during the initial parse.
-    *BeginExpr = SemaRef.ActOnCoawaitExpr(SemaRef.getCurScope(), ColonLoc,
-                                          BeginExpr->get());
-    if (BeginExpr->isInvalid())
-      return Sema::FRS_DiagnosticIssued;
-  }
-  if (FinishForRangeVarDecl(SemaRef, BeginVar, BeginExpr->get(), ColonLoc,
-                            diag::err_for_range_iter_deduction_failure)) {
-    NoteForRangeBeginEndFunction(SemaRef, BeginExpr->get(), *BEF);
-    return Sema::FRS_DiagnosticIssued;
-  }
-
-  *BEF = BEF_end;
-  RangeStatus =
-      SemaRef.BuildForRangeBeginEndCall(ColonLoc, ColonLoc, EndNameInfo,
-                                        EndMemberLookup, CandidateSet,
-                                        EndRange, EndExpr);
-  if (RangeStatus != Sema::FRS_Success) {
-    if (RangeStatus == Sema::FRS_DiagnosticIssued)
-      SemaRef.Diag(EndRange->getBeginLoc(), diag::note_in_for_range)
-          << ColonLoc << BEF_end << EndRange->getType();
-    return RangeStatus;
-  }
-  if (FinishForRangeVarDecl(SemaRef, EndVar, EndExpr->get(), ColonLoc,
-                            diag::err_for_range_iter_deduction_failure)) {
-    NoteForRangeBeginEndFunction(SemaRef, EndExpr->get(), *BEF);
-    return Sema::FRS_DiagnosticIssued;
-  }
-  return Sema::FRS_Success;
+  if (Sema::ForRangeStatus Result = BuildBegin())
+    return Result;
+  return BuildEnd();
 }
 
 /// Speculatively attempt to dereference an invalid range expression.
@@ -2212,6 +2277,7 @@ BuildNonArrayForRange(Sema &SemaRef, Expr *BeginRange, Expr *EndRange,
 static StmtResult RebuildForRangeWithDereference(Sema &SemaRef, Scope *S,
                                                  SourceLocation ForLoc,
                                                  SourceLocation CoawaitLoc,
+                                                 Stmt *InitStmt,
                                                  Stmt *LoopVarDecl,
                                                  SourceLocation ColonLoc,
                                                  Expr *Range,
@@ -2228,8 +2294,8 @@ static StmtResult RebuildForRangeWithDereference(Sema &SemaRef, Scope *S,
       return StmtResult();
 
     StmtResult SR = SemaRef.ActOnCXXForRangeStmt(
-        S, ForLoc, CoawaitLoc, LoopVarDecl, ColonLoc, AdjustedRange.get(),
-        RParenLoc, Sema::BFRK_Check);
+        S, ForLoc, CoawaitLoc, InitStmt, LoopVarDecl, ColonLoc,
+        AdjustedRange.get(), RParenLoc, Sema::BFRK_Check);
     if (SR.isInvalid())
       return StmtResult();
   }
@@ -2239,9 +2305,9 @@ static StmtResult RebuildForRangeWithDereference(Sema &SemaRef, Scope *S,
   // case there are any other (non-fatal) problems with it.
   SemaRef.Diag(RangeLoc, diag::err_for_range_dereference)
     << Range->getType() << FixItHint::CreateInsertion(RangeLoc, "*");
-  return SemaRef.ActOnCXXForRangeStmt(S, ForLoc, CoawaitLoc, LoopVarDecl,
-                                      ColonLoc, AdjustedRange.get(), RParenLoc,
-                                      Sema::BFRK_Rebuild);
+  return SemaRef.ActOnCXXForRangeStmt(
+      S, ForLoc, CoawaitLoc, InitStmt, LoopVarDecl, ColonLoc,
+      AdjustedRange.get(), RParenLoc, Sema::BFRK_Rebuild);
 }
 
 namespace {
@@ -2261,12 +2327,13 @@ struct InvalidateOnErrorScope {
 }
 
 /// BuildCXXForRangeStmt - Build or instantiate a C++11 for-range statement.
-StmtResult
-Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation CoawaitLoc,
-                           SourceLocation ColonLoc, Stmt *RangeDecl,
-                           Stmt *Begin, Stmt *End, Expr *Cond,
-                           Expr *Inc, Stmt *LoopVarDecl,
-                           SourceLocation RParenLoc, BuildForRangeKind Kind) {
+StmtResult Sema::BuildCXXForRangeStmt(SourceLocation ForLoc,
+                                      SourceLocation CoawaitLoc, Stmt *InitStmt,
+                                      SourceLocation ColonLoc, Stmt *RangeDecl,
+                                      Stmt *Begin, Stmt *End, Expr *Cond,
+                                      Expr *Inc, Stmt *LoopVarDecl,
+                                      SourceLocation RParenLoc,
+                                      BuildForRangeKind Kind) {
   // FIXME: This should not be used during template instantiation. We should
   // pick up the set of unqualified lookup results for the != and + operators
   // in the initial parse.
@@ -2461,7 +2528,7 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation CoawaitLoc,
         // If building the range failed, try dereferencing the range expression
         // unless a diagnostic was issued or the end function is problematic.
         StmtResult SR = RebuildForRangeWithDereference(*this, S, ForLoc,
-                                                       CoawaitLoc,
+                                                       CoawaitLoc, InitStmt,
                                                        LoopVarDecl, ColonLoc,
                                                        Range, RangeLoc,
                                                        RParenLoc);
@@ -2578,7 +2645,7 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation CoawaitLoc,
     return StmtResult();
 
   return new (Context) CXXForRangeStmt(
-      RangeDS, cast_or_null<DeclStmt>(BeginDeclStmt.get()),
+      InitStmt, RangeDS, cast_or_null<DeclStmt>(BeginDeclStmt.get()),
       cast_or_null<DeclStmt>(EndDeclStmt.get()), NotEqExpr.get(),
       IncrExpr.get(), LoopVarDS, /*Body=*/nullptr, ForLoc, CoawaitLoc,
       ColonLoc, RParenLoc);

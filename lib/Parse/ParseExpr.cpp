@@ -315,6 +315,19 @@ Parser::ParseRHSOfBinaryExpression(ExprResult LHS, prec::Level MinPrec) {
       return LHS;
     }
 
+    // In Objective-C++, alternative operator tokens can be used as keyword args
+    // in message expressions. Unconsume the token so that it can reinterpreted
+    // as an identifier in ParseObjCMessageExpressionBody. i.e., we support:
+    //   [foo meth:0 and:0];
+    //   [foo not_eq];
+    if (getLangOpts().ObjC1 && getLangOpts().CPlusPlus &&
+        Tok.isOneOf(tok::colon, tok::r_square) &&
+        OpToken.getIdentifierInfo() != nullptr) {
+      PP.EnterToken(Tok);
+      Tok = OpToken;
+      return LHS;
+    }
+
     // Special case handling for the ternary operator.
     ExprResult TernaryMiddle(true);
     if (NextTokPrec == prec::Conditional) {
@@ -1637,7 +1650,10 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       CommaLocsTy CommaLocs;
 
       if (Tok.is(tok::code_completion)) {
-        Actions.CodeCompleteCall(getCurScope(), LHS.get(), None);
+        QualType PreferredType = Actions.ProduceCallSignatureHelp(
+            getCurScope(), LHS.get(), None, PT.getOpenLocation());
+        CalledSignatureHelp = true;
+        Actions.CodeCompleteExpression(getCurScope(), PreferredType);
         cutOffParsing();
         return ExprError();
       }
@@ -1645,9 +1661,21 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       if (OpKind == tok::l_paren || !LHS.isInvalid()) {
         if (Tok.isNot(tok::r_paren)) {
           if (ParseExpressionList(ArgExprs, CommaLocs, [&] {
-                Actions.CodeCompleteCall(getCurScope(), LHS.get(), ArgExprs);
-             })) {
+                QualType PreferredType = Actions.ProduceCallSignatureHelp(
+                    getCurScope(), LHS.get(), ArgExprs, PT.getOpenLocation());
+                CalledSignatureHelp = true;
+                Actions.CodeCompleteExpression(getCurScope(), PreferredType);
+              })) {
             (void)Actions.CorrectDelayedTyposInExpr(LHS);
+            // If we got an error when parsing expression list, we don't call
+            // the CodeCompleteCall handler inside the parser. So call it here
+            // to make sure we get overload suggestions even when we are in the
+            // middle of a parameter.
+            if (PP.isCodeCompletionReached() && !CalledSignatureHelp) {
+              Actions.ProduceCallSignatureHelp(getCurScope(), LHS.get(),
+                                               ArgExprs, PT.getOpenLocation());
+              CalledSignatureHelp = true;
+            }
             LHS = ExprError();
           } else if (LHS.isInvalid()) {
             for (auto &E : ArgExprs)
@@ -1738,6 +1766,8 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
 
         Expr *Base = LHS.get();
         Expr *CorrectedBase = CorrectedLHS.get();
+        if (!CorrectedBase && !getLangOpts().CPlusPlus)
+          CorrectedBase = Base;
 
         // Code completion for a member access expression.
         Actions.CodeCompleteMemberReferenceExpr(

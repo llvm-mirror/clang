@@ -206,7 +206,8 @@ void Sema::MaybeSuggestAddingStaticToDecl(const FunctionDecl *Cur) {
 bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
                              const ObjCInterfaceDecl *UnknownObjCClass,
                              bool ObjCPropertyAccess,
-                             bool AvoidPartialAvailabilityChecks) {
+                             bool AvoidPartialAvailabilityChecks,
+                             ObjCInterfaceDecl *ClassReceiver) {
   SourceLocation Loc = Locs.front();
   if (getLangOpts().CPlusPlus && isa<FunctionDecl>(D)) {
     // If there were any diagnostics suppressed by template argument deduction,
@@ -265,6 +266,17 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
       return true;
   }
 
+  if (auto *MD = dyn_cast<CXXMethodDecl>(D)) {
+    // Lambdas are only default-constructible or assignable in C++2a onwards.
+    if (MD->getParent()->isLambda() &&
+        ((isa<CXXConstructorDecl>(MD) &&
+          cast<CXXConstructorDecl>(MD)->isDefaultConstructor()) ||
+         MD->isCopyAssignmentOperator() || MD->isMoveAssignmentOperator())) {
+      Diag(Loc, diag::warn_cxx17_compat_lambda_def_ctor_assign)
+        << !isa<CXXConstructorDecl>(MD);
+    }
+  }
+
   auto getReferencedObjCProp = [](const NamedDecl *D) ->
                                       const ObjCPropertyDecl * {
     if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
@@ -292,7 +304,7 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
   }
 
   DiagnoseAvailabilityOfDecl(D, Locs, UnknownObjCClass, ObjCPropertyAccess,
-                             AvoidPartialAvailabilityChecks);
+                             AvoidPartialAvailabilityChecks, ClassReceiver);
 
   DiagnoseUnusedOfDecl(*this, D, Loc);
 
@@ -5330,13 +5342,7 @@ ExprResult Sema::ActOnCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
 
     // Determine whether this is a dependent call inside a C++ template,
     // in which case we won't do any semantic analysis now.
-    bool Dependent = false;
-    if (Fn->isTypeDependent())
-      Dependent = true;
-    else if (Expr::hasAnyTypeDependentArguments(ArgExprs))
-      Dependent = true;
-
-    if (Dependent) {
+    if (Fn->isTypeDependent() || Expr::hasAnyTypeDependentArguments(ArgExprs)) {
       if (ExecConfig) {
         return new (Context) CUDAKernelCallExpr(
             Context, Fn, cast<CallExpr>(ExecConfig), ArgExprs,
@@ -5733,12 +5739,20 @@ Sema::BuildCompoundLiteralExpr(SourceLocation LParenLoc, TypeSourceInfo *TInfo,
   LiteralExpr = Result.get();
 
   bool isFileScope = !CurContext->isFunctionOrMethod();
-  if (isFileScope &&
-      !LiteralExpr->isTypeDependent() &&
-      !LiteralExpr->isValueDependent() &&
-      !literalType->isDependentType()) { // 6.5.2.5p3
-    if (CheckForConstantInitializer(LiteralExpr, literalType))
-      return ExprError();
+  if (isFileScope) {
+    if (!LiteralExpr->isTypeDependent() &&
+        !LiteralExpr->isValueDependent() &&
+        !literalType->isDependentType()) // C99 6.5.2.5p3
+      if (CheckForConstantInitializer(LiteralExpr, literalType))
+        return ExprError();
+  } else if (literalType.getAddressSpace() != LangAS::opencl_private &&
+             literalType.getAddressSpace() != LangAS::Default) {
+    // Embedded-C extensions to C99 6.5.2.5:
+    //   "If the compound literal occurs inside the body of a function, the
+    //   type name shall not be qualified by an address-space qualifier."
+    Diag(LParenLoc, diag::err_compound_literal_with_address_space)
+      << SourceRange(LParenLoc, LiteralExpr->getSourceRange().getEnd());
+    return ExprError();
   }
 
   // In C, compound literals are l-values for some reason.
@@ -8083,6 +8097,13 @@ Sema::CheckSingleAssignmentConstraints(QualType LHSType, ExprResult &CallerRHS,
     return Compatible;
   }
 
+  // OpenCL queue_t type assignment.
+  if (LHSType->isQueueT() && RHS.get()->isNullPointerConstant(
+                                 Context, Expr::NPC_ValueDependentIsNull)) {
+    RHS = ImpCastExprToType(RHS.get(), LHSType, CK_NullToPointer);
+    return Compatible;
+  }
+
   // This check seems unnatural, however it is necessary to ensure the proper
   // conversion of functions/arrays. If the conversion were done for all
   // DeclExpr's (created by ActOnIdExpression), it would mess up the unary
@@ -10420,6 +10441,10 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
   }
 
   if (getLangOpts().OpenCLVersion >= 200) {
+    if (LHSType->isQueueT() && RHSType->isQueueT()) {
+      return computeResultTy();
+    }
+
     if (LHSIsNull && RHSType->isQueueT()) {
       LHS = ImpCastExprToType(LHS.get(), RHSType, CK_NullToPointer);
       return computeResultTy();
@@ -14624,8 +14649,10 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
   Expr *CopyExpr = nullptr;
   bool ByRef = false;
 
-  // Blocks are not allowed to capture arrays.
-  if (CaptureType->isArrayType()) {
+  // Blocks are not allowed to capture arrays, excepting OpenCL.
+  // OpenCL v2.0 s1.12.5 (revision 40): arrays are captured by reference
+  // (decayed to pointers).
+  if (!S.getLangOpts().OpenCL && CaptureType->isArrayType()) {
     if (BuildAndDiagnose) {
       S.Diag(Loc, diag::err_ref_array_type);
       S.Diag(Var->getLocation(), diag::note_previous_decl)
@@ -14648,15 +14675,15 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
   // Warn about implicitly autoreleasing indirect parameters captured by blocks.
   if (const auto *PT = CaptureType->getAs<PointerType>()) {
     // This function finds out whether there is an AttributedType of kind
-    // attr_objc_ownership in Ty. The existence of AttributedType of kind
-    // attr_objc_ownership implies __autoreleasing was explicitly specified
+    // attr::ObjCOwnership in Ty. The existence of AttributedType of kind
+    // attr::ObjCOwnership implies __autoreleasing was explicitly specified
     // rather than being added implicitly by the compiler.
     auto IsObjCOwnershipAttributedType = [](QualType Ty) {
       while (const auto *AttrTy = Ty->getAs<AttributedType>()) {
-        if (AttrTy->getAttrKind() == AttributedType::attr_objc_ownership)
+        if (AttrTy->getAttrKind() == attr::ObjCOwnership)
           return true;
 
-        // Peel off AttributedTypes that are not of kind objc_ownership.
+        // Peel off AttributedTypes that are not of kind ObjCOwnership.
         Ty = AttrTy->getModifiedType();
       }
 

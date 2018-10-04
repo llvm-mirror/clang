@@ -356,6 +356,11 @@ public:
   /// append them to ASTs.
   int buildASTs(std::vector<std::unique_ptr<ASTUnit>> &ASTs);
 
+  /// Sets whether working directory should be restored after calling run(). By
+  /// default, working directory is restored. However, it could be useful to
+  /// turn this off when running on multiple threads to avoid the raciness.
+  void setRestoreWorkingDir(bool RestoreCWD);
+
   /// Returns the file manager used in the tool.
   ///
   /// The file manager is shared between all translation units.
@@ -380,6 +385,8 @@ private:
   ArgumentsAdjuster ArgsAdjuster;
 
   DiagnosticConsumer *DiagConsumer = nullptr;
+
+  bool RestoreCWD = true;
 };
 
 template <typename T>
@@ -458,6 +465,10 @@ inline std::unique_ptr<FrontendActionFactory> newFrontendActionFactory(
 ///
 /// \param File Either an absolute or relative path.
 std::string getAbsolutePath(StringRef File);
+
+/// An overload of getAbsolutePath that works over the provided \p FS.
+llvm::Expected<std::string> getAbsolutePath(vfs::FileSystem &FS,
+                                            StringRef File);
 
 /// Changes CommandLine to contain implicit flags that would have been
 /// defined had the compiler driver been invoked through the path InvokedAs.

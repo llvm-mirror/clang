@@ -15,6 +15,7 @@ add_clang_library(clangAnalysis
   Consumed.cpp
   CodeInjector.cpp
   Dominators.cpp
+  ExprMutationAnalyzer.cpp
   FormatString.cpp
   LiveVariables.cpp
   OSLog.cpp
@@ -22,7 +23,6 @@ add_clang_library(clangAnalysis
   PostOrderCFGView.cpp
   PrintfFormatString.cpp
   ProgramPoint.cpp
-  PseudoConstantAnalysis.cpp
   ReachableCode.cpp
   ScanfFormatString.cpp
   ThreadSafety.cpp
@@ -33,6 +33,7 @@ add_clang_library(clangAnalysis
 
   LINK_LIBS
   clangAST
+  clangASTMatchers
   clangBasic
   clangLex
   )

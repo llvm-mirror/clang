@@ -2384,7 +2384,7 @@ void Sema::ProcessPropertyDecl(ObjCPropertyDecl *property) {
       QualType modifiedTy = resultTy;
       if (auto nullability = AttributedType::stripOuterNullability(modifiedTy)) {
         if (*nullability == NullabilityKind::Unspecified)
-          resultTy = Context.getAttributedType(AttributedType::attr_nonnull,
+          resultTy = Context.getAttributedType(attr::TypeNonNull,
                                                modifiedTy, modifiedTy);
       }
     }
@@ -2458,7 +2458,7 @@ void Sema::ProcessPropertyDecl(ObjCPropertyDecl *property) {
         QualType modifiedTy = paramTy;
         if (auto nullability = AttributedType::stripOuterNullability(modifiedTy)){
           if (*nullability == NullabilityKind::Unspecified)
-            paramTy = Context.getAttributedType(AttributedType::attr_nullable,
+            paramTy = Context.getAttributedType(attr::TypeNullable,
                                                 modifiedTy, modifiedTy);
         }
       }
@@ -2555,6 +2555,14 @@ void Sema::CheckObjCPropertyAttributes(Decl *PDecl,
     Attributes &= ~(ObjCDeclSpec::DQ_PR_weak   | ObjCDeclSpec::DQ_PR_copy |
                     ObjCDeclSpec::DQ_PR_retain | ObjCDeclSpec::DQ_PR_strong);
     PropertyDecl->setInvalidDecl();
+  }
+
+  // Check for assign on object types.
+  if ((Attributes & ObjCDeclSpec::DQ_PR_assign) &&
+      !(Attributes & ObjCDeclSpec::DQ_PR_unsafe_unretained) &&
+      PropertyTy->isObjCRetainableType() &&
+      !PropertyTy->isObjCARCImplicitlyUnretainedType()) {
+    Diag(Loc, diag::warn_objc_property_assign_on_object);
   }
 
   // Check for more than one of { assign, copy, retain }.

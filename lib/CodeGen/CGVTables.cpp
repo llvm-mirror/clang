@@ -756,9 +756,11 @@ CodeGenVTables::GenerateConstructionVTable(const CXXRecordDecl *RD,
   if (Linkage == llvm::GlobalVariable::AvailableExternallyLinkage)
     Linkage = llvm::GlobalVariable::InternalLinkage;
 
+  unsigned Align = CGM.getDataLayout().getABITypeAlignment(VTType);
+
   // Create the variable that will hold the construction vtable.
   llvm::GlobalVariable *VTable =
-    CGM.CreateOrReplaceCXXRuntimeVariable(Name, VTType, Linkage);
+      CGM.CreateOrReplaceCXXRuntimeVariable(Name, VTType, Linkage, Align);
   CGM.setGVProperties(VTable, RD);
 
   // V-tables are always unnamed_addr.
@@ -1020,8 +1022,8 @@ void CodeGenModule::EmitVTableTypeMetadata(llvm::GlobalVariable *VTable,
                                 AP.second.AddressPointIndex));
 
   // Sort the address points for determinism.
-  llvm::sort(AddressPoints.begin(), AddressPoints.end(),
-             [this](const AddressPoint &AP1, const AddressPoint &AP2) {
+  llvm::sort(AddressPoints, [this](const AddressPoint &AP1,
+                                   const AddressPoint &AP2) {
     if (&AP1 == &AP2)
       return false;
 

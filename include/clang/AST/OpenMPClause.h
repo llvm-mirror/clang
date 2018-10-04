@@ -64,17 +64,9 @@ protected:
 
 public:
   /// Returns the starting location of the clause.
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const { return StartLoc; }
 
   /// Returns the ending location of the clause.
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const { return EndLoc; }
 
   /// Sets the starting location of the clause.
@@ -742,6 +734,37 @@ public:
   }
 };
 
+/// This represents 'unified_address' clause in the '#pragma omp requires'
+/// directive.
+///
+/// \code
+/// #pragma omp requires unified_address
+/// \endcode
+/// In this example directive '#pragma omp requires' has 'unified_address'
+/// clause.
+class OMPUnifiedAddressClause final : public OMPClause {
+public:
+  friend class OMPClauseReader;
+  /// Build 'unified_address' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  OMPUnifiedAddressClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_unified_address, StartLoc, EndLoc) {}
+
+  /// Build an empty clause.
+  OMPUnifiedAddressClause()
+      : OMPClause(OMPC_unified_address, SourceLocation(), SourceLocation()) {}
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_unified_address;
+  }
+};
+
 /// This represents 'schedule' clause in the '#pragma omp ...' directive.
 ///
 /// \code
@@ -998,8 +1021,8 @@ public:
   /// Set loop counter for the specified loop.
   void setLoopCounter(unsigned NumLoop, Expr *Counter);
   /// Get loops counter for the specified loop.
-  Expr *getLoopCunter(unsigned NumLoop);
-  const Expr *getLoopCunter(unsigned NumLoop) const;
+  Expr *getLoopCounter(unsigned NumLoop);
+  const Expr *getLoopCounter(unsigned NumLoop) const;
 
   child_range children() { return child_range(&NumForLoops, &NumForLoops + 1); }
 
@@ -5049,6 +5072,43 @@ public:
   }
 };
 
+/// This class implements a simple visitor for OMPClause
+/// subclasses.
+template<class ImplClass, template <typename> class Ptr, typename RetTy>
+class OMPClauseVisitorBase {
+public:
+#define PTR(CLASS) typename Ptr<CLASS>::type
+#define DISPATCH(CLASS) \
+  return static_cast<ImplClass*>(this)->Visit##CLASS(static_cast<PTR(CLASS)>(S))
+
+#define OPENMP_CLAUSE(Name, Class)                              \
+  RetTy Visit ## Class (PTR(Class) S) { DISPATCH(Class); }
+#include "clang/Basic/OpenMPKinds.def"
+
+  RetTy Visit(PTR(OMPClause) S) {
+    // Top switch clause: visit each OMPClause.
+    switch (S->getClauseKind()) {
+    default: llvm_unreachable("Unknown clause kind!");
+#define OPENMP_CLAUSE(Name, Class)                              \
+    case OMPC_ ## Name : return Visit ## Class(static_cast<PTR(Class)>(S));
+#include "clang/Basic/OpenMPKinds.def"
+    }
+  }
+  // Base case, ignore it. :)
+  RetTy VisitOMPClause(PTR(OMPClause) Node) { return RetTy(); }
+#undef PTR
+#undef DISPATCH
+};
+
+template <typename T>
+using const_ptr = typename std::add_pointer<typename std::add_const<T>::type>;
+
+template<class ImplClass, typename RetTy = void>
+class OMPClauseVisitor :
+      public OMPClauseVisitorBase <ImplClass, std::add_pointer, RetTy> {};
+template<class ImplClass, typename RetTy = void>
+class ConstOMPClauseVisitor :
+      public OMPClauseVisitorBase <ImplClass, const_ptr, RetTy> {};
 } // namespace clang
 
 #endif // LLVM_CLANG_AST_OPENMPCLAUSE_H

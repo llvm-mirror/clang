@@ -238,7 +238,8 @@ static bool SemaBuiltinOverflow(Sema &S, CallExpr *TheCall) {
 
 static void SemaBuiltinMemChkCall(Sema &S, FunctionDecl *FDecl,
                                   CallExpr *TheCall, unsigned SizeIdx,
-                                  unsigned DstSizeIdx) {
+                                  unsigned DstSizeIdx,
+                                  StringRef LikelyMacroName) {
   if (TheCall->getNumArgs() <= SizeIdx ||
       TheCall->getNumArgs() <= DstSizeIdx)
     return;
@@ -256,12 +257,21 @@ static void SemaBuiltinMemChkCall(Sema &S, FunctionDecl *FDecl,
   if (Size.ule(DstSize))
     return;
 
-  // confirmed overflow so generate the diagnostic.
-  IdentifierInfo *FnName = FDecl->getIdentifier();
+  // Confirmed overflow, so generate the diagnostic.
+  StringRef FunctionName = FDecl->getName();
   SourceLocation SL = TheCall->getBeginLoc();
-  SourceRange SR = TheCall->getSourceRange();
+  SourceManager &SM = S.getSourceManager();
+  // If we're in an expansion of a macro whose name corresponds to this builtin,
+  // use the simple macro name and location.
+  if (SL.isMacroID() && Lexer::getImmediateMacroName(SL, SM, S.getLangOpts()) ==
+                            LikelyMacroName) {
+    FunctionName = LikelyMacroName;
+    SL = SM.getImmediateMacroCallerLoc(SL);
+  }
 
-  S.Diag(SL, diag::warn_memcpy_chk_overflow) << SR << FnName;
+  S.Diag(SL, diag::warn_memcpy_chk_overflow)
+      << FunctionName << DstSize.toString(/*Radix=*/10)
+      << Size.toString(/*Radix=*/10);
 }
 
 static bool SemaBuiltinCallWithStaticChain(Sema &S, CallExpr *BuiltinCall) {
@@ -839,6 +849,13 @@ static bool SemaOpenCLBuiltinToAddr(Sema &S, unsigned BuiltinID,
     return true;
   }
 
+  if (RT->getPointeeType().getAddressSpace() != LangAS::opencl_generic) {
+    S.Diag(Call->getArg(0)->getBeginLoc(),
+           diag::warn_opencl_generic_address_space_arg)
+        << Call->getDirectCallee()->getNameInfo().getAsString()
+        << Call->getArg(0)->getSourceRange();
+  }
+
   RT = RT->getPointeeType();
   auto Qual = RT.getQualifiers();
   switch (BuiltinID) {
@@ -912,6 +929,7 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     break;
   case Builtin::BI__va_start: {
     switch (Context.getTargetInfo().getTriple().getArch()) {
+    case llvm::Triple::aarch64:
     case llvm::Triple::arm:
     case llvm::Triple::thumb:
       if (SemaBuiltinVAStartARMMicrosoft(TheCall))
@@ -1124,6 +1142,10 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
   case Builtin::BI__sync_swap_8:
   case Builtin::BI__sync_swap_16:
     return SemaBuiltinAtomicOverloaded(TheCallResult);
+  case Builtin::BI__sync_synchronize:
+    Diag(TheCall->getBeginLoc(), diag::warn_atomic_implicit_seq_cst)
+        << TheCall->getCallee()->getSourceRange();
+    break;
   case Builtin::BI__builtin_nontemporal_load:
   case Builtin::BI__builtin_nontemporal_store:
     return SemaBuiltinNontemporalOverloaded(TheCallResult);
@@ -1219,21 +1241,37 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
   // check secure string manipulation functions where overflows
   // are detectable at compile time
   case Builtin::BI__builtin___memcpy_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "memcpy");
+    break;
   case Builtin::BI__builtin___memmove_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "memmove");
+    break;
   case Builtin::BI__builtin___memset_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "memset");
+    break;
   case Builtin::BI__builtin___strlcat_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "strlcat");
+    break;
   case Builtin::BI__builtin___strlcpy_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "strlcpy");
+    break;
   case Builtin::BI__builtin___strncat_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "strncat");
+    break;
   case Builtin::BI__builtin___strncpy_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "strncpy");
+    break;
   case Builtin::BI__builtin___stpncpy_chk:
-    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3);
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 2, 3, "stpncpy");
     break;
   case Builtin::BI__builtin___memccpy_chk:
-    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 3, 4);
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 3, 4, "memccpy");
     break;
   case Builtin::BI__builtin___snprintf_chk:
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 1, 3, "snprintf");
+    break;
   case Builtin::BI__builtin___vsnprintf_chk:
-    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 1, 3);
+    SemaBuiltinMemChkCall(*this, FDecl, TheCall, 1, 3, "vsnprintf");
     break;
   case Builtin::BI__builtin_call_with_static_chain:
     if (SemaBuiltinCallWithStaticChain(*this, TheCall))
@@ -2940,6 +2978,13 @@ bool Sema::CheckPPCBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
     return Diag(TheCall->getBeginLoc(), diag::err_ppc_builtin_only_on_pwr7)
            << TheCall->getSourceRange();
 
+  auto SemaVSXCheck = [&](CallExpr *TheCall) -> bool {
+    if (!Context.getTargetInfo().hasFeature("vsx"))
+      return Diag(TheCall->getBeginLoc(), diag::err_ppc_builtin_only_on_pwr7)
+             << TheCall->getSourceRange();
+    return false;
+  };
+
   switch (BuiltinID) {
   default: return false;
   case PPC::BI__builtin_altivec_crypto_vshasigmaw:
@@ -2958,6 +3003,11 @@ bool Sema::CheckPPCBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case PPC::BI__builtin_vsx_xxpermdi:
   case PPC::BI__builtin_vsx_xxsldwi:
     return SemaBuiltinVSX(TheCall);
+  case PPC::BI__builtin_unpack_vector_int128:
+    return SemaVSXCheck(TheCall) ||
+           SemaBuiltinConstantArgRange(TheCall, 1, 0, 1);
+  case PPC::BI__builtin_pack_vector_int128:
+    return SemaVSXCheck(TheCall);
   }
   return SemaBuiltinConstantArgRange(TheCall, i, l, u);
 }
@@ -3626,6 +3676,14 @@ bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_psrldqi128_byteshift:
   case X86::BI__builtin_ia32_psrldqi256_byteshift:
   case X86::BI__builtin_ia32_psrldqi512_byteshift:
+  case X86::BI__builtin_ia32_kshiftliqi:
+  case X86::BI__builtin_ia32_kshiftlihi:
+  case X86::BI__builtin_ia32_kshiftlisi:
+  case X86::BI__builtin_ia32_kshiftlidi:
+  case X86::BI__builtin_ia32_kshiftriqi:
+  case X86::BI__builtin_ia32_kshiftrihi:
+  case X86::BI__builtin_ia32_kshiftrisi:
+  case X86::BI__builtin_ia32_kshiftridi:
     i = 1; l = 0; u = 255;
     break;
   case X86::BI__builtin_ia32_vperm2f128_pd256:
@@ -4612,25 +4670,24 @@ static bool checkBuiltinArgument(Sema &S, CallExpr *E, unsigned ArgIndex) {
   return false;
 }
 
-/// SemaBuiltinAtomicOverloaded - We have a call to a function like
-/// __sync_fetch_and_add, which is an overloaded function based on the pointer
-/// type of its first argument.  The main ActOnCallExpr routines have already
-/// promoted the types of arguments because all of these calls are prototyped as
-/// void(...).
+/// We have a call to a function like __sync_fetch_and_add, which is an
+/// overloaded function based on the pointer type of its first argument.
+/// The main ActOnCallExpr routines have already promoted the types of
+/// arguments because all of these calls are prototyped as void(...).
 ///
 /// This function goes through and does final semantic checking for these
-/// builtins,
+/// builtins, as well as generating any warnings.
 ExprResult
 Sema::SemaBuiltinAtomicOverloaded(ExprResult TheCallResult) {
-  CallExpr *TheCall = (CallExpr *)TheCallResult.get();
-  DeclRefExpr *DRE =cast<DeclRefExpr>(TheCall->getCallee()->IgnoreParenCasts());
+  CallExpr *TheCall = static_cast<CallExpr *>(TheCallResult.get());
+  Expr *Callee = TheCall->getCallee();
+  DeclRefExpr *DRE = cast<DeclRefExpr>(Callee->IgnoreParenCasts());
   FunctionDecl *FDecl = cast<FunctionDecl>(DRE->getDecl());
 
   // Ensure that we have at least one argument to do type inference from.
   if (TheCall->getNumArgs() < 1) {
     Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args_at_least)
-        << 0 << 1 << TheCall->getNumArgs()
-        << TheCall->getCallee()->getSourceRange();
+        << 0 << 1 << TheCall->getNumArgs() << Callee->getSourceRange();
     return ExprError();
   }
 
@@ -4907,13 +4964,16 @@ Sema::SemaBuiltinAtomicOverloaded(ExprResult TheCallResult) {
   if (TheCall->getNumArgs() < 1+NumFixed) {
     Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args_at_least)
         << 0 << 1 + NumFixed << TheCall->getNumArgs()
-        << TheCall->getCallee()->getSourceRange();
+        << Callee->getSourceRange();
     return ExprError();
   }
 
+  Diag(TheCall->getEndLoc(), diag::warn_atomic_implicit_seq_cst)
+      << Callee->getSourceRange();
+
   if (WarnAboutSemanticsChange) {
     Diag(TheCall->getEndLoc(), diag::warn_sync_fetch_and_nand_semantics_change)
-        << TheCall->getCallee()->getSourceRange();
+        << Callee->getSourceRange();
   }
 
   // Get the decl for the concrete builtin from this, we can tell what the
@@ -6111,18 +6171,10 @@ class FormatStringLiteral {
                                     StartToken, StartTokenByteOffset);
   }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocStart() const LLVM_READONLY,
-                            "Use getBeginLoc instead") {
-    return getBeginLoc();
-  }
   SourceLocation getBeginLoc() const LLVM_READONLY {
     return FExpr->getBeginLoc().getLocWithOffset(Offset);
   }
 
-  LLVM_ATTRIBUTE_DEPRECATED(SourceLocation getLocEnd() const LLVM_READONLY,
-                            "Use getEndLoc instead") {
-    return getEndLoc();
-  }
   SourceLocation getEndLoc() const LLVM_READONLY { return FExpr->getEndLoc(); }
 };
 
@@ -10258,6 +10310,10 @@ static void AnalyzeAssignment(Sema &S, BinaryOperator *E) {
   }
 
   AnalyzeImplicitConversions(S, E->getRHS(), E->getOperatorLoc());
+  
+  // Diagnose implicitly sequentially-consistent atomic assignment.
+  if (E->getLHS()->getType()->isAtomicType())
+    S.Diag(E->getRHS()->getBeginLoc(), diag::warn_atomic_implicit_seq_cst);
 }
 
 /// Diagnose an implicit cast;  purely a helper for CheckImplicitConversion.
@@ -10392,6 +10448,9 @@ static void AnalyzeCompoundAssignment(Sema &S, BinaryOperator *E) {
   // Recurse on the LHS and RHS in here
   AnalyzeImplicitConversions(S, E->getLHS(), E->getOperatorLoc());
   AnalyzeImplicitConversions(S, E->getRHS(), E->getOperatorLoc());
+
+  if (E->getLHS()->getType()->isAtomicType())
+    S.Diag(E->getOperatorLoc(), diag::warn_atomic_implicit_seq_cst);
 
   // Now check the outermost expression
   const auto *ResultBT = E->getLHS()->getType()->getAs<BuiltinType>();
@@ -10653,6 +10712,9 @@ CheckImplicitConversion(Sema &S, Expr *E, QualType T, SourceLocation CC,
   // scenario, we just return.
   if (CC.isInvalid())
     return;
+
+  if (Source->isAtomicType())
+    S.Diag(E->getExprLoc(), diag::warn_atomic_implicit_seq_cst);
 
   // Diagnose implicit casts to bool.
   if (Target->isSpecificBuiltinType(BuiltinType::Bool)) {
@@ -10949,10 +11011,12 @@ static void CheckConditionalOperator(Sema &S, ConditionalOperator *E,
                             E->getType(), CC, &Suspicious);
 }
 
-/// CheckBoolLikeConversion - Check conversion of given expression to boolean.
+/// Check conversion of given expression to boolean.
 /// Input argument E is a logical expression.
 static void CheckBoolLikeConversion(Sema &S, Expr *E, SourceLocation CC) {
   if (S.getLangOpts().Bool)
+    return;
+  if (E->IgnoreParenImpCasts()->getType()->isAtomicType())
     return;
   CheckImplicitConversion(S, E->IgnoreParenImpCasts(), S.Context.BoolTy, CC);
 }
@@ -10998,8 +11062,10 @@ static void AnalyzeImplicitConversions(Sema &S, Expr *OrigE,
   }
 
   // Skip past explicit casts.
-  if (isa<ExplicitCastExpr>(E)) {
-    E = cast<ExplicitCastExpr>(E)->getSubExpr()->IgnoreParenImpCasts();
+  if (auto *CE = dyn_cast<ExplicitCastExpr>(E)) {
+    E = CE->getSubExpr()->IgnoreParenImpCasts();
+    if (!CE->getType()->isVoidType() && E->getType()->isAtomicType())
+      S.Diag(E->getBeginLoc(), diag::warn_atomic_implicit_seq_cst);
     return AnalyzeImplicitConversions(S, E, CC);
   }
 
@@ -11052,9 +11118,15 @@ static void AnalyzeImplicitConversions(Sema &S, Expr *OrigE,
       ::CheckBoolLikeConversion(S, SubExpr, BO->getExprLoc());
   }
 
-  if (const UnaryOperator *U = dyn_cast<UnaryOperator>(E))
-    if (U->getOpcode() == UO_LNot)
+  if (const UnaryOperator *U = dyn_cast<UnaryOperator>(E)) {
+    if (U->getOpcode() == UO_LNot) {
       ::CheckBoolLikeConversion(S, U->getSubExpr(), CC);
+    } else if (U->getOpcode() != UO_AddrOf) {
+      if (U->getSubExpr()->getType()->isAtomicType())
+        S.Diag(U->getSubExpr()->getBeginLoc(),
+               diag::warn_atomic_implicit_seq_cst);
+    }
+  }
 }
 
 /// Diagnose integer type and any valid implicit conversion to it.

@@ -420,6 +420,25 @@ extern const internal::VariadicDynCastAllOfMatcher<
     Decl, ClassTemplateSpecializationDecl>
     classTemplateSpecializationDecl;
 
+/// Matches C++ class template partial specializations.
+///
+/// Given
+/// \code
+///   template<class T1, class T2, int I>
+///   class A {};
+///
+///   template<class T, int I>
+///   class A<T, T*, I> {};
+///
+///   template<>
+///   class A<int, int, 1> {};
+/// \endcode
+/// classTemplatePartialSpecializationDecl()
+///   matches the specialization \c A<T,T*,I> but not \c A<int,int,1>
+extern const internal::VariadicDynCastAllOfMatcher<
+    Decl, ClassTemplatePartialSpecializationDecl>
+    classTemplatePartialSpecializationDecl;
+
 /// Matches declarator declarations (field, variable, function
 /// and non-type template parameter declarations).
 ///
@@ -796,6 +815,48 @@ AST_MATCHER_P(QualType, ignoringParens,
               internal::Matcher<QualType>, InnerMatcher) {
   return InnerMatcher.matches(Node.IgnoreParens(), Finder, Builder);
 }
+
+/// Matches expressions that are instantiation-dependent even if it is
+/// neither type- nor value-dependent.
+///
+/// In the following example, the expression sizeof(sizeof(T() + T()))
+/// is instantiation-dependent (since it involves a template parameter T),
+/// but is neither type- nor value-dependent, since the type of the inner
+/// sizeof is known (std::size_t) and therefore the size of the outer
+/// sizeof is known.
+/// \code
+///   template<typename T>
+///   void f(T x, T y) { sizeof(sizeof(T() + T()); }
+/// \endcode
+/// expr(isInstantiationDependent()) matches sizeof(sizeof(T() + T())
+AST_MATCHER(Expr, isInstantiationDependent) {
+  return Node.isInstantiationDependent();
+}
+
+/// Matches expressions that are type-dependent because the template type
+/// is not yet instantiated.
+///
+/// For example, the expressions "x" and "x + y" are type-dependent in
+/// the following code, but "y" is not type-dependent:
+/// \code
+///   template<typename T>
+///   void add(T x, int y) {
+///     x + y;
+///   }
+/// \endcode
+/// expr(isTypeDependent()) matches x + y
+AST_MATCHER(Expr, isTypeDependent) { return Node.isTypeDependent(); }
+
+/// Matches expression that are value-dependent because they contain a
+/// non-type template parameter.
+///
+/// For example, the array bound of "Chars" in the following example is
+/// value-dependent.
+/// \code
+///   template<int Size> int f() { return Size; }
+/// \endcode
+/// expr(isValueDependent()) matches return Size
+AST_MATCHER(Expr, isValueDependent) { return Node.isValueDependent(); }
 
 /// Matches classTemplateSpecializations, templateSpecializationType and
 /// functionDecl where the n'th TemplateArgument matches the given InnerMatcher.
@@ -4636,13 +4697,24 @@ AST_MATCHER(CXXMethodDecl, isUserProvided) {
 /// \code
 ///   class Y {
 ///     void x() { this->x(); x(); Y y; y.x(); a; this->b; Y::b; }
+///     template <class T> void f() { this->f<T>(); f<T>(); }
 ///     int a;
 ///     static int b;
+///   };
+///   template <class T>
+///   class Z {
+///     void x() { this->m; }
 ///   };
 /// \endcode
 /// memberExpr(isArrow())
 ///   matches this->x, x, y.x, a, this->b
-AST_MATCHER(MemberExpr, isArrow) {
+/// cxxDependentScopeMemberExpr(isArrow())
+///   matches this->m
+/// unresolvedMemberExpr(isArrow())
+///   matches this->f<T>, f<T>
+AST_POLYMORPHIC_MATCHER(
+    isArrow, AST_POLYMORPHIC_SUPPORTED_TYPES(MemberExpr, UnresolvedMemberExpr,
+                                             CXXDependentScopeMemberExpr)) {
   return Node.isArrow();
 }
 
@@ -4806,8 +4878,17 @@ AST_MATCHER_P(MemberExpr, member,
 ///   matches "x.m" and "m"
 /// with hasObjectExpression(...)
 ///   matching "x" and the implicit object expression of "m" which has type X*.
-AST_MATCHER_P(MemberExpr, hasObjectExpression,
-              internal::Matcher<Expr>, InnerMatcher) {
+AST_POLYMORPHIC_MATCHER_P(
+    hasObjectExpression,
+    AST_POLYMORPHIC_SUPPORTED_TYPES(MemberExpr, UnresolvedMemberExpr,
+                                    CXXDependentScopeMemberExpr),
+    internal::Matcher<Expr>, InnerMatcher) {
+  if (const auto *E = dyn_cast<UnresolvedMemberExpr>(&Node))
+    if (E->isImplicitAccess())
+      return false;
+  if (const auto *E = dyn_cast<CXXDependentScopeMemberExpr>(&Node))
+    if (E->isImplicitAccess())
+      return false;
   return InnerMatcher.matches(*Node.getBase(), Finder, Builder);
 }
 

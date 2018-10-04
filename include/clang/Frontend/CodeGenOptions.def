@@ -211,6 +211,7 @@ CODEGENOPT(SanitizeCoverageStackDepth, 1, 0) ///< Enable max stack depth tracing
 CODEGENOPT(SanitizeStats     , 1, 0) ///< Collect statistics for sanitizers.
 CODEGENOPT(SimplifyLibCalls  , 1, 1) ///< Set when -fbuiltin is enabled.
 CODEGENOPT(SoftFloat         , 1, 0) ///< -soft-float.
+CODEGENOPT(SpeculativeLoadHardening, 1, 0) ///< Enable speculative load hardening.
 CODEGENOPT(FineGrainedBitfieldAccesses, 1, 0) ///< Enable fine-grained bitfield accesses.
 CODEGENOPT(StrictEnums       , 1, 0) ///< Optimize based on strict enum definition.
 CODEGENOPT(StrictVTablePointers, 1, 0) ///< Optimize based on the strict vtable pointers
@@ -326,7 +327,7 @@ CODEGENOPT(DebugInfoForProfiling, 1, 0)
 CODEGENOPT(PreserveVec3Type, 1, 0)
 
 /// Whether to emit .debug_gnu_pubnames section instead of .debug_pubnames.
-CODEGENOPT(GnuPubnames, 1, 0)
+CODEGENOPT(DebugNameTable, 2, 0)
 
 CODEGENOPT(NoPLT, 1, 0)
 
@@ -340,6 +341,9 @@ CODEGENOPT(ForceEmitVTables, 1, 0)
 CODEGENOPT(Addrsig, 1, 0)
 
 ENUM_CODEGENOPT(SignReturnAddress, SignReturnAddressScope, 2, None)
+
+/// Whether to emit unused static constants.
+CODEGENOPT(KeepStaticConsts, 1, 0)
 
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT

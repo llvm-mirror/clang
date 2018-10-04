@@ -499,6 +499,10 @@ static unsigned long long getContextsForContextKind(
       contexts = CXCompletionContext_NaturalLanguage;
       break;
     }
+    case CodeCompletionContext::CCC_IncludedFile: {
+      contexts = CXCompletionContext_IncludedFile;
+      break;
+    }
     case CodeCompletionContext::CCC_SelectorName: {
       contexts = CXCompletionContext_ObjCSelectorName;
       break;
@@ -653,7 +657,8 @@ namespace {
 
     void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
                                    OverloadCandidate *Candidates,
-                                   unsigned NumCandidates) override {
+                                   unsigned NumCandidates,
+                                   SourceLocation OpenParLoc) override {
       StoredResults.reserve(StoredResults.size() + NumCandidates);
       for (unsigned I = 0; I != NumCandidates; ++I) {
         CodeCompletionString *StoredCompletion

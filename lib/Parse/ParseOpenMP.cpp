@@ -353,8 +353,14 @@ Parser::ParseOpenMPDeclareReductionDirective(AccessSpecifier AS) {
         // Check if initializer is omp_priv <init_expr> or something else.
         if (Tok.is(tok::identifier) &&
             Tok.getIdentifierInfo()->isStr("omp_priv")) {
-          ConsumeToken();
-          ParseOpenMPReductionInitializerForDecl(OmpPrivParm);
+          if (Actions.getLangOpts().CPlusPlus) {
+            InitializerResult = Actions.ActOnFinishFullExpr(
+                ParseAssignmentExpression().get(), D->getLocation(),
+                /*DiscardedValue=*/true);
+          } else {
+            ConsumeToken();
+            ParseOpenMPReductionInitializerForDecl(OmpPrivParm);
+          }
         } else {
           InitializerResult = Actions.ActOnFinishFullExpr(
               ParseAssignmentExpression().get(), D->getLocation(),
@@ -415,11 +421,22 @@ void Parser::ParseOpenMPReductionInitializerForDecl(VarDecl *OmpPrivParm) {
     ExprVector Exprs;
     CommaLocsTy CommaLocs;
 
-    if (ParseExpressionList(Exprs, CommaLocs, [this, OmpPrivParm, &Exprs] {
-          Actions.CodeCompleteConstructor(
-              getCurScope(), OmpPrivParm->getType()->getCanonicalTypeInternal(),
-              OmpPrivParm->getLocation(), Exprs);
-        })) {
+    SourceLocation LParLoc = T.getOpenLocation();
+    if (ParseExpressionList(
+            Exprs, CommaLocs, [this, OmpPrivParm, LParLoc, &Exprs] {
+              QualType PreferredType = Actions.ProduceConstructorSignatureHelp(
+                  getCurScope(),
+                  OmpPrivParm->getType()->getCanonicalTypeInternal(),
+                  OmpPrivParm->getLocation(), Exprs, LParLoc);
+              CalledSignatureHelp = true;
+              Actions.CodeCompleteExpression(getCurScope(), PreferredType);
+            })) {
+      if (PP.isCodeCompletionReached() && !CalledSignatureHelp) {
+        Actions.ProduceConstructorSignatureHelp(
+            getCurScope(), OmpPrivParm->getType()->getCanonicalTypeInternal(),
+            OmpPrivParm->getLocation(), Exprs, LParLoc);
+        CalledSignatureHelp = true;
+      }
       Actions.ActOnInitializerError(OmpPrivParm);
       SkipUntil(tok::r_paren, tok::annot_pragma_openmp_end, StopBeforeMatch);
     } else {
@@ -642,6 +659,10 @@ Parser::ParseOMPDeclareSimdClauses(Parser::DeclGroupPtrTy Ptr,
 ///         annot_pragma_openmp_end
 ///         <function declaration/definition>
 ///
+///       requires directive:
+///         annot_pragma_openmp 'requires' <clause> [[[,] <clause>] ... ]
+///         annot_pragma_openmp_end
+///
 Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
     AccessSpecifier &AS, ParsedAttributesWithRange &Attrs,
     DeclSpec::TST TagType, Decl *Tag) {
@@ -669,6 +690,46 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
                                                        Helper.getIdentifiers());
     }
     break;
+  }
+  case OMPD_requires: {
+    SourceLocation StartLoc = ConsumeToken();
+    SmallVector<OMPClause *, 5> Clauses;
+    SmallVector<llvm::PointerIntPair<OMPClause *, 1, bool>, OMPC_unknown + 1>
+    FirstClauses(OMPC_unknown + 1);
+    if (Tok.is(tok::annot_pragma_openmp_end)) {
+      Diag(Tok, diag::err_omp_expected_clause) 
+          << getOpenMPDirectiveName(OMPD_requires);
+      break;
+    }
+    while (Tok.isNot(tok::annot_pragma_openmp_end)) {
+      OpenMPClauseKind CKind = Tok.isAnnotation()
+                                   ? OMPC_unknown
+                                   : getOpenMPClauseKind(PP.getSpelling(Tok));
+      Actions.StartOpenMPClause(CKind);
+      OMPClause *Clause =
+          ParseOpenMPClause(OMPD_requires, CKind, !FirstClauses[CKind].getInt());
+      SkipUntil(tok::comma, tok::identifier, tok::annot_pragma_openmp_end, StopBeforeMatch);
+      FirstClauses[CKind].setInt(true);
+      if (Clause != nullptr)
+        Clauses.push_back(Clause);
+      if (Tok.is(tok::annot_pragma_openmp_end)) {
+        Actions.EndOpenMPClause();
+        break;
+      }
+      // Skip ',' if any.
+      if (Tok.is(tok::comma))
+        ConsumeToken();
+      Actions.EndOpenMPClause();
+    }
+    // Consume final annot_pragma_openmp_end
+    if (Clauses.size() == 0) {
+      Diag(Tok, diag::err_omp_expected_clause)
+          << getOpenMPDirectiveName(OMPD_requires);
+      ConsumeAnnotationToken();
+      return nullptr;
+    }
+    ConsumeAnnotationToken();
+    return Actions.ActOnOpenMPRequiresDirective(StartLoc, Clauses);
   }
   case OMPD_declare_reduction:
     ConsumeToken();
@@ -771,8 +832,8 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
 
     llvm::SmallVector<Decl *, 4>  Decls;
     DKind = parseOpenMPDirectiveKind(*this);
-    while (DKind != OMPD_end_declare_target && DKind != OMPD_declare_target &&
-           Tok.isNot(tok::eof) && Tok.isNot(tok::r_brace)) {
+    while (DKind != OMPD_end_declare_target && Tok.isNot(tok::eof) &&
+           Tok.isNot(tok::r_brace)) {
       DeclGroupPtrTy Ptr;
       // Here we expect to see some function declaration.
       if (AS == AS_none) {
@@ -1124,6 +1185,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
   case OMPD_declare_simd:
   case OMPD_declare_target:
   case OMPD_end_declare_target:
+  case OMPD_requires:
     Diag(Tok, diag::err_omp_unexpected_directive)
         << 1 << getOpenMPDirectiveName(DKind);
     SkipUntil(tok::annot_pragma_openmp_end);
@@ -1316,10 +1378,13 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
   case OMPC_threads:
   case OMPC_simd:
   case OMPC_nogroup:
+  case OMPC_unified_address:
     // OpenMP [2.7.1, Restrictions, p. 9]
     //  Only one ordered clause can appear on a loop directive.
     // OpenMP [2.7.1, Restrictions, C/C++, p. 4]
     //  Only one nowait clause can appear on a for directive.
+    // OpenMP [5.0, Requires directive, Restrictions]
+    //   Each of the requires clauses can appear at most once on the directive.
     if (!FirstClause) {
       Diag(Tok, diag::err_omp_more_one_clause)
           << getOpenMPDirectiveName(DKind) << getOpenMPClauseName(CKind) << 0;

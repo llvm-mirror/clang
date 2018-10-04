@@ -12,7 +12,8 @@
 
 // SIMD-ONLY-NOT: {{__kmpc|__tgt}}
 
-// CHECK-NOT: define {{.*}}{{baz1|baz4|maini1}}
+// CHECK-NOT: define {{.*}}{{baz1|baz4|maini1|Base}}
+// CHECK-DAG: Bake
 // CHECK-NOT: @{{hhh|ggg|fff|eee}} =
 // CHECK-DAG: @aaa = external global i32,
 // CHECK-DAG: @bbb = global i32 0,
@@ -78,7 +79,7 @@ public:
 
 int foo();
 
-int baz1();
+static int baz1() { return 0; }
 
 int baz2();
 
@@ -128,5 +129,49 @@ int baz2() {
   return 2 + baz3();
 }
 
-// CHECK-NOT: define {{.*}}{{baz1|baz4|maini1}}
+extern int create() throw();
+
+static __typeof(create) __t_create __attribute__((__weakref__("__create")));
+
+int baz5() {
+  bool a;
+// CHECK-DAG: define weak void @__omp_offloading_{{.*}}baz5{{.*}}_l[[@LINE+1]](i64 {{.*}})
+#pragma omp target
+  a = __extension__(void *) & __t_create != 0;
+  return a;
+}
+
+template <typename T>
+struct Base {
+  virtual ~Base() {}
+};
+
+template class Base<int>;
+
+template <typename T>
+struct Bake {
+  virtual ~Bake() {}
+};
+
+#pragma omp declare target
+template class Bake<int>;
+#pragma omp end declare target
+
+struct BaseNonT {
+  virtual ~BaseNonT() {}
+};
+
+#pragma omp declare target
+struct BakeNonT {
+  virtual ~BakeNonT() {}
+};
+#pragma omp end declare target
+
+// CHECK-DAG: declare extern_weak signext i32 @__create()
+
+// CHECK-NOT: define {{.*}}{{baz1|baz4|maini1|Base}}
+
+// CHECK-DAG: !{i32 1, !"aaa", i32 0, i32 {{[0-9]+}}}
+// CHECK-DAG: !{i32 1, !"ccc", i32 0, i32 {{[0-9]+}}}
+
 #endif // HEADER

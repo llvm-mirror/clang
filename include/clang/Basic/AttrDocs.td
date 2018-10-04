@@ -38,6 +38,10 @@ Attributes in Clang
 .. contents::
    :local:
 
+.. |br| raw:: html
+
+  <br/>
+
 Introduction
 ============
 
@@ -51,7 +55,7 @@ def SectionDocs : Documentation {
 The ``section`` attribute allows you to specify a specific section a
 global variable or function should be in after translation.
   }];
-  let Heading = "section (gnu::section, __declspec(allocate))";
+  let Heading = "section, __declspec(allocate)";
 }
 
 def InitSegDocs : Documentation {
@@ -270,7 +274,7 @@ that appears to be capable of returning to its caller.
 
 def AssertCapabilityDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "assert_capability (assert_shared_capability, clang::assert_capability, clang::assert_shared_capability)";
+  let Heading = "assert_capability, assert_shared_capability";
   let Content = [{
 Marks a function that dynamically tests whether a capability is held, and halts
 the program if it is not held.
@@ -279,7 +283,7 @@ the program if it is not held.
 
 def AcquireCapabilityDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "acquire_capability (acquire_shared_capability, clang::acquire_capability, clang::acquire_shared_capability)";
+  let Heading = "acquire_capability, acquire_shared_capability";
   let Content = [{
 Marks a function as acquiring a capability.
   }];
@@ -287,7 +291,7 @@ Marks a function as acquiring a capability.
 
 def TryAcquireCapabilityDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "try_acquire_capability (try_acquire_shared_capability, clang::try_acquire_capability, clang::try_acquire_shared_capability)";
+  let Heading = "try_acquire_capability, try_acquire_shared_capability";
   let Content = [{
 Marks a function that attempts to acquire a capability. This function may fail to
 actually acquire the capability; they accept a Boolean value determining
@@ -298,7 +302,7 @@ the capability means success (false).
 
 def ReleaseCapabilityDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "release_capability (release_shared_capability, clang::release_capability, clang::release_shared_capability)";
+  let Heading = "release_capability, release_shared_capability";
   let Content = [{
 Marks a function as releasing a capability.
   }];
@@ -1261,7 +1265,7 @@ of silently falling back on dynamic initialization.
 
 def WarnMaybeUnusedDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "maybe_unused, unused, gnu::unused";
+  let Heading = "maybe_unused, unused";
   let Content = [{
 When passing the ``-Wunused`` flag to Clang, entities that are unused by the
 program may be diagnosed. The ``[[maybe_unused]]`` (or
@@ -1287,7 +1291,7 @@ enumerator, a non-static data member, or a label.
 
 def WarnUnusedResultsDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "nodiscard, warn_unused_result, clang::warn_unused_result, gnu::warn_unused_result";
+  let Heading = "nodiscard, warn_unused_result";
   let Content  = [{
 Clang supports the ability to diagnose when the results of a function call
 expression are discarded under suspicious circumstances. A diagnostic is
@@ -1312,7 +1316,7 @@ potentially-evaluated discarded-value expression that is not explicitly cast to
 
 def FallthroughDocs : Documentation {
   let Category = DocCatStmt;
-  let Heading = "fallthrough, clang::fallthrough";
+  let Heading = "fallthrough";
   let Content = [{
 The ``fallthrough`` (or ``clang::fallthrough``) attribute is used
 to annotate intentional fall-through
@@ -1460,7 +1464,7 @@ on the command line.
 
 def MipsLongCallStyleDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "long_call (gnu::long_call, gnu::far)";
+  let Heading = "long_call, far";
   let Content = [{
 Clang supports the ``__attribute__((long_call))``, ``__attribute__((far))``,
 and ``__attribute__((near))`` attributes on MIPS targets. These attributes may
@@ -1481,7 +1485,7 @@ as ``-mlong-calls`` and ``-mno-long-calls``.
 
 def MipsShortCallStyleDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "short_call (gnu::short_call, gnu::near)";
+  let Heading = "short_call, near";
   let Content = [{
 Clang supports the ``__attribute__((long_call))``, ``__attribute__((far))``,
 ``__attribute__((short__call))``, and ``__attribute__((near))`` attributes
@@ -1940,7 +1944,7 @@ def NoSanitizeAddressDocs : Documentation {
   let Category = DocCatFunction;
   // This function has multiple distinct spellings, and so it requires a custom
   // heading to be specified. The most common spelling is sufficient.
-  let Heading = "no_sanitize_address (no_address_safety_analysis, gnu::no_address_safety_analysis, gnu::no_sanitize_address)";
+  let Heading = "no_sanitize_address, no_address_safety_analysis";
   let Content = [{
 .. _langext-address_sanitizer:
 
@@ -2563,7 +2567,6 @@ for further details including limitations of the unroll hints.
 
 def OpenCLUnrollHintDocs : Documentation {
   let Category = DocCatStmt;
-  let Heading = "__attribute__((opencl_unroll_hint))";
   let Content = [{
 The opencl_unroll_hint attribute qualifier can be used to specify that a loop
 (for, while and do loops) can be unrolled. This attribute qualifier can be
@@ -2576,7 +2579,6 @@ s6.11.5 for details.
 
 def OpenCLIntelReqdSubGroupSizeDocs : Documentation {
   let Category = DocCatStmt;
-  let Heading = "__attribute__((intel_reqd_sub_group_size))";
   let Content = [{
 The optional attribute intel_reqd_sub_group_size can be used to indicate that
 the kernel must be compiled and executed with the specified subgroup size. When
@@ -3396,7 +3398,7 @@ See the RenderScript_ documentation for more information.
 
 def XRayDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "xray_always_instrument (clang::xray_always_instrument), xray_never_instrument (clang::xray_never_instrument), xray_log_args (clang::xray_log_args)";
+  let Heading = "xray_always_instrument, xray_never_instrument, xray_log_args";
   let Content = [{
 ``__attribute__((xray_always_instrument))`` or ``[[clang::xray_always_instrument]]`` is used to mark member functions (in C++), methods (in Objective C), and free functions (in C, C++, and Objective C) to be instrumented with XRay. This will cause the function to always have space at the beginning and exit points to allow for runtime patching.
 
@@ -3484,5 +3486,59 @@ a container class:
     [[clang::reinitializes]] void Clear();
     ...
   };
+  }];
+}
+
+def AlwaysDestroyDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``always_destroy`` attribute specifies that a variable with static or thread
+storage duration should have its exit-time destructor run. This attribute is the
+default unless clang was invoked with -fno-c++-static-destructors.
+  }];
+}
+
+def NoDestroyDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``no_destroy`` attribute specifies that a variable with static or thread
+storage duration shouldn't have its exit-time destructor run. Annotating every
+static and thread duration variable with this attribute is equivalent to
+invoking clang with -fno-c++-static-destructors.
+  }];
+}
+
+def GnuInlineDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``gnu_inline`` changes the meaning of ``extern inline`` to use GNU inline
+semantics, meaning:
+
+* If any declaration that is declared ``inline`` is not declared ``extern``,
+then the ``inline`` keyword is just a hint. In particular, an out-of-line
+definition is still emitted for a function with external linkage, even if all
+call sites are inlined, unlike in C99 and C++ inline semantics.
+
+* If all declarations that are declared ``inline`` are also declared
+``extern``, then the function body is present only for inlining and no
+out-of-line version is emitted.
+
+Some important consequences: ``static inline`` emits an out-of-line
+version if needed, a plain ``inline`` definition emits an out-of-line version
+always, and an ``extern inline`` definition (in a header) followed by a
+(non-``extern``) ``inline`` declaration in a source file emits an out-of-line
+version of the function in that source file but provides the function body for
+inlining to all includers of the header.
+
+Either ``__GNUC_GNU_INLINE__`` (GNU inline semantics) or
+``__GNUC_STDC_INLINE__`` (C99 semantics) will be defined (they are mutually
+exclusive). If ``__GNUC_STDC_INLINE__`` is defined, then the ``gnu_inline``
+function attribute can be used to get GNU inline semantics on a per function
+basis. If ``__GNUC_GNU_INLINE__`` is defined, then the translation unit is
+already being compiled with GNU inline semantics as the implied default. It is
+unspecified which macro is defined in a C++ compilation.
+
+GNU inline semantics are the default behavior with ``-std=gnu89``,
+``-std=c89``, ``-std=c94``, or ``-fgnu89-inline``.
   }];
 }

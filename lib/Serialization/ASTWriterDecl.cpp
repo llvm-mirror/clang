@@ -17,6 +17,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/OpenMPClause.h"
 #include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Serialization/ASTReader.h"
@@ -144,6 +145,7 @@ namespace clang {
     void VisitObjCPropertyDecl(ObjCPropertyDecl *D);
     void VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D);
     void VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D);
+    void VisitOMPRequiresDecl(OMPRequiresDecl *D);
     void VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D);
     void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
 
@@ -1739,10 +1741,23 @@ void ASTDeclWriter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
   Code = serialization::DECL_OMP_THREADPRIVATE;
 }
 
+void ASTDeclWriter::VisitOMPRequiresDecl(OMPRequiresDecl *D) {
+  Record.push_back(D->clauselist_size());
+  VisitDecl(D);
+  OMPClauseWriter ClauseWriter(Record); 
+  for (OMPClause *C : D->clauselists())
+    ClauseWriter.writeClause(C);
+  Code = serialization::DECL_OMP_REQUIRES;
+}
+
 void ASTDeclWriter::VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D) {
   VisitValueDecl(D);
   Record.AddSourceLocation(D->getBeginLoc());
+  Record.AddStmt(D->getCombinerIn());
+  Record.AddStmt(D->getCombinerOut());
   Record.AddStmt(D->getCombiner());
+  Record.AddStmt(D->getInitOrig());
+  Record.AddStmt(D->getInitPriv());
   Record.AddStmt(D->getInitializer());
   Record.push_back(D->getInitializerKind());
   Record.AddDeclRef(D->getPrevDeclInScope());

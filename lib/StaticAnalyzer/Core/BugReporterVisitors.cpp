@@ -42,10 +42,10 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SMTConv.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SMTConstraintManager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/Optional.h"
@@ -179,15 +179,14 @@ const Stmt *bugreporter::GetRetValExpr(const ExplodedNode *N) {
 //===----------------------------------------------------------------------===//
 
 std::shared_ptr<PathDiagnosticPiece>
-BugReporterVisitor::getEndPath(BugReporterContext &BRC,
-                               const ExplodedNode *EndPathNode, BugReport &BR) {
+BugReporterVisitor::getEndPath(BugReporterContext &,
+                               const ExplodedNode *, BugReport &) {
   return nullptr;
 }
 
 void
-BugReporterVisitor::finalizeVisitor(BugReporterContext &BRC,
-                                    const ExplodedNode *EndPathNode,
-                                    BugReport &BR) {}
+BugReporterVisitor::finalizeVisitor(BugReporterContext &,
+                                    const ExplodedNode *, BugReport &) {}
 
 std::shared_ptr<PathDiagnosticPiece> BugReporterVisitor::getDefaultEndPath(
     BugReporterContext &BRC, const ExplodedNode *EndPathNode, BugReport &BR) {
@@ -303,9 +302,8 @@ public:
   }
 
   std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
-                                                 const ExplodedNode *PrevN,
-                                                 BugReporterContext &BRC,
-                                                 BugReport &BR) override {
+                                                 BugReporterContext &BR,
+                                                 BugReport &) override {
 
     const LocationContext *Ctx = N->getLocationContext();
     const StackFrameContext *SCtx = Ctx->getStackFrame();
@@ -317,7 +315,7 @@ public:
       return nullptr;
 
     CallEventRef<> Call =
-        BRC.getStateManager().getCallEventManager().getCaller(SCtx, State);
+        BR.getStateManager().getCallEventManager().getCaller(SCtx, State);
 
     if (SM.isInSystemHeader(Call->getDecl()->getSourceRange().getBegin()))
       return nullptr;
@@ -668,7 +666,6 @@ public:
                                                     ValueAtDereference(V) {}
 
   std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
-                                                 const ExplodedNode *PrevN,
                                                  BugReporterContext &BRC,
                                                  BugReport &BR) override {
     if (WasModified)
@@ -679,7 +676,7 @@ public:
       return nullptr;
 
     const SourceManager &SMgr = BRC.getSourceManager();
-    if (auto Loc = matchAssignment(N, BRC)) {
+    if (auto Loc = matchAssignment(N)) {
       if (isFunctionMacroExpansion(*Loc, SMgr)) {
         std::string MacroName = getMacroName(*Loc, BRC);
         SourceLocation BugLoc = BugPoint->getStmt()->getBeginLoc();
@@ -717,8 +714,7 @@ public:
 private:
   /// \return Source location of right hand side of an assignment
   /// into \c RegionOfInterest, empty optional if none found.
-  Optional<SourceLocation> matchAssignment(const ExplodedNode *N,
-                                           BugReporterContext &BRC) {
+  Optional<SourceLocation> matchAssignment(const ExplodedNode *N) {
     const Stmt *S = PathDiagnosticLocation::getStmt(N);
     ProgramStateRef State = N->getState();
     auto *LCtx = N->getLocationContext();
@@ -759,10 +755,14 @@ class ReturnVisitor : public BugReporterVisitor {
 
   bool EnableNullFPSuppression;
   bool ShouldInvalidate = true;
+  AnalyzerOptions& Options;
 
 public:
-  ReturnVisitor(const StackFrameContext *Frame, bool Suppressed)
-      : StackFrame(Frame), EnableNullFPSuppression(Suppressed) {}
+  ReturnVisitor(const StackFrameContext *Frame,
+                bool Suppressed,
+                AnalyzerOptions &Options)
+      : StackFrame(Frame), EnableNullFPSuppression(Suppressed),
+        Options(Options) {}
 
   static void *getTag() {
     static int Tag = 0;
@@ -790,10 +790,10 @@ public:
 
     // First, find when we processed the statement.
     do {
-      if (Optional<CallExitEnd> CEE = Node->getLocationAs<CallExitEnd>())
+      if (auto CEE = Node->getLocationAs<CallExitEnd>())
         if (CEE->getCalleeContext()->getCallSite() == S)
           break;
-      if (Optional<StmtPoint> SP = Node->getLocationAs<StmtPoint>())
+      if (auto SP = Node->getLocationAs<StmtPoint>())
         if (SP->getStmt() == S)
           break;
 
@@ -834,17 +834,12 @@ public:
 
     BR.markInteresting(CalleeContext);
     BR.addVisitor(llvm::make_unique<ReturnVisitor>(CalleeContext,
-                                                   EnableNullFPSuppression));
-  }
-
-  /// Returns true if any counter-suppression heuristics are enabled for
-  /// ReturnVisitor.
-  static bool hasCounterSuppression(AnalyzerOptions &Options) {
-    return Options.shouldAvoidSuppressingNullArgumentPaths();
+                                                   EnableNullFPSuppression,
+                                                   Options));
   }
 
   std::shared_ptr<PathDiagnosticPiece>
-  visitNodeInitial(const ExplodedNode *N, const ExplodedNode *PrevN,
+  visitNodeInitial(const ExplodedNode *N,
                    BugReporterContext &BRC, BugReport &BR) {
     // Only print a message at the interesting return statement.
     if (N->getLocationContext() != StackFrame)
@@ -888,37 +883,40 @@ public:
 
     RetE = RetE->IgnoreParenCasts();
 
-    // If we can't prove the return value is 0, just mark it interesting, and
-    // make sure to track it into any further inner functions.
-    if (!State->isNull(V).isConstrainedTrue()) {
-      BR.markInteresting(V);
-      ReturnVisitor::addVisitorIfNecessary(N, RetE, BR,
-                                           EnableNullFPSuppression);
-      return nullptr;
-    }
-
     // If we're returning 0, we should track where that 0 came from.
-    bugreporter::trackNullOrUndefValue(N, RetE, BR, /*IsArg*/ false,
-                                       EnableNullFPSuppression);
+    bugreporter::trackNullOrUndefValue(N, RetE, BR, EnableNullFPSuppression);
 
     // Build an appropriate message based on the return value.
     SmallString<64> Msg;
     llvm::raw_svector_ostream Out(Msg);
 
-    if (V.getAs<Loc>()) {
-      // If we have counter-suppression enabled, make sure we keep visiting
-      // future nodes. We want to emit a path note as well, in case
-      // the report is resurrected as valid later on.
-      AnalyzerOptions &Options = BRC.getAnalyzerOptions();
-      if (EnableNullFPSuppression && hasCounterSuppression(Options))
-        Mode = MaybeUnsuppress;
+    if (State->isNull(V).isConstrainedTrue()) {
+      if (V.getAs<Loc>()) {
 
-      if (RetE->getType()->isObjCObjectPointerType())
-        Out << "Returning nil";
-      else
-        Out << "Returning null pointer";
+        // If we have counter-suppression enabled, make sure we keep visiting
+        // future nodes. We want to emit a path note as well, in case
+        // the report is resurrected as valid later on.
+        if (EnableNullFPSuppression &&
+            Options.shouldAvoidSuppressingNullArgumentPaths())
+          Mode = MaybeUnsuppress;
+
+        if (RetE->getType()->isObjCObjectPointerType()) {
+          Out << "Returning nil";
+        } else {
+          Out << "Returning null pointer";
+        }
+      } else {
+        Out << "Returning zero";
+      }
+
     } else {
-      Out << "Returning zero";
+      if (auto CI = V.getAs<nonloc::ConcreteInt>()) {
+        Out << "Returning the value " << CI->getValue();
+      } else if (V.getAs<Loc>()) {
+        Out << "Returning pointer";
+      } else {
+        Out << "Returning value";
+      }
     }
 
     if (LValue) {
@@ -944,11 +942,10 @@ public:
   }
 
   std::shared_ptr<PathDiagnosticPiece>
-  visitNodeMaybeUnsuppress(const ExplodedNode *N, const ExplodedNode *PrevN,
+  visitNodeMaybeUnsuppress(const ExplodedNode *N,
                            BugReporterContext &BRC, BugReport &BR) {
 #ifndef NDEBUG
-    AnalyzerOptions &Options = BRC.getAnalyzerOptions();
-    assert(hasCounterSuppression(Options));
+    assert(Options.shouldAvoidSuppressingNullArgumentPaths());
 #endif
 
     // Are we at the entry node for this call?
@@ -982,7 +979,7 @@ public:
       if (!State->isNull(*ArgV).isConstrainedTrue())
         continue;
 
-      if (bugreporter::trackNullOrUndefValue(N, ArgE, BR, /*IsArg=*/true,
+      if (bugreporter::trackNullOrUndefValue(N, ArgE, BR,
                                              EnableNullFPSuppression))
         ShouldInvalidate = false;
 
@@ -995,14 +992,13 @@ public:
   }
 
   std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
-                                                 const ExplodedNode *PrevN,
                                                  BugReporterContext &BRC,
                                                  BugReport &BR) override {
     switch (Mode) {
     case Initial:
-      return visitNodeInitial(N, PrevN, BRC, BR);
+      return visitNodeInitial(N, BRC, BR);
     case MaybeUnsuppress:
-      return visitNodeMaybeUnsuppress(N, PrevN, BRC, BR);
+      return visitNodeMaybeUnsuppress(N, BRC, BR);
     case Satisfied:
       return nullptr;
     }
@@ -1010,7 +1006,7 @@ public:
     llvm_unreachable("Invalid visit mode!");
   }
 
-  void finalizeVisitor(BugReporterContext &BRC, const ExplodedNode *N,
+  void finalizeVisitor(BugReporterContext &, const ExplodedNode *,
                        BugReport &BR) override {
     if (EnableNullFPSuppression && ShouldInvalidate)
       BR.markInvalid(ReturnVisitor::getTag(), StackFrame);
@@ -1176,12 +1172,12 @@ static void showBRDefaultDiagnostics(llvm::raw_svector_ostream& os,
 
 std::shared_ptr<PathDiagnosticPiece>
 FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
-                                  const ExplodedNode *Pred,
                                   BugReporterContext &BRC, BugReport &BR) {
   if (Satisfied)
     return nullptr;
 
   const ExplodedNode *StoreSite = nullptr;
+  const ExplodedNode *Pred = Succ->getFirstPred();
   const Expr *InitE = nullptr;
   bool IsParam = false;
 
@@ -1262,12 +1258,11 @@ FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
         V.getAs<loc::ConcreteInt>() || V.getAs<nonloc::ConcreteInt>()) {
       if (!IsParam)
         InitE = InitE->IgnoreParenCasts();
-      bugreporter::trackNullOrUndefValue(StoreSite, InitE, BR, IsParam,
+      bugreporter::trackNullOrUndefValue(StoreSite, InitE, BR,
                                          EnableNullFPSuppression);
-    } else {
-      ReturnVisitor::addVisitorIfNecessary(StoreSite, InitE->IgnoreParenCasts(),
-                                           BR, EnableNullFPSuppression);
     }
+    ReturnVisitor::addVisitorIfNecessary(StoreSite, InitE->IgnoreParenCasts(),
+                                         BR, EnableNullFPSuppression);
   }
 
   // Okay, we've found the binding. Emit an appropriate message.
@@ -1293,8 +1288,7 @@ FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
         if (const auto *BDR =
               dyn_cast_or_null<BlockDataRegion>(V.getAsRegion())) {
           if (const VarRegion *OriginalR = BDR->getOriginalRegion(VR)) {
-            if (Optional<KnownSVal> KV =
-                State->getSVal(OriginalR).getAs<KnownSVal>())
+            if (auto KV = State->getSVal(OriginalR).getAs<KnownSVal>())
               BR.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
                   *KV, OriginalR, EnableNullFPSuppression));
           }
@@ -1349,8 +1343,8 @@ bool TrackConstraintBRVisitor::isUnderconstrained(const ExplodedNode *N) const {
 
 std::shared_ptr<PathDiagnosticPiece>
 TrackConstraintBRVisitor::VisitNode(const ExplodedNode *N,
-                                    const ExplodedNode *PrevN,
-                                    BugReporterContext &BRC, BugReport &BR) {
+                                    BugReporterContext &BRC, BugReport &) {
+  const ExplodedNode *PrevN = N->getFirstPred();
   if (IsSatisfied)
     return nullptr;
 
@@ -1425,9 +1419,9 @@ const char *SuppressInlineDefensiveChecksVisitor::getTag() {
 
 std::shared_ptr<PathDiagnosticPiece>
 SuppressInlineDefensiveChecksVisitor::VisitNode(const ExplodedNode *Succ,
-                                                const ExplodedNode *Pred,
                                                 BugReporterContext &BRC,
                                                 BugReport &BR) {
+  const ExplodedNode *Pred = Succ->getFirstPred();
   if (IsSatisfied)
     return nullptr;
 
@@ -1516,6 +1510,8 @@ static const MemRegion *getLocationRegionIfReference(const Expr *E,
   return nullptr;
 }
 
+/// \return A subexpression of {@code Ex} which represents the
+/// expression-of-interest.
 static const Expr *peelOffOuterExpr(const Expr *Ex,
                                     const ExplodedNode *N) {
   Ex = Ex->IgnoreParenCasts();
@@ -1560,125 +1556,73 @@ static const Expr *peelOffOuterExpr(const Expr *Ex,
     if (const Expr *SubEx = peelOffPointerArithmetic(BO))
       return peelOffOuterExpr(SubEx, N);
 
-  if (auto *UO = dyn_cast<UnaryOperator>(Ex))
+  if (auto *UO = dyn_cast<UnaryOperator>(Ex)) {
     if (UO->getOpcode() == UO_LNot)
       return peelOffOuterExpr(UO->getSubExpr(), N);
 
-  return Ex;
-}
+    // FIXME: There's a hack in our Store implementation that always computes
+    // field offsets around null pointers as if they are always equal to 0.
+    // The idea here is to report accesses to fields as null dereferences
+    // even though the pointer value that's being dereferenced is actually
+    // the offset of the field rather than exactly 0.
+    // See the FIXME in StoreManager's getLValueFieldOrIvar() method.
+    // This code interacts heavily with this hack; otherwise the value
+    // would not be null at all for most fields, so we'd be unable to track it.
+    if (UO->getOpcode() == UO_AddrOf && UO->getSubExpr()->isLValue())
+      if (const Expr *DerefEx = bugreporter::getDerefExpr(UO->getSubExpr()))
+        return peelOffOuterExpr(DerefEx, N);
+  }
 
-/// Walk through nodes until we get one that matches the statement exactly.
-/// Alternately, if we hit a known lvalue for the statement, we know we've
-/// gone too far (though we can likely track the lvalue better anyway).
-static const ExplodedNode* findNodeForStatement(const ExplodedNode *N,
-                                                const Stmt *S,
-                                                const Expr *Inner) {
-  do {
-    const ProgramPoint &pp = N->getLocation();
-    if (auto ps = pp.getAs<StmtPoint>()) {
-      if (ps->getStmt() == S || ps->getStmt() == Inner)
-        break;
-    } else if (auto CEE = pp.getAs<CallExitEnd>()) {
-      if (CEE->getCalleeContext()->getCallSite() == S ||
-          CEE->getCalleeContext()->getCallSite() == Inner)
-        break;
-    }
-    N = N->getFirstPred();
-  } while (N);
-  return N;
+  return Ex;
 }
 
 /// Find the ExplodedNode where the lvalue (the value of 'Ex')
 /// was computed.
 static const ExplodedNode* findNodeForExpression(const ExplodedNode *N,
-    const Expr *Inner) {
+                                                 const Expr *Inner) {
   while (N) {
-    if (auto P = N->getLocation().getAs<PostStmt>()) {
-      if (P->getStmt() == Inner)
-        break;
-    }
+    if (PathDiagnosticLocation::getStmt(N) == Inner)
+      return N;
     N = N->getFirstPred();
   }
-  assert(N && "Unable to find the lvalue node.");
   return N;
 }
 
-/// Performing operator `&' on an lvalue expression is essentially a no-op.
-/// Then, if we are taking addresses of fields or elements, these are also
-/// unlikely to matter.
-static const Expr* peelOfOuterAddrOf(const Expr* Ex) {
-  Ex = Ex->IgnoreParenCasts();
-
-  // FIXME: There's a hack in our Store implementation that always computes
-  // field offsets around null pointers as if they are always equal to 0.
-  // The idea here is to report accesses to fields as null dereferences
-  // even though the pointer value that's being dereferenced is actually
-  // the offset of the field rather than exactly 0.
-  // See the FIXME in StoreManager's getLValueFieldOrIvar() method.
-  // This code interacts heavily with this hack; otherwise the value
-  // would not be null at all for most fields, so we'd be unable to track it.
-  if (const auto *Op = dyn_cast<UnaryOperator>(Ex))
-    if (Op->getOpcode() == UO_AddrOf && Op->getSubExpr()->isLValue())
-      if (const Expr *DerefEx = bugreporter::getDerefExpr(Op->getSubExpr()))
-        return DerefEx;
-  return Ex;
-}
-
-bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
-                                        const Stmt *S,
-                                        BugReport &report, bool IsArg,
+bool bugreporter::trackNullOrUndefValue(const ExplodedNode *InputNode,
+                                        const Stmt *InputS,
+                                        BugReport &report,
                                         bool EnableNullFPSuppression) {
-  if (!S || !N)
+  if (!InputS || !InputNode || !isa<Expr>(InputS))
     return false;
 
-  if (const auto *Ex = dyn_cast<Expr>(S))
-    S = peelOffOuterExpr(Ex, N);
+  const Expr *Inner = peelOffOuterExpr(cast<Expr>(InputS), InputNode);
+  const ExplodedNode *LVNode = findNodeForExpression(InputNode, Inner);
+  if (!LVNode)
+    return false;
 
-  const Expr *Inner = nullptr;
-  if (const auto *Ex = dyn_cast<Expr>(S)) {
-    Ex = peelOfOuterAddrOf(Ex);
-    Ex = Ex->IgnoreParenCasts();
-
-    if (Ex && (ExplodedGraph::isInterestingLValueExpr(Ex)
-          || CallEvent::isCallStmt(Ex)))
-      Inner = Ex;
-  }
-
-  if (IsArg && !Inner) {
-    assert(N->getLocation().getAs<CallEnter>() && "Tracking arg but not at call");
-  } else {
-    N = findNodeForStatement(N, S, Inner);
-    if (!N)
-      return false;
-  }
-
-  ProgramStateRef state = N->getState();
+  ProgramStateRef LVState = LVNode->getState();
 
   // The message send could be nil due to the receiver being nil.
   // At this point in the path, the receiver should be live since we are at the
   // message send expr. If it is nil, start tracking it.
-  if (const Expr *Receiver = NilReceiverBRVisitor::getNilReceiver(S, N))
-    trackNullOrUndefValue(N, Receiver, report, /* IsArg=*/ false,
-        EnableNullFPSuppression);
+  if (const Expr *Receiver = NilReceiverBRVisitor::getNilReceiver(Inner, LVNode))
+    trackNullOrUndefValue(LVNode, Receiver, report, EnableNullFPSuppression);
 
   // See if the expression we're interested refers to a variable.
   // If so, we can track both its contents and constraints on its value.
   if (Inner && ExplodedGraph::isInterestingLValueExpr(Inner)) {
-    const ExplodedNode *LVNode = findNodeForExpression(N, Inner);
-    ProgramStateRef LVState = LVNode->getState();
     SVal LVal = LVNode->getSVal(Inner);
 
-    const MemRegion *RR = getLocationRegionIfReference(Inner, N);
+    const MemRegion *RR = getLocationRegionIfReference(Inner, LVNode);
     bool LVIsNull = LVState->isNull(LVal).isConstrainedTrue();
 
     // If this is a C++ reference to a null pointer, we are tracking the
     // pointer. In addition, we should find the store at which the reference
     // got initialized.
-    if (RR && !LVIsNull) {
+    if (RR && !LVIsNull)
       if (auto KV = LVal.getAs<KnownSVal>())
         report.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
               *KV, RR, EnableNullFPSuppression));
-    }
 
     // In case of C++ references, we want to differentiate between a null
     // reference and reference to null pointer.
@@ -1688,7 +1632,6 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
         LVNode->getSVal(Inner).getAsRegion();
 
     if (R) {
-      ProgramStateRef S = N->getState();
 
       // Mark both the variable region and its contents as interesting.
       SVal V = LVState->getRawSVal(loc::MemRegionVal(R));
@@ -1696,9 +1639,8 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
           llvm::make_unique<NoStoreFuncVisitor>(cast<SubRegion>(R)));
 
       MacroNullReturnSuppressionVisitor::addMacroVisitorIfNecessary(
-          N, R, EnableNullFPSuppression, report, V);
+          LVNode, R, EnableNullFPSuppression, report, V);
 
-      report.markInteresting(R);
       report.markInteresting(V);
       report.addVisitor(llvm::make_unique<UndefOrNullArgVisitor>(R));
 
@@ -1708,14 +1650,12 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
               V.castAs<DefinedSVal>(), false));
 
       // Add visitor, which will suppress inline defensive checks.
-      if (auto DV = V.getAs<DefinedSVal>()) {
+      if (auto DV = V.getAs<DefinedSVal>())
         if (!DV->isZeroConstant() && LVState->isNull(*DV).isConstrainedTrue() &&
-            EnableNullFPSuppression) {
+            EnableNullFPSuppression)
           report.addVisitor(
               llvm::make_unique<SuppressInlineDefensiveChecksVisitor>(*DV,
-                LVNode));
-        }
-      }
+                                                                      LVNode));
 
       if (auto KV = V.getAs<KnownSVal>())
         report.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
@@ -1726,33 +1666,37 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
 
   // If the expression is not an "lvalue expression", we can still
   // track the constraints on its contents.
-  SVal V = state->getSValAsScalarOrLoc(S, N->getLocationContext());
+  SVal V = LVState->getSValAsScalarOrLoc(Inner, LVNode->getLocationContext());
 
-  // If the value came from an inlined function call, we should at least make
-  // sure that function isn't pruned in our output.
-  if (const auto *E = dyn_cast<Expr>(S))
-    S = E->IgnoreParenCasts();
+  ReturnVisitor::addVisitorIfNecessary(
+    LVNode, Inner, report, EnableNullFPSuppression);
 
-  ReturnVisitor::addVisitorIfNecessary(N, S, report, EnableNullFPSuppression);
-
-  // Uncomment this to find cases where we aren't properly getting the
-  // base value that was dereferenced.
-  // assert(!V.isUnknownOrUndef());
   // Is it a symbolic value?
   if (auto L = V.getAs<loc::MemRegionVal>()) {
     report.addVisitor(llvm::make_unique<UndefOrNullArgVisitor>(L->getRegion()));
+
+    // FIXME: this is a hack for fixing a later crash when attempting to
+    // dereference a void* pointer.
+    // We should not try to dereference pointers at all when we don't care
+    // what is written inside the pointer.
+    bool CanDereference = true;
+    if (const auto *SR = dyn_cast<SymbolicRegion>(L->getRegion()))
+      if (SR->getSymbol()->getType()->getPointeeType()->isVoidType())
+        CanDereference = false;
 
     // At this point we are dealing with the region's LValue.
     // However, if the rvalue is a symbolic region, we should track it as well.
     // Try to use the correct type when looking up the value.
     SVal RVal;
-    if (const auto *E = dyn_cast<Expr>(S))
-      RVal = state->getRawSVal(L.getValue(), E->getType());
-    else
-      RVal = state->getSVal(L->getRegion());
+    if (ExplodedGraph::isInterestingLValueExpr(Inner)) {
+      RVal = LVState->getRawSVal(L.getValue(), Inner->getType());
+    } else if (CanDereference) {
+      RVal = LVState->getSVal(L->getRegion());
+    }
 
-    if (auto KV = RVal.getAs<KnownSVal>())
-      report.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
+    if (CanDereference)
+      if (auto KV = RVal.getAs<KnownSVal>())
+        report.addVisitor(llvm::make_unique<FindLastStoreBRVisitor>(
             *KV, L->getRegion(), EnableNullFPSuppression));
 
     const MemRegion *RegionRVal = RVal.getAsRegion();
@@ -1781,7 +1725,6 @@ const Expr *NilReceiverBRVisitor::getNilReceiver(const Stmt *S,
 
 std::shared_ptr<PathDiagnosticPiece>
 NilReceiverBRVisitor::VisitNode(const ExplodedNode *N,
-                                const ExplodedNode *PrevN,
                                 BugReporterContext &BRC, BugReport &BR) {
   Optional<PreStmt> P = N->getLocationAs<PreStmt>();
   if (!P)
@@ -1808,7 +1751,7 @@ NilReceiverBRVisitor::VisitNode(const ExplodedNode *N,
   // The receiver was nil, and hence the method was skipped.
   // Register a BugReporterVisitor to issue a message telling us how
   // the receiver was null.
-  bugreporter::trackNullOrUndefValue(N, Receiver, BR, /*IsArg*/ false,
+  bugreporter::trackNullOrUndefValue(N, Receiver, BR,
                                      /*EnableNullFPSuppression*/ false);
   // Issue a message saying that the method was skipped.
   PathDiagnosticLocation L(Receiver, BRC.getSourceManager(),
@@ -1862,9 +1805,9 @@ const char *ConditionBRVisitor::getTag() {
 }
 
 std::shared_ptr<PathDiagnosticPiece>
-ConditionBRVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *Prev,
+ConditionBRVisitor::VisitNode(const ExplodedNode *N,
                               BugReporterContext &BRC, BugReport &BR) {
-  auto piece = VisitNodeImpl(N, Prev, BRC, BR);
+  auto piece = VisitNodeImpl(N, BRC, BR);
   if (piece) {
     piece->setTag(getTag());
     if (auto *ev = dyn_cast<PathDiagnosticEventPiece>(piece.get()))
@@ -1875,11 +1818,10 @@ ConditionBRVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *Prev,
 
 std::shared_ptr<PathDiagnosticPiece>
 ConditionBRVisitor::VisitNodeImpl(const ExplodedNode *N,
-                                  const ExplodedNode *Prev,
                                   BugReporterContext &BRC, BugReport &BR) {
   ProgramPoint progPoint = N->getLocation();
   ProgramStateRef CurrentState = N->getState();
-  ProgramStateRef PrevState = Prev->getState();
+  ProgramStateRef PrevState = N->getFirstPred()->getState();
 
   // Compare the GDMs of the state, because that is where constraints
   // are managed.  Note that ensure that we only look at nodes that
@@ -2371,7 +2313,6 @@ void LikelyFalsePositiveSuppressionBRVisitor::finalizeVisitor(
 
 std::shared_ptr<PathDiagnosticPiece>
 UndefOrNullArgVisitor::VisitNode(const ExplodedNode *N,
-                                 const ExplodedNode *PrevN,
                                  BugReporterContext &BRC, BugReport &BR) {
   ProgramStateRef State = N->getState();
   ProgramPoint ProgLoc = N->getLocation();
@@ -2422,8 +2363,7 @@ UndefOrNullArgVisitor::VisitNode(const ExplodedNode *N,
 
 std::shared_ptr<PathDiagnosticPiece>
 CXXSelfAssignmentBRVisitor::VisitNode(const ExplodedNode *Succ,
-                                      const ExplodedNode *Pred,
-                                      BugReporterContext &BRC, BugReport &BR) {
+                                      BugReporterContext &BRC, BugReport &) {
   if (Satisfied)
     return nullptr;
 
@@ -2474,11 +2414,11 @@ CXXSelfAssignmentBRVisitor::VisitNode(const ExplodedNode *Succ,
 }
 
 std::shared_ptr<PathDiagnosticPiece>
-TaintBugVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *PrevN,
-                           BugReporterContext &BRC, BugReport &BR) {
+TaintBugVisitor::VisitNode(const ExplodedNode *N,
+                           BugReporterContext &BRC, BugReport &) {
 
   // Find the ExplodedNode where the taint was first introduced
-  if (!N->getState()->isTainted(V) || PrevN->getState()->isTainted(V))
+  if (!N->getState()->isTainted(V) || N->getFirstPred()->getState()->isTainted(V))
     return nullptr;
 
   const Stmt *S = PathDiagnosticLocation::getStmt(N);
@@ -2500,10 +2440,10 @@ FalsePositiveRefutationBRVisitor::FalsePositiveRefutationBRVisitor()
 void FalsePositiveRefutationBRVisitor::finalizeVisitor(
     BugReporterContext &BRC, const ExplodedNode *EndPathNode, BugReport &BR) {
   // Collect new constraints
-  VisitNode(EndPathNode, nullptr, BRC, BR);
+  VisitNode(EndPathNode, BRC, BR);
 
   // Create a refutation manager
-  std::unique_ptr<SMTSolver> RefutationSolver = CreateZ3Solver();
+  SMTSolverRef RefutationSolver = CreateZ3Solver();
   ASTContext &Ctx = BRC.getASTContext();
 
   // Add constraints to the solver
@@ -2513,23 +2453,26 @@ void FalsePositiveRefutationBRVisitor::finalizeVisitor(
     SMTExprRef Constraints = RefutationSolver->fromBoolean(false);
     for (const auto &Range : I.second) {
       Constraints = RefutationSolver->mkOr(
-          Constraints,
-          RefutationSolver->getRangeExpr(Ctx, Sym, Range.From(), Range.To(),
-                                         /*InRange=*/true));
+          Constraints, SMTConv::getRangeExpr(RefutationSolver, Ctx, Sym,
+                                             Range.From(), Range.To(),
+                                             /*InRange=*/true));
     }
     RefutationSolver->addConstraint(Constraints);
   }
 
   // And check for satisfiability
-  if (RefutationSolver->check().isConstrainedFalse())
+  Optional<bool> isSat = RefutationSolver->check();
+  if (!isSat.hasValue())
+    return;
+
+  if (!isSat.getValue())
     BR.markInvalid("Infeasible constraints", EndPathNode->getLocationContext());
 }
 
 std::shared_ptr<PathDiagnosticPiece>
 FalsePositiveRefutationBRVisitor::VisitNode(const ExplodedNode *N,
-                                            const ExplodedNode *PrevN,
-                                            BugReporterContext &BRC,
-                                            BugReport &BR) {
+                                            BugReporterContext &,
+                                            BugReport &) {
   // Collect new constraints
   const ConstraintRangeTy &NewCs = N->getState()->get<ConstraintRange>();
   ConstraintRangeTy::Factory &CF =

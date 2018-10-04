@@ -426,8 +426,8 @@ bool PrecompiledPreamble::CanReuse(const CompilerInvocation &Invocation,
   // new main file.
   if (PreambleBytes.size() != Bounds.Size ||
       PreambleEndsAtStartOfLine != Bounds.PreambleEndsAtStartOfLine ||
-      memcmp(PreambleBytes.data(), MainFileBuffer->getBufferStart(),
-             Bounds.Size) != 0)
+      !std::equal(PreambleBytes.begin(), PreambleBytes.end(),
+                  MainFileBuffer->getBuffer().begin()))
     return false;
   // The preamble has not changed. We may be able to re-use the precompiled
   // preamble.
@@ -742,8 +742,10 @@ std::unique_ptr<PPCallbacks> PreambleCallbacks::createPPCallbacks() {
   return nullptr;
 }
 
+static llvm::ManagedStatic<BuildPreambleErrorCategory> BuildPreambleErrCategory;
+
 std::error_code clang::make_error_code(BuildPreambleError Error) {
-  return std::error_code(static_cast<int>(Error), BuildPreambleErrorCategory());
+  return std::error_code(static_cast<int>(Error), *BuildPreambleErrCategory);
 }
 
 const char *BuildPreambleErrorCategory::name() const noexcept {

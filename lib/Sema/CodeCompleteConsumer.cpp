@@ -20,8 +20,8 @@
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/IdentifierTable.h"
-#include "clang/Sema/Sema.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Sema.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -29,6 +29,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -79,6 +80,7 @@ bool CodeCompletionContext::wantConstructorResults() const {
   case CCC_ObjCClassMessage:
   case CCC_ObjCInterfaceName:
   case CCC_ObjCCategoryName:
+  case CCC_IncludedFile:
     return false;
   }
 
@@ -154,6 +156,8 @@ StringRef clang::getCompletionKindString(CodeCompletionContext::Kind Kind) {
     return "ObjCInterfaceName";
   case CCKind::CCC_ObjCCategoryName:
     return "ObjCCategoryName";
+  case CCKind::CCC_IncludedFile:
+    return "IncludedFile";
   case CCKind::CCC_Recovery:
     return "Recovery";
   }
@@ -521,7 +525,8 @@ bool PrintingCodeCompleteConsumer::isResultFilteredOut(StringRef Filter,
   case CodeCompletionResult::RK_Macro:
     return !Result.Macro->getName().startswith(Filter);
   case CodeCompletionResult::RK_Pattern:
-    return !StringRef(Result.Pattern->getAsString()).startswith(Filter);
+    return !(Result.Pattern->getTypedText() &&
+             StringRef(Result.Pattern->getTypedText()).startswith(Filter));
   }
   llvm_unreachable("Unknown code completion result Kind.");
 }
@@ -618,22 +623,27 @@ static std::string getOverloadAsString(const CodeCompletionString &CCS) {
       OS << "<#" << C.Text << "#>";
       break;
 
+    // FIXME: We can also print optional parameters of an overload.
+    case CodeCompletionString::CK_Optional:
+      break;
+
     default: OS << C.Text; break;
     }
   }
   return OS.str();
 }
 
-void
-PrintingCodeCompleteConsumer::ProcessOverloadCandidates(Sema &SemaRef,
-                                                        unsigned CurrentArg,
-                                              OverloadCandidate *Candidates,
-                                                     unsigned NumCandidates) {
+void PrintingCodeCompleteConsumer::ProcessOverloadCandidates(
+    Sema &SemaRef, unsigned CurrentArg, OverloadCandidate *Candidates,
+    unsigned NumCandidates, SourceLocation OpenParLoc) {
+  OS << "OPENING_PAREN_LOC: ";
+  OpenParLoc.print(OS, SemaRef.getSourceManager());
+  OS << "\n";
+
   for (unsigned I = 0; I != NumCandidates; ++I) {
-    if (CodeCompletionString *CCS
-          = Candidates[I].CreateSignatureString(CurrentArg, SemaRef,
-                                                getAllocator(), CCTUInfo,
-                                                includeBriefComments())) {
+    if (CodeCompletionString *CCS = Candidates[I].CreateSignatureString(
+            CurrentArg, SemaRef, getAllocator(), CCTUInfo,
+            includeBriefComments())) {
       OS << "OVERLOAD: " << getOverloadAsString(*CCS) << "\n";
     }
   }

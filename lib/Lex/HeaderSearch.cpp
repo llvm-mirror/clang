@@ -75,12 +75,6 @@ HeaderSearch::HeaderSearch(std::shared_ptr<HeaderSearchOptions> HSOpts,
       FileMgr(SourceMgr.getFileManager()), FrameworkMap(64),
       ModMap(SourceMgr, Diags, LangOpts, Target, *this) {}
 
-HeaderSearch::~HeaderSearch() {
-  // Delete headermaps.
-  for (unsigned i = 0, e = HeaderMaps.size(); i != e; ++i)
-    delete HeaderMaps[i].second;
-}
-
 void HeaderSearch::PrintStats() {
   fprintf(stderr, "\n*** HeaderSearch Stats:\n");
   fprintf(stderr, "%d files tracked.\n", (int)FileInfo.size());
@@ -113,12 +107,12 @@ const HeaderMap *HeaderSearch::CreateHeaderMap(const FileEntry *FE) {
       // Pointer equality comparison of FileEntries works because they are
       // already uniqued by inode.
       if (HeaderMaps[i].first == FE)
-        return HeaderMaps[i].second;
+        return HeaderMaps[i].second.get();
   }
 
-  if (const HeaderMap *HM = HeaderMap::Create(FE, FileMgr)) {
-    HeaderMaps.push_back(std::make_pair(FE, HM));
-    return HM;
+  if (std::unique_ptr<HeaderMap> HM = HeaderMap::Create(FE, FileMgr)) {
+    HeaderMaps.emplace_back(FE, std::move(HM));
+    return HeaderMaps.back().second.get();
   }
 
   return nullptr;
@@ -654,7 +648,7 @@ static bool isFrameworkStylePath(StringRef Path, bool &IsPrivateHeader,
     ++I;
   }
 
-  return FoundComp >= 2;
+  return !FrameworkName.empty() && FoundComp >= 2;
 }
 
 static void
@@ -1580,17 +1574,17 @@ void HeaderSearch::collectAllModules(SmallVectorImpl<Module *> &Modules) {
         vfs::FileSystem &FS = *FileMgr.getVirtualFileSystem();
         for (vfs::directory_iterator Dir = FS.dir_begin(DirNative, EC), DirEnd;
              Dir != DirEnd && !EC; Dir.increment(EC)) {
-          if (llvm::sys::path::extension(Dir->getName()) != ".framework")
+          if (llvm::sys::path::extension(Dir->path()) != ".framework")
             continue;
 
           const DirectoryEntry *FrameworkDir =
-              FileMgr.getDirectory(Dir->getName());
+              FileMgr.getDirectory(Dir->path());
           if (!FrameworkDir)
             continue;
 
           // Load this framework module.
-          loadFrameworkModule(llvm::sys::path::stem(Dir->getName()),
-                              FrameworkDir, IsSystem);
+          loadFrameworkModule(llvm::sys::path::stem(Dir->path()), FrameworkDir,
+                              IsSystem);
         }
         continue;
       }
@@ -1648,10 +1642,9 @@ void HeaderSearch::loadSubdirectoryModuleMaps(DirectoryLookup &SearchDir) {
   vfs::FileSystem &FS = *FileMgr.getVirtualFileSystem();
   for (vfs::directory_iterator Dir = FS.dir_begin(DirNative, EC), DirEnd;
        Dir != DirEnd && !EC; Dir.increment(EC)) {
-    bool IsFramework =
-        llvm::sys::path::extension(Dir->getName()) == ".framework";
+    bool IsFramework = llvm::sys::path::extension(Dir->path()) == ".framework";
     if (IsFramework == SearchDir.isFramework())
-      loadModuleMapFile(Dir->getName(), SearchDir.isSystemHeaderDirectory(),
+      loadModuleMapFile(Dir->path(), SearchDir.isSystemHeaderDirectory(),
                         SearchDir.isFramework());
   }
 

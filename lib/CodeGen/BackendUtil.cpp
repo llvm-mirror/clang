@@ -265,14 +265,15 @@ static void addKernelHWAddressSanitizerPasses(const PassManagerBuilder &Builder,
       /*CompileKernel*/ true, /*Recover*/ true));
 }
 
-static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
-                                   legacy::PassManagerBase &PM) {
+static void addGeneralOptsForMemorySanitizer(const PassManagerBuilder &Builder,
+                                             legacy::PassManagerBase &PM,
+                                             bool CompileKernel) {
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   int TrackOrigins = CGOpts.SanitizeMemoryTrackOrigins;
   bool Recover = CGOpts.SanitizeRecover.has(SanitizerKind::Memory);
-  PM.add(createMemorySanitizerPass(TrackOrigins, Recover));
+  PM.add(createMemorySanitizerPass(TrackOrigins, Recover, CompileKernel));
 
   // MemorySanitizer inserts complex instrumentation that mostly follows
   // the logic of the original code, but operates on "shadow" values.
@@ -285,6 +286,16 @@ static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
     PM.add(createInstructionCombiningPass());
     PM.add(createDeadStoreEliminationPass());
   }
+}
+
+static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
+                                   legacy::PassManagerBase &PM) {
+  addGeneralOptsForMemorySanitizer(Builder, PM, /*CompileKernel*/ false);
+}
+
+static void addKernelMemorySanitizerPass(const PassManagerBuilder &Builder,
+                                         legacy::PassManagerBase &PM) {
+  addGeneralOptsForMemorySanitizer(Builder, PM, /*CompileKernel*/ true);
 }
 
 static void addThreadSanitizerPass(const PassManagerBuilder &Builder,
@@ -368,6 +379,7 @@ static CodeGenOpt::Level getCGOptLevel(const CodeGenOptions &CodeGenOpts) {
 static Optional<llvm::CodeModel::Model>
 getCodeModel(const CodeGenOptions &CodeGenOpts) {
   unsigned CodeModel = llvm::StringSwitch<unsigned>(CodeGenOpts.CodeModel)
+                           .Case("tiny", llvm::CodeModel::Tiny)
                            .Case("small", llvm::CodeModel::Small)
                            .Case("kernel", llvm::CodeModel::Kernel)
                            .Case("medium", llvm::CodeModel::Medium)
@@ -613,6 +625,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
                            addMemorySanitizerPass);
   }
 
+  if (LangOpts.Sanitize.has(SanitizerKind::KernelMemory)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addKernelMemorySanitizerPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addKernelMemorySanitizerPass);
+  }
+
   if (LangOpts.Sanitize.has(SanitizerKind::Thread)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addThreadSanitizerPass);
@@ -782,7 +801,7 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
     break;
 
   case Backend_EmitBC:
-    if (CodeGenOpts.PrepareForThinLTO) {
+    if (CodeGenOpts.PrepareForThinLTO && !CodeGenOpts.DisableLLVMPasses) {
       if (!CodeGenOpts.ThinLinkBitcodeFile.empty()) {
         ThinLinkOS = openOutputFile(CodeGenOpts.ThinLinkBitcodeFile);
         if (!ThinLinkOS)
@@ -795,6 +814,7 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
       // targets
       bool EmitLTOSummary =
           (CodeGenOpts.PrepareForLTO &&
+           !CodeGenOpts.DisableLLVMPasses &&
            llvm::Triple(TheModule->getTargetTriple()).getVendor() !=
                llvm::Triple::Apple);
       if (EmitLTOSummary && !TheModule->getModuleFlag("ThinLTO"))
@@ -1013,7 +1033,7 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     break;
 
   case Backend_EmitBC:
-    if (CodeGenOpts.PrepareForThinLTO) {
+    if (CodeGenOpts.PrepareForThinLTO && !CodeGenOpts.DisableLLVMPasses) {
       if (!CodeGenOpts.ThinLinkBitcodeFile.empty()) {
         ThinLinkOS = openOutputFile(CodeGenOpts.ThinLinkBitcodeFile);
         if (!ThinLinkOS)
@@ -1026,6 +1046,7 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
       // targets
       bool EmitLTOSummary =
           (CodeGenOpts.PrepareForLTO &&
+           !CodeGenOpts.DisableLLVMPasses &&
            llvm::Triple(TheModule->getTargetTriple()).getVendor() !=
                llvm::Triple::Apple);
       if (EmitLTOSummary && !TheModule->getModuleFlag("ThinLTO"))

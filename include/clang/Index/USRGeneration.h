@@ -16,6 +16,7 @@
 namespace clang {
 class Decl;
 class MacroDefinitionRecord;
+class Module;
 class SourceLocation;
 class SourceManager;
 
@@ -70,8 +71,24 @@ bool generateUSRForMacro(const MacroDefinitionRecord *MD,
 bool generateUSRForMacro(StringRef MacroName, SourceLocation Loc,
                          const SourceManager &SM, SmallVectorImpl<char> &Buf);
 
+/// Generate a USR for a module, including the USR prefix.
+/// \returns true on error, false on success.
+bool generateFullUSRForModule(const Module *Mod, raw_ostream &OS);
+
+/// Generate a USR for a top-level module name, including the USR prefix.
+/// \returns true on error, false on success.
+bool generateFullUSRForTopLevelModuleName(StringRef ModName, raw_ostream &OS);
+
+/// Generate a USR fragment for a module.
+/// \returns true on error, false on success.
+bool generateUSRFragmentForModule(const Module *Mod, raw_ostream &OS);
+
+/// Generate a USR fragment for a module name.
+/// \returns true on error, false on success.
+bool generateUSRFragmentForModuleName(StringRef ModName, raw_ostream &OS);
+
 } // namespace index
 } // namespace clang
 
-#endif // LLVM_CLANG_IDE_USRGENERATION_H
+#endif // LLVM_CLANG_INDEX_USRGENERATION_H
 
