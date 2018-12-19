@@ -56,7 +56,7 @@ enum ArgEffect {
 
   /// The argument has its reference count decreased by 1.  This is as
   /// if a -release message has been sent to the argument.  This differs
-  /// in behavior from DecRef when GC is enabled.
+  /// in behavior from DecRef when ARC is enabled.
   DecRefMsg,
 
   /// The argument has its reference count decreased by 1 to model
@@ -65,7 +65,7 @@ enum ArgEffect {
 
   /// The argument has its reference count increased by 1.  This is as
   /// if a -retain message has been sent to the argument.  This differs
-  /// in behavior from IncRef when GC is enabled.
+  /// in behavior from IncRef when ARC is enabled.
   IncRefMsg,
 
   /// The argument has its reference count increased by 1.  This is as
@@ -139,7 +139,7 @@ public:
     OwnedWhenTrackedReceiver,
     // Treat this function as returning a non-tracked symbol even if
     // the function has been inlined. This is used where the call
-    // site summary is more presise than the summary indirectly produced
+    // site summary is more precise than the summary indirectly produced
     // by inlining the function
     NoRetHard
   };
@@ -369,7 +369,11 @@ public:
   ///  This is only meaningful if the summary applies to an ObjCMessageExpr*.
   ArgEffect getReceiverEffect() const { return Receiver; }
 
+  /// \return the effect on the "this" receiver of the method call.
   ArgEffect getThisEffect() const { return This; }
+
+  /// Set the effect of the method on "this".
+  void setThisEffect(ArgEffect e) { This = e; }
 
   bool isNoop() const {
     return Ret == RetEffect::MakeNoRet() && Receiver == DoNothing
@@ -465,6 +469,8 @@ public:
   }
 };
 
+class RetainSummaryTemplate;
+
 class RetainSummaryManager {
   typedef llvm::DenseMap<const FunctionDecl*, const RetainSummary *>
           FuncSummariesTy;
@@ -479,7 +485,10 @@ class RetainSummaryManager {
   /// Records whether or not the analyzed code runs in ARC mode.
   const bool ARCEnabled;
 
-  /// Track sublcasses of OSObject
+  /// Track Objective-C and CoreFoundation objects.
+  const bool TrackObjCAndCFObjects;
+
+  /// Track sublcasses of OSObject.
   const bool TrackOSObjects;
 
   /// FuncSummaries - A map from FunctionDecls to summaries.
@@ -530,6 +539,8 @@ class RetainSummaryManager {
   /// Decrement the reference count on OS object.
   const RetainSummary *getOSSummaryReleaseRule(const FunctionDecl *FD);
 
+  /// Free the OS object.
+  const RetainSummary *getOSSummaryFreeRule(const FunctionDecl *FD);
 
   enum UnaryFuncKind { cfretain, cfrelease, cfautorelease, cfmakecollectable };
 
@@ -620,13 +631,36 @@ class RetainSummaryManager {
   const RetainSummary * generateSummary(const FunctionDecl *FD,
                                         bool &AllowAnnotations);
 
+  /// Return a summary for OSObject, or nullptr if not found.
+  const RetainSummary *getSummaryForOSObject(const FunctionDecl *FD,
+                                             StringRef FName, QualType RetTy);
+
+  /// Return a summary for Objective-C or CF object, or nullptr if not found.
+  const RetainSummary *getSummaryForObjCOrCFObject(
+    const FunctionDecl *FD,
+    StringRef FName,
+    QualType RetTy,
+    const FunctionType *FT,
+    bool &AllowAnnotations);
+
+  /// Apply the annotation of {@code pd} in function {@code FD}
+  /// to the resulting summary stored in out-parameter {@code Template}.
+  /// \return whether an annotation was applied.
+  bool applyFunctionParamAnnotationEffect(const ParmVarDecl *pd,
+                                        unsigned parm_idx,
+                                        const FunctionDecl *FD,
+                                        ArgEffects::Factory &AF,
+                                        RetainSummaryTemplate &Template);
+
 public:
   RetainSummaryManager(ASTContext &ctx,
                        bool usesARC,
-                       bool trackOSObject)
+                       bool trackObjCAndCFObjects,
+                       bool trackOSObjects)
    : Ctx(ctx),
      ARCEnabled(usesARC),
-     TrackOSObjects(trackOSObject),
+     TrackObjCAndCFObjects(trackObjCAndCFObjects),
+     TrackOSObjects(trackOSObjects),
      AF(BPAlloc), ScratchArgs(AF.getEmptyMap()),
      ObjCAllocRetE(usesARC ? RetEffect::MakeNotOwned(RetEffect::ObjC)
                                : RetEffect::MakeOwned(RetEffect::ObjC)),
@@ -636,9 +670,19 @@ public:
     InitializeMethodSummaries();
   }
 
-  bool canEval(const CallExpr *CE,
-               const FunctionDecl *FD,
-               bool &hasTrustedImplementationAnnotation);
+  enum class BehaviorSummary {
+    // Function does not return.
+    NoOp,
+
+    // Function returns the first argument.
+    Identity,
+
+    // Function either returns zero, or the input parameter.
+    IdentityOrZero
+  };
+
+  Optional<BehaviorSummary> canEval(const CallExpr *CE, const FunctionDecl *FD,
+                                    bool &hasTrustedImplementationAnnotation);
 
   bool isTrustedReferenceCountImplementation(const FunctionDecl *FD);
 
@@ -693,6 +737,7 @@ public:
   void updateSummaryFromAnnotations(const RetainSummary *&Summ,
                                     const FunctionDecl *FD);
 
+
   void updateSummaryForCall(const RetainSummary *&Summ,
                             const CallEvent &Call);
 
@@ -700,8 +745,20 @@ public:
 
   RetEffect getObjAllocRetEffect() const { return ObjCAllocRetE; }
 
+  /// \return True if the declaration has an attribute {@code T},
+  /// AND we are tracking that attribute. False otherwise.
+  template <class T>
+  bool hasEnabledAttr(const Decl *D) {
+    return isAttrEnabled<T>() && D->hasAttr<T>();
+  }
+
+  /// Check whether we are tracking properties specified by the attributes.
+  template <class T>
+  bool isAttrEnabled();
+
   friend class RetainSummaryTemplate;
 };
+
 
 // Used to avoid allocating long-term (BPAlloc'd) memory for default retain
 // summaries. If a function or method looks like it has a default summary, but

@@ -9,11 +9,12 @@ struct A {
 
 void test() {
   __block A a;
+  ^{ (void)a; };
 }
 
 // CHECK: !DISubprogram(name: "__Block_byref_object_copy_",
 // CHECK-SAME:          line: 11,
-// CHECK-SAME:          isLocal: true, isDefinition: true
+// CHECK-SAME:          DISPFlagLocalToUnit | DISPFlagDefinition
 // CHECK: !DISubprogram(name: "__Block_byref_object_dispose_",
 // CHECK-SAME:          line: 11,
-// CHECK-SAME:          isLocal: true, isDefinition: true
+// CHECK-SAME:          DISPFlagLocalToUnit | DISPFlagDefinition

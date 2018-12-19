@@ -124,6 +124,7 @@ public:
   void evalStdCopyBackward(CheckerContext &C, const CallExpr *CE) const;
   void evalStdCopyCommon(CheckerContext &C, const CallExpr *CE) const;
   void evalMemset(CheckerContext &C, const CallExpr *CE) const;
+  void evalBzero(CheckerContext &C, const CallExpr *CE) const;
 
   // Utility methods
   std::pair<ProgramStateRef , ProgramStateRef >
@@ -158,7 +159,7 @@ public:
   static bool SummarizeRegion(raw_ostream &os, ASTContext &Ctx,
                               const MemRegion *MR);
 
-  static bool memsetAux(const Expr *DstBuffer, const Expr *CharE,
+  static bool memsetAux(const Expr *DstBuffer, SVal CharE,
                         const Expr *Size, CheckerContext &C,
                         ProgramStateRef &State);
 
@@ -553,7 +554,8 @@ void CStringChecker::emitNullArgBug(CheckerContext &C, ProgramStateRef State,
     BuiltinBug *BT = static_cast<BuiltinBug *>(BT_Null.get());
     auto Report = llvm::make_unique<BugReport>(*BT, WarningMsg, N);
     Report->addRange(S->getSourceRange());
-    bugreporter::trackNullOrUndefValue(N, S, *Report);
+    if (const auto *Ex = dyn_cast<Expr>(S))
+      bugreporter::trackExpressionValue(N, Ex, *Report);
     C.emitReport(std::move(Report));
   }
 }
@@ -1004,11 +1006,10 @@ bool CStringChecker::SummarizeRegion(raw_ostream &os, ASTContext &Ctx,
   }
 }
 
-bool CStringChecker::memsetAux(const Expr *DstBuffer, const Expr *CharE,
+bool CStringChecker::memsetAux(const Expr *DstBuffer, SVal CharVal,
                                const Expr *Size, CheckerContext &C,
                                ProgramStateRef &State) {
   SVal MemVal = C.getSVal(DstBuffer);
-  SVal CharVal = C.getSVal(CharE);
   SVal SizeVal = C.getSVal(Size);
   const MemRegion *MR = MemVal.getAsRegion();
   if (!MR)
@@ -2183,10 +2184,56 @@ void CStringChecker::evalMemset(CheckerContext &C, const CallExpr *CE) const {
   // According to the values of the arguments, bind the value of the second
   // argument to the destination buffer and set string length, or just
   // invalidate the destination buffer.
-  if (!memsetAux(Mem, CharE, Size, C, State))
+  if (!memsetAux(Mem, C.getSVal(CharE), Size, C, State))
     return;
 
   State = State->BindExpr(CE, LCtx, MemVal);
+  C.addTransition(State);
+}
+
+void CStringChecker::evalBzero(CheckerContext &C, const CallExpr *CE) const {
+  if (CE->getNumArgs() != 2)
+    return;
+
+  CurrentFunctionDescription = "memory clearance function";
+
+  const Expr *Mem = CE->getArg(0);
+  const Expr *Size = CE->getArg(1);
+  SVal Zero = C.getSValBuilder().makeZeroVal(C.getASTContext().IntTy);
+
+  ProgramStateRef State = C.getState();
+  
+  // See if the size argument is zero.
+  SVal SizeVal = C.getSVal(Size);
+  QualType SizeTy = Size->getType();
+
+  ProgramStateRef StateZeroSize, StateNonZeroSize;
+  std::tie(StateZeroSize, StateNonZeroSize) =
+    assumeZero(C, State, SizeVal, SizeTy);
+
+  // If the size is zero, there won't be any actual memory access,
+  // In this case we just return.
+  if (StateZeroSize && !StateNonZeroSize) {
+    C.addTransition(StateZeroSize);
+    return;
+  }
+
+  // Get the value of the memory area.
+  SVal MemVal = C.getSVal(Mem);
+
+  // Ensure the memory area is not null.
+  // If it is NULL there will be a NULL pointer dereference.
+  State = checkNonNull(C, StateNonZeroSize, Mem, MemVal);
+  if (!State)
+    return;
+
+  State = CheckBufferAccess(C, State, Size, Mem);
+  if (!State)
+    return;
+
+  if (!memsetAux(Mem, Zero, Size, C, State))
+    return;
+
   C.addTransition(State);
 }
 
@@ -2223,7 +2270,8 @@ bool CStringChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
     evalFunction =  &CStringChecker::evalMemcmp;
   else if (C.isCLibraryFunction(FDecl, "memmove"))
     evalFunction =  &CStringChecker::evalMemmove;
-  else if (C.isCLibraryFunction(FDecl, "memset"))
+  else if (C.isCLibraryFunction(FDecl, "memset") || 
+    C.isCLibraryFunction(FDecl, "explicit_memset"))
     evalFunction =  &CStringChecker::evalMemset;
   else if (C.isCLibraryFunction(FDecl, "strcpy"))
     evalFunction =  &CStringChecker::evalStrcpy;
@@ -2261,6 +2309,9 @@ bool CStringChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
     evalFunction =  &CStringChecker::evalStdCopy;
   else if (isCPPStdLibraryFunction(FDecl, "copy_backward"))
     evalFunction =  &CStringChecker::evalStdCopyBackward;
+  else if (C.isCLibraryFunction(FDecl, "bzero") ||
+    C.isCLibraryFunction(FDecl, "explicit_bzero"))
+    evalFunction =  &CStringChecker::evalBzero;
 
   // If the callee isn't a string function, let another checker handle it.
   if (!evalFunction)
@@ -2384,9 +2435,6 @@ void CStringChecker::checkLiveSymbols(ProgramStateRef state,
 
 void CStringChecker::checkDeadSymbols(SymbolReaper &SR,
     CheckerContext &C) const {
-  if (!SR.hasDeadSymbols())
-    return;
-
   ProgramStateRef state = C.getState();
   CStringLengthTy Entries = state->get<CStringLength>();
   if (Entries.isEmpty())

@@ -10,8 +10,10 @@
 #ifndef LLVM_CLANG_DRIVER_TOOLCHAIN_H
 #define LLVM_CLANG_DRIVER_TOOLCHAIN_H
 
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/Sanitizers.h"
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Multilib.h"
 #include "clang/Driver/Types.h"
@@ -36,17 +38,16 @@ class ArgList;
 class DerivedArgList;
 
 } // namespace opt
-} // namespace llvm
-
-namespace clang {
-
-class ObjCRuntime;
-
 namespace vfs {
 
 class FileSystem;
 
 } // namespace vfs
+} // namespace llvm
+
+namespace clang {
+
+class ObjCRuntime;
 
 namespace driver {
 
@@ -183,7 +184,7 @@ public:
   // Accessors
 
   const Driver &getDriver() const { return D; }
-  vfs::FileSystem &getVFS() const;
+  llvm::vfs::FileSystem &getVFS() const;
   const llvm::Triple &getTriple() const { return Triple; }
 
   /// Get the toolchain's aux triple, if it has one.
@@ -381,6 +382,9 @@ public:
   /// needsProfileRT - returns true if instrumentation profile is on.
   static bool needsProfileRT(const llvm::opt::ArgList &Args);
 
+  /// Returns true if gcov instrumentation (-fprofile-arcs or --coverage) is on.
+  static bool needsGCovInstrumentation(const llvm::opt::ArgList &Args);
+
   /// IsUnwindTablesDefault - Does this tool chain use -funwind-tables
   /// by default.
   virtual bool IsUnwindTablesDefault(const llvm::opt::ArgList &Args) const;
@@ -402,6 +406,11 @@ public:
 
   /// Complain if this tool chain doesn't support Objective-C ARC.
   virtual void CheckObjCARC() const {}
+
+  /// Get the default debug info format. Typically, this is DWARF.
+  virtual codegenoptions::DebugInfoFormat getDefaultDebugFormat() const {
+    return codegenoptions::DIF_DWARF;
+  }
 
   /// UseDwarfDebugFlags - Embed the compile options to clang into the Dwarf
   /// compile unit information.
@@ -426,6 +435,10 @@ public:
   virtual bool supportsDebugInfoOption(const llvm::opt::Arg *) const {
     return true;
   }
+
+  /// Adjust debug information kind considering all passed options.
+  virtual void adjustDebugInfoKind(codegenoptions::DebugInfoKind &DebugInfoKind,
+                                   const llvm::opt::ArgList &Args) const {}
 
   /// GetExceptionModel - Return the tool chain exception model.
   virtual llvm::ExceptionHandling

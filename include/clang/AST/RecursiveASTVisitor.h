@@ -176,6 +176,16 @@ public:
   /// Return whether this visitor should traverse post-order.
   bool shouldTraversePostOrder() const { return false; }
 
+  /// Recursively visits an entire AST, starting from the top-level Decls
+  /// in the AST traversal scope (by default, the TranslationUnitDecl).
+  /// \returns false if visitation was terminated early.
+  bool TraverseAST(ASTContext &AST) {
+    for (Decl *D : AST.getTraversalScope())
+      if (!getDerived().TraverseDecl(D))
+        return false;
+    return true;
+  }
+
   /// Recursively visit a statement or expression, by
   /// dispatching to Traverse*() based on the argument's dynamic type.
   ///
@@ -2199,6 +2209,8 @@ DEF_TRAVERSE_STMT(ReturnStmt, {})
 DEF_TRAVERSE_STMT(SwitchStmt, {})
 DEF_TRAVERSE_STMT(WhileStmt, {})
 
+DEF_TRAVERSE_STMT(ConstantExpr, {})
+
 DEF_TRAVERSE_STMT(CXXDependentScopeMemberExpr, {
   TRY_TO(TraverseNestedNameSpecifierLoc(S->getQualifierLoc()));
   TRY_TO(TraverseDeclarationNameInfo(S->getMemberNameInfo()));
@@ -2864,6 +2876,30 @@ bool RecursiveASTVisitor<Derived>::VisitOMPProcBindClause(OMPProcBindClause *) {
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPUnifiedAddressClause(
     OMPUnifiedAddressClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPUnifiedSharedMemoryClause(
+    OMPUnifiedSharedMemoryClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPReverseOffloadClause(
+    OMPReverseOffloadClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPDynamicAllocatorsClause(
+    OMPDynamicAllocatorsClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPAtomicDefaultMemOrderClause(
+    OMPAtomicDefaultMemOrderClause *) {
   return true;
 }
 

@@ -675,7 +675,7 @@ Optional<TemplateDeductionInfo *> Sema::isSFINAEContext() const {
       // context, depending on what else is on the stack.
       if (isa<TypeAliasTemplateDecl>(Active->Entity))
         break;
-      // Fall through.
+      LLVM_FALLTHROUGH;
     case CodeSynthesisContext::DefaultFunctionArgumentInstantiation:
     case CodeSynthesisContext::ExceptionSpecInstantiation:
       // This is a template instantiation, so there is no SFINAE.
@@ -907,7 +907,7 @@ namespace {
     QualType TransformFunctionProtoType(TypeLocBuilder &TLB,
                                         FunctionProtoTypeLoc TL,
                                         CXXRecordDecl *ThisContext,
-                                        unsigned ThisTypeQuals,
+                                        Qualifiers ThisTypeQuals,
                                         Fn TransformExceptionSpec);
 
     ParmVarDecl *TransformFunctionTypeParam(ParmVarDecl *OldParm,
@@ -1167,7 +1167,7 @@ TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E) {
   if (!E->isTypeDependent())
     return E;
 
-  return getSema().BuildPredefinedExpr(E->getLocation(), E->getIdentType());
+  return getSema().BuildPredefinedExpr(E->getLocation(), E->getIdentKind());
 }
 
 ExprResult
@@ -1427,7 +1427,7 @@ template<typename Fn>
 QualType TemplateInstantiator::TransformFunctionProtoType(TypeLocBuilder &TLB,
                                  FunctionProtoTypeLoc TL,
                                  CXXRecordDecl *ThisContext,
-                                 unsigned ThisTypeQuals,
+                                 Qualifiers ThisTypeQuals,
                                  Fn TransformExceptionSpec) {
   // We need a local instantiation scope for this function prototype.
   LocalInstantiationScope Scope(SemaRef, /*CombineWithOuterScope=*/true);
@@ -1666,7 +1666,7 @@ TypeSourceInfo *Sema::SubstFunctionDeclType(TypeSourceInfo *T,
                                 SourceLocation Loc,
                                 DeclarationName Entity,
                                 CXXRecordDecl *ThisContext,
-                                unsigned ThisTypeQuals) {
+                                Qualifiers ThisTypeQuals) {
   assert(!CodeSynthesisContexts.empty() &&
          "Cannot perform an instantiation without some context on the "
          "instantiation stack");
@@ -2148,7 +2148,7 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
     NamedDecl *ND = dyn_cast<NamedDecl>(I->NewDecl);
     CXXRecordDecl *ThisContext =
         dyn_cast_or_null<CXXRecordDecl>(ND->getDeclContext());
-    CXXThisScopeRAII ThisScope(*this, ThisContext, /*TypeQuals*/0,
+    CXXThisScopeRAII ThisScope(*this, ThisContext, Qualifiers(),
                                ND && ND->isCXXInstanceMember());
 
     Attr *NewAttr =
@@ -2343,7 +2343,7 @@ bool Sema::InstantiateInClassInitializer(
 
   // Instantiate the initializer.
   ActOnStartCXXInClassMemberInitializer();
-  CXXThisScopeRAII ThisScope(*this, Instantiation->getParent(), /*TypeQuals=*/0);
+  CXXThisScopeRAII ThisScope(*this, Instantiation->getParent(), Qualifiers());
 
   ExprResult NewInit = SubstInitializer(OldInit, TemplateArgs,
                                         /*CXXDirectInit=*/false);
@@ -2574,10 +2574,14 @@ Sema::InstantiateClassMembers(SourceLocation PointOfInstantiation,
   for (auto *D : Instantiation->decls()) {
     bool SuppressNew = false;
     if (auto *Function = dyn_cast<FunctionDecl>(D)) {
-      if (FunctionDecl *Pattern
-            = Function->getInstantiatedFromMemberFunction()) {
-        MemberSpecializationInfo *MSInfo
-          = Function->getMemberSpecializationInfo();
+      if (FunctionDecl *Pattern =
+              Function->getInstantiatedFromMemberFunction()) {
+
+        if (Function->hasAttr<ExcludeFromExplicitInstantiationAttr>())
+          continue;
+
+        MemberSpecializationInfo *MSInfo =
+            Function->getMemberSpecializationInfo();
         assert(MSInfo && "No member specialization information?");
         if (MSInfo->getTemplateSpecializationKind()
                                                  == TSK_ExplicitSpecialization)
@@ -2618,6 +2622,9 @@ Sema::InstantiateClassMembers(SourceLocation PointOfInstantiation,
         continue;
 
       if (Var->isStaticDataMember()) {
+        if (Var->hasAttr<ExcludeFromExplicitInstantiationAttr>())
+          continue;
+
         MemberSpecializationInfo *MSInfo = Var->getMemberSpecializationInfo();
         assert(MSInfo && "No member specialization information?");
         if (MSInfo->getTemplateSpecializationKind()
@@ -2649,6 +2656,9 @@ Sema::InstantiateClassMembers(SourceLocation PointOfInstantiation,
         }
       }
     } else if (auto *Record = dyn_cast<CXXRecordDecl>(D)) {
+      if (Record->hasAttr<ExcludeFromExplicitInstantiationAttr>())
+        continue;
+
       // Always skip the injected-class-name, along with any
       // redeclarations of nested classes, since both would cause us
       // to try to instantiate the members of a class twice.

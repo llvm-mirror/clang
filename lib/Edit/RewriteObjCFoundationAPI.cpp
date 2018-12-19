@@ -1078,13 +1078,16 @@ static bool rewriteToNumericBoxedExpression(const ObjCMessageExpr *Msg,
     case CK_NonAtomicToAtomic:
     case CK_CopyAndAutoreleaseBlockObject:
     case CK_BuiltinFnToFnPtr:
-    case CK_ZeroToOCLEvent:
-    case CK_ZeroToOCLQueue:
+    case CK_ZeroToOCLOpaqueType:
     case CK_IntToOCLSampler:
       return false;
 
     case CK_BooleanToSignedIntegral:
       llvm_unreachable("OpenCL-specific cast in Objective-C?");
+
+    case CK_FixedPointCast:
+    case CK_FixedPointToBoolean:
+      llvm_unreachable("Fixed point types are disabled for Objective-C");
     }
   }
 

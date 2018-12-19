@@ -1519,6 +1519,9 @@ bool CursorVisitor::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
   case BuiltinType::Id:
 #include "clang/Basic/OpenCLImageTypes.def"
+#define EXT_OPAQUE_TYPE(ExtTYpe, Id, Ext) \
+  case BuiltinType::Id:
+#include "clang/Basic/OpenCLExtensionTypes.def"
   case BuiltinType::OCLSampler:
   case BuiltinType::OCLEvent:
   case BuiltinType::OCLClkEvent:
@@ -2209,6 +2212,18 @@ void OMPClauseEnqueue::VisitOMPNogroupClause(const OMPNogroupClause *) {}
 
 void OMPClauseEnqueue::VisitOMPUnifiedAddressClause(
     const OMPUnifiedAddressClause *) {}
+
+void OMPClauseEnqueue::VisitOMPUnifiedSharedMemoryClause(
+    const OMPUnifiedSharedMemoryClause *) {}
+
+void OMPClauseEnqueue::VisitOMPReverseOffloadClause(
+    const OMPReverseOffloadClause *) {}
+
+void OMPClauseEnqueue::VisitOMPDynamicAllocatorsClause(
+    const OMPDynamicAllocatorsClause *) {}
+
+void OMPClauseEnqueue::VisitOMPAtomicDefaultMemOrderClause(
+    const OMPAtomicDefaultMemOrderClause *) {}
 
 void OMPClauseEnqueue::VisitOMPDeviceClause(const OMPDeviceClause *C) {
   Visitor->AddStmt(C->getDevice());
@@ -6925,7 +6940,7 @@ AnnotateTokensWorker::DetermineChildActions(CXCursor Cursor) const {
     if (const ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(Callee)) {
       const Expr *SubExpr = ICE->getSubExpr();
       if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
-        const Decl *parentDecl = getCursorParentDecl(Cursor);
+        const Decl *parentDecl = getCursorDecl(Cursor);
         CXTranslationUnit TU = clang_Cursor_getTranslationUnit(Cursor);
 
         // Visit the DeclRefExpr as last.
@@ -7148,7 +7163,7 @@ AnnotateTokensWorker::Visit(CXCursor cursor, CXCursor parent) {
   //  MyCXXClass foo; // Make sure we don't annotate 'foo' as a CallExpr cursor.
   if (clang_isExpression(cursorK) && MoreTokens()) {
     const Expr *E = getCursorExpr(cursor);
-    if (const Decl *D = getCursorParentDecl(cursor)) {
+    if (const Decl *D = getCursorDecl(cursor)) {
       const unsigned I = NextToken();
       if (E->getBeginLoc().isValid() && D->getLocation().isValid() &&
           E->getBeginLoc() == D->getLocation() &&
@@ -8355,7 +8370,7 @@ unsigned clang_CXXMethod_isConst(CXCursor C) {
   const Decl *D = cxcursor::getCursorDecl(C);
   const CXXMethodDecl *Method =
       D ? dyn_cast_or_null<CXXMethodDecl>(D->getAsFunction()) : nullptr;
-  return (Method && (Method->getTypeQualifiers() & Qualifiers::Const)) ? 1 : 0;
+  return (Method && Method->getTypeQualifiers().hasConst()) ? 1 : 0;
 }
 
 unsigned clang_CXXMethod_isDefaulted(CXCursor C) {

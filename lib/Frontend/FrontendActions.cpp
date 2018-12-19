@@ -92,12 +92,6 @@ ASTViewAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
 }
 
 std::unique_ptr<ASTConsumer>
-DeclContextPrintAction::CreateASTConsumer(CompilerInstance &CI,
-                                          StringRef InFile) {
-  return CreateDeclContextPrinter();
-}
-
-std::unique_ptr<ASTConsumer>
 GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   std::string Sysroot;
   if (!ComputeASTConsumerArguments(CI, /*ref*/ Sysroot))
@@ -754,16 +748,6 @@ void DumpTokensAction::ExecuteAction() {
     PP.DumpToken(Tok, true);
     llvm::errs() << "\n";
   } while (Tok.isNot(tok::eof));
-}
-
-void GeneratePTHAction::ExecuteAction() {
-  CompilerInstance &CI = getCompilerInstance();
-  std::unique_ptr<raw_pwrite_stream> OS =
-      CI.createDefaultOutputFile(true, getCurrentFile());
-  if (!OS)
-    return;
-
-  CacheTokens(CI.getPreprocessor(), OS.get());
 }
 
 void PreprocessOnlyAction::ExecuteAction() {

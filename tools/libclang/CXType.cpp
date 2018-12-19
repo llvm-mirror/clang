@@ -70,6 +70,8 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) BTCASE(Id);
 #include "clang/Basic/OpenCLImageTypes.def"
 #undef IMAGE_TYPE
+#define EXT_OPAQUE_TYPE(ExtType, Id, Ext) BTCASE(Id);
+#include "clang/Basic/OpenCLExtensionTypes.def"
     BTCASE(OCLSampler);
     BTCASE(OCLEvent);
     BTCASE(OCLQueue);
@@ -136,7 +138,7 @@ CXType cxtype::MakeCXType(QualType T, CXTranslationUnit TU) {
     }
 
     ASTContext &Ctx = cxtu::getASTUnit(TU)->getASTContext();
-    if (Ctx.getLangOpts().ObjC1) {
+    if (Ctx.getLangOpts().ObjC) {
       QualType UnqualT = T.getUnqualifiedType();
       if (Ctx.isObjCIdType(UnqualT))
         TK = CXType_ObjCId;
@@ -605,6 +607,8 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) TKIND(Id);
 #include "clang/Basic/OpenCLImageTypes.def"
 #undef IMAGE_TYPE
+#define EXT_OPAQUE_TYPE(ExtTYpe, Id, Ext) TKIND(Id);
+#include "clang/Basic/OpenCLExtensionTypes.def"
     TKIND(OCLSampler);
     TKIND(OCLEvent);
     TKIND(OCLQueue);
@@ -647,6 +651,7 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
       TCALLINGCONV(X86Pascal);
       TCALLINGCONV(X86RegCall);
       TCALLINGCONV(X86VectorCall);
+      TCALLINGCONV(AArch64VectorCall);
       TCALLINGCONV(Win64);
       TCALLINGCONV(X86_64SysV);
       TCALLINGCONV(AAPCS);

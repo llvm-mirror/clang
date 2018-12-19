@@ -503,10 +503,14 @@ static void addParameterValuesToBindings(const StackFrameContext *CalleeCtx,
     const ParmVarDecl *ParamDecl = *I;
     assert(ParamDecl && "Formal parameter has no decl?");
 
+    // TODO: Support allocator calls.
     if (Call.getKind() != CE_CXXAllocator)
       if (Call.isArgumentConstructedDirectly(Idx))
         continue;
 
+    // TODO: Allocators should receive the correct size and possibly alignment,
+    // determined in compile-time but not represented as arg-expressions,
+    // which makes getArgSVal() fail and return UnknownVal.
     SVal ArgVal = Call.getArgSVal(Idx);
     if (!ArgVal.isUnknown()) {
       Loc ParamLoc = SVB.makeLoc(MRMgr.getVarRegion(ParamDecl, CalleeCtx));
@@ -550,13 +554,14 @@ RuntimeDefinition AnyFunctionCall::getRuntimeDefinition() const {
   AnalyzerOptions &Opts = Engine->getAnalysisManager().options;
 
   // Try to get CTU definition only if CTUDir is provided.
-  if (!Opts.naiveCTUEnabled())
+  if (!Opts.IsNaiveCTUEnabled)
     return {};
 
   cross_tu::CrossTranslationUnitContext &CTUCtx =
       *Engine->getCrossTranslationUnitContext();
   llvm::Expected<const FunctionDecl *> CTUDeclOrError =
-      CTUCtx.getCrossTUDefinition(FD, Opts.getCTUDir(), Opts.getCTUIndexName());
+      CTUCtx.getCrossTUDefinition(FD, Opts.CTUDir, Opts.CTUIndexName,
+                                  Opts.DisplayCTUProgress);
 
   if (!CTUDeclOrError) {
     handleAllErrors(CTUDeclOrError.takeError(),

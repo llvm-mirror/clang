@@ -188,7 +188,7 @@ void WalkAST::VisitForStmt(ForStmt *FS) {
 }
 
 //===----------------------------------------------------------------------===//
-// Check: floating poing variable used as loop counter.
+// Check: floating point variable used as loop counter.
 // Originally: <rdar://problem/6336718>
 // Implements: CERT security coding advisory FLP-30.
 //===----------------------------------------------------------------------===//
@@ -597,9 +597,10 @@ void WalkAST::checkCall_mkstemp(const CallExpr *CE, const FunctionDecl *FD) {
   unsigned suffix = 0;
   if (ArgSuffix.second >= 0) {
     const Expr *suffixEx = CE->getArg((unsigned)ArgSuffix.second);
-    llvm::APSInt Result;
-    if (!suffixEx->EvaluateAsInt(Result, BR.getContext()))
+    Expr::EvalResult EVResult;
+    if (!suffixEx->EvaluateAsInt(EVResult, BR.getContext()))
       return;
+    llvm::APSInt Result = EVResult.Val.getInt();
     // FIXME: Issue a warning.
     if (Result.isNegative())
       return;

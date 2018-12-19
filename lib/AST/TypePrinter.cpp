@@ -801,10 +801,8 @@ void TypePrinter::printFunctionProtoAfter(const FunctionProtoType *T,
 
   printFunctionAfter(Info, OS);
 
-  if (unsigned quals = T->getTypeQuals()) {
-    OS << ' ';
-    AppendTypeQualList(OS, quals, Policy.Restrict);
-  }
+  if (!T->getTypeQuals().empty())
+    OS << " " << T->getTypeQuals().getAsString();
 
   switch (T->getRefQualifier()) {
   case RQ_None:
@@ -860,6 +858,9 @@ void TypePrinter::printFunctionAfter(const FunctionType::ExtInfo &Info,
       break;
     case CC_AAPCS_VFP:
       OS << " __attribute__((pcs(\"aapcs-vfp\")))";
+      break;
+    case CC_AArch64VectorCall:
+      OS << "__attribute__((aarch64_vector_pcs))";
       break;
     case CC_IntelOclBicc:
       OS << " __attribute__((intel_ocl_bicc))";
@@ -1154,9 +1155,13 @@ void TypePrinter::printTag(TagDecl *D, raw_ostream &OS) {
       PresumedLoc PLoc = D->getASTContext().getSourceManager().getPresumedLoc(
           D->getLocation());
       if (PLoc.isValid()) {
-        OS << " at " << PLoc.getFilename()
-           << ':' << PLoc.getLine()
-           << ':' << PLoc.getColumn();
+        OS << " at ";
+        StringRef File = PLoc.getFilename();
+        if (Policy.RemapFilePaths)
+          OS << Policy.remapPath(File);
+        else
+          OS << File;
+        OS << ':' << PLoc.getLine() << ':' << PLoc.getColumn();
       }
     }
 
@@ -1492,7 +1497,7 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
    OS << ')';
    break;
   }
-
+  case attr::AArch64VectorPcs: OS << "aarch64_vector_pcs"; break;
   case attr::IntelOclBicc: OS << "inteloclbicc"; break;
   case attr::PreserveMost:
     OS << "preserve_most";
@@ -1500,6 +1505,9 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
 
   case attr::PreserveAll:
     OS << "preserve_all";
+    break;
+  case attr::NoDeref:
+    OS << "noderef";
     break;
   }
   OS << "))";

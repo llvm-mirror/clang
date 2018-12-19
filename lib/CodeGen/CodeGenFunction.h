@@ -29,9 +29,9 @@
 #include "clang/AST/Type.h"
 #include "clang/Basic/ABI.h"
 #include "clang/Basic/CapturedStmt.h"
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
@@ -1197,6 +1197,8 @@ public:
 
 private:
   CGDebugInfo *DebugInfo;
+  /// Used to create unique names for artificial VLA size debug info variables.
+  unsigned VLAExprCounter = 0;
   bool DisableDebugInfo = false;
 
   /// DidCallStackSave - Whether llvm.stacksave has been called. Used to avoid
@@ -1787,7 +1789,7 @@ public:
                                 llvm::Value *ptr);
 
   Address LoadBlockStruct();
-  Address GetAddrOfBlockDecl(const VarDecl *var, bool ByRef);
+  Address GetAddrOfBlockDecl(const VarDecl *var);
 
   /// BuildBlockByrefAddress - Computes the location of the
   /// data in a variable which is declared as __block.
@@ -1825,7 +1827,7 @@ public:
   void EmitConstructorBody(FunctionArgList &Args);
   void EmitDestructorBody(FunctionArgList &Args);
   void emitImplicitAssignmentOperatorBody(FunctionArgList &Args);
-  void EmitFunctionBody(FunctionArgList &Args, const Stmt *Body);
+  void EmitFunctionBody(const Stmt *Body);
   void EmitBlockWithFallThrough(llvm::BasicBlock *BB, const Stmt *S);
 
   void EmitForwardingCallToLambda(const CXXMethodDecl *LambdaCallOperator,
@@ -1854,7 +1856,7 @@ public:
   void FinishThunk();
 
   /// Emit a musttail call for a thunk with a potentially adjusted this pointer.
-  void EmitMustTailThunk(const CXXMethodDecl *MD, llvm::Value *AdjustedThisPtr,
+  void EmitMustTailThunk(GlobalDecl GD, llvm::Value *AdjustedThisPtr,
                          llvm::Value *Callee);
 
   /// Generate a thunk for the given method.
@@ -2683,8 +2685,9 @@ public:
 
     llvm::Value *NRVOFlag;
 
-    /// True if the variable is a __block variable.
-    bool IsByRef;
+    /// True if the variable is a __block variable that is captured by an
+    /// escaping block.
+    bool IsEscapingByRef;
 
     /// True if the variable is of aggregate type and has a constant
     /// initializer.
@@ -2704,7 +2707,7 @@ public:
 
     AutoVarEmission(const VarDecl &variable)
         : Variable(&variable), Addr(Address::invalid()), NRVOFlag(nullptr),
-          IsByRef(false), IsConstantAggregate(false),
+          IsEscapingByRef(false), IsConstantAggregate(false),
           SizeForLifetimeMarkers(nullptr), AllocaAddr(Address::invalid()) {}
 
     bool wasEmittedAsGlobal() const { return !Addr.isValid(); }
@@ -2734,7 +2737,7 @@ public:
     /// Note that this does not chase the forwarding pointer for
     /// __block decls.
     Address getObjectAddress(CodeGenFunction &CGF) const {
-      if (!IsByRef) return Addr;
+      if (!IsEscapingByRef) return Addr;
 
       return CGF.emitBlockByrefAddress(Addr, Variable, /*forward*/ false);
     }
@@ -3523,6 +3526,7 @@ public:
 
   ConstantEmission tryEmitAsConstant(DeclRefExpr *refExpr);
   ConstantEmission tryEmitAsConstant(const MemberExpr *ME);
+  llvm::Value *emitScalarConstant(const ConstantEmission &Constant, Expr *E);
 
   RValue EmitPseudoObjectRValue(const PseudoObjectExpr *e,
                                 AggValueSlot slot = AggValueSlot::ignored());
@@ -3677,9 +3681,8 @@ public:
   RValue EmitNVPTXDevicePrintfCallExpr(const CallExpr *E,
                                        ReturnValueSlot ReturnValue);
 
-  RValue EmitBuiltinExpr(const FunctionDecl *FD,
-                         unsigned BuiltinID, const CallExpr *E,
-                         ReturnValueSlot ReturnValue);
+  RValue EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
+                         const CallExpr *E, ReturnValueSlot ReturnValue);
 
   RValue emitRotate(const CallExpr *E, bool IsRotateRight);
 
@@ -3802,6 +3805,10 @@ public:
   std::pair<LValue,llvm::Value*>
   EmitARCStoreUnsafeUnretained(const BinaryOperator *e, bool ignored);
 
+  llvm::Value *EmitObjCAlloc(llvm::Value *value,
+                             llvm::Type *returnType);
+  llvm::Value *EmitObjCAllocWithZone(llvm::Value *value,
+                                     llvm::Type *returnType);
   llvm::Value *EmitObjCThrowOperand(const Expr *expr);
   llvm::Value *EmitObjCConsumeObject(QualType T, llvm::Value *Ptr);
   llvm::Value *EmitObjCExtendObjectLifetime(QualType T, llvm::Value *Ptr);
@@ -3891,6 +3898,8 @@ public:
   AddInitializerToStaticVarDecl(const VarDecl &D,
                                 llvm::GlobalVariable *GV);
 
+  // Emit an @llvm.invariant.start call for the given memory region.
+  void EmitInvariantStart(llvm::Constant *Addr, CharUnits Size);
 
   /// EmitCXXGlobalVarDeclInit - Create the initializer for a C++
   /// variable with global storage.
@@ -3926,9 +3935,10 @@ public:
 
   /// GenerateCXXGlobalInitFunc - Generates code for initializing global
   /// variables.
-  void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
-                                 ArrayRef<llvm::Function *> CXXThreadLocals,
-                                 Address Guard = Address::invalid());
+  void
+  GenerateCXXGlobalInitFunc(llvm::Function *Fn,
+                            ArrayRef<llvm::Function *> CXXThreadLocals,
+                            ConstantAddress Guard = ConstantAddress::invalid());
 
   /// GenerateCXXGlobalDtorsFunc - Generates code for destroying global
   /// variables.
@@ -3946,11 +3956,13 @@ public:
 
   void EmitSynthesizedCXXCopyCtor(Address Dest, Address Src, const Expr *Exp);
 
-  void enterFullExpression(const ExprWithCleanups *E) {
-    if (E->getNumObjects() == 0) return;
+  void enterFullExpression(const FullExpr *E) {
+    if (const auto *EWC = dyn_cast<ExprWithCleanups>(E))
+      if (EWC->getNumObjects() == 0)
+        return;
     enterNonTrivialFullExpression(E);
   }
-  void enterNonTrivialFullExpression(const ExprWithCleanups *E);
+  void enterNonTrivialFullExpression(const FullExpr *E);
 
   void EmitCXXThrowExpr(const CXXThrowExpr *E, bool KeepInsertionPoint = true);
 
@@ -4273,6 +4285,7 @@ public:
 
   struct MultiVersionResolverOption {
     llvm::Function *Function;
+    FunctionDecl *FD;
     struct Conds {
       StringRef Architecture;
       llvm::SmallVector<StringRef, 8> Features;
@@ -4292,22 +4305,7 @@ public:
   void EmitMultiVersionResolver(llvm::Function *Resolver,
                                 ArrayRef<MultiVersionResolverOption> Options);
 
-  struct CPUDispatchMultiVersionResolverOption {
-    llvm::Function *Function;
-    // Note: EmitX86CPUSupports only has 32 bits available, so we store the mask
-    // as 32 bits here.  When 64-bit support is added to __builtin_cpu_supports,
-    // this can be extended to 64 bits.
-    uint32_t FeatureMask;
-    CPUDispatchMultiVersionResolverOption(llvm::Function *F, uint64_t Mask)
-        : Function(F), FeatureMask(static_cast<uint32_t>(Mask)) {}
-    bool operator>(const CPUDispatchMultiVersionResolverOption &Other) const {
-      return FeatureMask > Other.FeatureMask;
-    }
-  };
-  void EmitCPUDispatchMultiVersionResolver(
-      llvm::Function *Resolver,
-      ArrayRef<CPUDispatchMultiVersionResolverOption> Options);
-  static uint32_t GetX86CpuSupportsMask(ArrayRef<StringRef> FeatureStrs);
+  static uint64_t GetX86CpuSupportsMask(ArrayRef<StringRef> FeatureStrs);
 
 private:
   QualType getVarArgType(const Expr *Arg);
@@ -4324,7 +4322,7 @@ private:
   llvm::Value *EmitX86CpuIs(StringRef CPUStr);
   llvm::Value *EmitX86CpuSupports(const CallExpr *E);
   llvm::Value *EmitX86CpuSupports(ArrayRef<StringRef> FeatureStrs);
-  llvm::Value *EmitX86CpuSupports(uint32_t Mask);
+  llvm::Value *EmitX86CpuSupports(uint64_t Mask);
   llvm::Value *EmitX86CpuInit();
   llvm::Value *FormResolverCondition(const MultiVersionResolverOption &RO);
 };

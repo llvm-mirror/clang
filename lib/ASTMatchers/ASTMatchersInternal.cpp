@@ -144,10 +144,10 @@ DynTypedMatcher DynTypedMatcher::constructVariadic(
     ast_type_traits::ASTNodeKind SupportedKind,
     std::vector<DynTypedMatcher> InnerMatchers) {
   assert(!InnerMatchers.empty() && "Array must not be empty.");
-  assert(std::all_of(InnerMatchers.begin(), InnerMatchers.end(),
-                     [SupportedKind](const DynTypedMatcher &M) {
-                       return M.canConvertTo(SupportedKind);
-                     }) &&
+  assert(llvm::all_of(InnerMatchers,
+                      [SupportedKind](const DynTypedMatcher &M) {
+                        return M.canConvertTo(SupportedKind);
+                      }) &&
          "InnerMatchers must be convertible to SupportedKind!");
 
   // We must relax the restrict kind here.
@@ -449,7 +449,7 @@ bool HasNameMatcher::matchesNodeUnqualified(const NamedDecl &Node) const {
   assert(UseUnqualifiedMatch);
   llvm::SmallString<128> Scratch;
   StringRef NodeName = getNodeName(Node, Scratch);
-  return std::any_of(Names.begin(), Names.end(), [&](StringRef Name) {
+  return llvm::any_of(Names, [&](StringRef Name) {
     return consumeNameSuffix(Name, NodeName) && Name.empty();
   });
 }
@@ -666,6 +666,7 @@ const internal::VariadicDynCastAllOfMatcher<Decl, UnresolvedUsingValueDecl>
     unresolvedUsingValueDecl;
 const internal::VariadicDynCastAllOfMatcher<Decl, UnresolvedUsingTypenameDecl>
     unresolvedUsingTypenameDecl;
+const internal::VariadicDynCastAllOfMatcher<Stmt, ConstantExpr> constantExpr;
 const internal::VariadicDynCastAllOfMatcher<Stmt, ParenExpr> parenExpr;
 const internal::VariadicDynCastAllOfMatcher<Stmt, CXXConstructExpr>
     cxxConstructExpr;
@@ -687,6 +688,7 @@ const internal::VariadicDynCastAllOfMatcher<Stmt, CXXOperatorCallExpr>
 const internal::VariadicDynCastAllOfMatcher<Stmt, Expr> expr;
 const internal::VariadicDynCastAllOfMatcher<Stmt, DeclRefExpr> declRefExpr;
 const internal::VariadicDynCastAllOfMatcher<Stmt, ObjCIvarRefExpr> objcIvarRefExpr;
+const internal::VariadicDynCastAllOfMatcher<Stmt, BlockExpr> blockExpr;
 const internal::VariadicDynCastAllOfMatcher<Stmt, IfStmt> ifStmt;
 const internal::VariadicDynCastAllOfMatcher<Stmt, ForStmt> forStmt;
 const internal::VariadicDynCastAllOfMatcher<Stmt, CXXForRangeStmt>

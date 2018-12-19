@@ -310,7 +310,7 @@ void ASTTypeWriter::VisitFunctionProtoType(const FunctionProtoType *T) {
 
   Record.push_back(T->isVariadic());
   Record.push_back(T->hasTrailingReturn());
-  Record.push_back(T->getTypeQuals());
+  Record.push_back(T->getTypeQuals().getAsOpaqueValue());
   Record.push_back(static_cast<unsigned>(T->getRefQualifier()));
   addExceptionSpec(T, Record);
 
@@ -1695,7 +1695,6 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   // Detailed record is important since it is used for the module cache hash.
   Record.push_back(PPOpts.DetailedRecord);
   AddString(PPOpts.ImplicitPCHInclude, Record);
-  AddString(PPOpts.ImplicitPTHInclude, Record);
   Record.push_back(static_cast<unsigned>(PPOpts.ObjCXXARCStandardLibrary));
   Stream.EmitRecord(PREPROCESSOR_OPTIONS, Record);
 
@@ -5014,12 +5013,15 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   WriteFPPragmaOptions(SemaRef.getFPOptions());
   WriteOpenCLExtensions(SemaRef);
   WriteOpenCLExtensionTypes(SemaRef);
-  WriteOpenCLExtensionDecls(SemaRef);
   WriteCUDAPragmas(SemaRef);
 
   // If we're emitting a module, write out the submodule information.
   if (WritingModule)
     WriteSubmodules(WritingModule);
+
+  // We need to have information about submodules to correctly deserialize
+  // decls from OpenCLExtensionDecls block
+  WriteOpenCLExtensionDecls(SemaRef);
 
   Stream.EmitRecord(SPECIAL_TYPES, SpecialTypes);
 
@@ -6932,3 +6934,19 @@ void OMPClauseWriter::VisitOMPIsDevicePtrClause(OMPIsDevicePtrClause *C) {
 }
 
 void OMPClauseWriter::VisitOMPUnifiedAddressClause(OMPUnifiedAddressClause *) {}
+
+void OMPClauseWriter::VisitOMPUnifiedSharedMemoryClause(
+    OMPUnifiedSharedMemoryClause *) {}
+
+void OMPClauseWriter::VisitOMPReverseOffloadClause(OMPReverseOffloadClause *) {}
+
+void
+OMPClauseWriter::VisitOMPDynamicAllocatorsClause(OMPDynamicAllocatorsClause *) {
+}
+
+void OMPClauseWriter::VisitOMPAtomicDefaultMemOrderClause(
+    OMPAtomicDefaultMemOrderClause *C) {
+  Record.push_back(C->getAtomicDefaultMemOrderKind());
+  Record.AddSourceLocation(C->getLParenLoc());
+  Record.AddSourceLocation(C->getAtomicDefaultMemOrderKindKwLoc());
+}

@@ -955,10 +955,7 @@ static Decl::Kind getKind(const Decl *D) { return D->getKind(); }
 static Decl::Kind getKind(const DeclContext *DC) { return DC->getDeclKind(); }
 
 int64_t Decl::getID() const {
-  Optional<int64_t> Out = getASTContext().getAllocator().identifyObject(this);
-  assert(Out && "Wrong allocator used");
-  assert(*Out % alignof(Decl) == 0 && "Wrong alignment information");
-  return *Out / alignof(Decl);
+  return getASTContext().getAllocator().identifyKnownAlignedObject<Decl>(this);
 }
 
 const FunctionType *Decl::getFunctionType(bool BlocksToo) const {
@@ -1724,8 +1721,18 @@ void DeclContext::localUncachedLookup(DeclarationName Name,
 
 DeclContext *DeclContext::getRedeclContext() {
   DeclContext *Ctx = this;
-  // Skip through transparent contexts.
-  while (Ctx->isTransparentContext())
+
+  // In C, a record type is the redeclaration context for its fields only. If
+  // we arrive at a record context after skipping anything else, we should skip
+  // the record as well. Currently, this means skipping enumerations because
+  // they're the only transparent context that can exist within a struct or
+  // union.
+  bool SkipRecords = getDeclKind() == Decl::Kind::Enum &&
+                     !getParentASTContext().getLangOpts().CPlusPlus;
+
+  // Skip through contexts to get to the redeclaration context. Transparent
+  // contexts are always skipped.
+  while ((SkipRecords && Ctx->isRecord()) || Ctx->isTransparentContext())
     Ctx = Ctx->getParent();
   return Ctx;
 }

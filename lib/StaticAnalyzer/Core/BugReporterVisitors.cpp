@@ -71,12 +71,6 @@ using namespace ento;
 // Utility functions.
 //===----------------------------------------------------------------------===//
 
-bool bugreporter::isDeclRefExprToReference(const Expr *E) {
-  if (const auto *DRE = dyn_cast<DeclRefExpr>(E))
-    return DRE->getDecl()->getType()->isReferenceType();
-  return false;
-}
-
 static const Expr *peelOffPointerArithmetic(const BinaryOperator *B) {
   if (B->isAdditiveOp() && B->getType()->isPointerType()) {
     if (B->getLHS()->getType()->isPointerType()) {
@@ -142,8 +136,8 @@ const Expr *bugreporter::getDerefExpr(const Stmt *S) {
       E = AE->getBase();
     } else if (const auto *PE = dyn_cast<ParenExpr>(E)) {
       E = PE->getSubExpr();
-    } else if (const auto *EWC = dyn_cast<ExprWithCleanups>(E)) {
-      E = EWC->getSubExpr();
+    } else if (const auto *FE = dyn_cast<FullExpr>(E)) {
+      E = FE->getSubExpr();
     } else {
       // Other arbitrary stuff.
       break;
@@ -158,20 +152,6 @@ const Expr *bugreporter::getDerefExpr(const Stmt *S) {
       E = CE->getSubExpr();
 
   return E;
-}
-
-const Stmt *bugreporter::GetDenomExpr(const ExplodedNode *N) {
-  const Stmt *S = N->getLocationAs<PreStmt>()->getStmt();
-  if (const auto *BE = dyn_cast<BinaryOperator>(S))
-    return BE->getRHS();
-  return nullptr;
-}
-
-const Stmt *bugreporter::GetRetValExpr(const ExplodedNode *N) {
-  const Stmt *S = N->getLocationAs<PostStmt>()->getStmt();
-  if (const auto *RS = dyn_cast<ReturnStmt>(S))
-    return RS->getRetValue();
-  return nullptr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -696,8 +676,8 @@ public:
         bool EnableNullFPSuppression, BugReport &BR,
         const SVal V) {
     AnalyzerOptions &Options = N->getState()->getAnalysisManager().options;
-    if (EnableNullFPSuppression && Options.shouldSuppressNullReturnPaths()
-          && V.getAs<Loc>())
+    if (EnableNullFPSuppression &&
+        Options.ShouldSuppressNullReturnPaths && V.getAs<Loc>())
       BR.addVisitor(llvm::make_unique<MacroNullReturnSuppressionVisitor>(
               R->getAs<SubRegion>(), V));
   }
@@ -828,7 +808,8 @@ public:
     AnalyzerOptions &Options = State->getAnalysisManager().options;
 
     bool EnableNullFPSuppression = false;
-    if (InEnableNullFPSuppression && Options.shouldSuppressNullReturnPaths())
+    if (InEnableNullFPSuppression &&
+        Options.ShouldSuppressNullReturnPaths)
       if (Optional<Loc> RetLoc = RetVal.getAs<Loc>())
         EnableNullFPSuppression = State->isNull(*RetLoc).isConstrainedTrue();
 
@@ -884,7 +865,7 @@ public:
     RetE = RetE->IgnoreParenCasts();
 
     // If we're returning 0, we should track where that 0 came from.
-    bugreporter::trackNullOrUndefValue(N, RetE, BR, EnableNullFPSuppression);
+    bugreporter::trackExpressionValue(N, RetE, BR, EnableNullFPSuppression);
 
     // Build an appropriate message based on the return value.
     SmallString<64> Msg;
@@ -897,7 +878,7 @@ public:
         // future nodes. We want to emit a path note as well, in case
         // the report is resurrected as valid later on.
         if (EnableNullFPSuppression &&
-            Options.shouldAvoidSuppressingNullArgumentPaths())
+            Options.ShouldAvoidSuppressingNullArgumentPaths)
           Mode = MaybeUnsuppress;
 
         if (RetE->getType()->isObjCObjectPointerType()) {
@@ -945,7 +926,7 @@ public:
   visitNodeMaybeUnsuppress(const ExplodedNode *N,
                            BugReporterContext &BRC, BugReport &BR) {
 #ifndef NDEBUG
-    assert(Options.shouldAvoidSuppressingNullArgumentPaths());
+    assert(Options.ShouldAvoidSuppressingNullArgumentPaths);
 #endif
 
     // Are we at the entry node for this call?
@@ -979,8 +960,7 @@ public:
       if (!State->isNull(*ArgV).isConstrainedTrue())
         continue;
 
-      if (bugreporter::trackNullOrUndefValue(N, ArgE, BR,
-                                             EnableNullFPSuppression))
+      if (bugreporter::trackExpressionValue(N, ArgE, BR, EnableNullFPSuppression))
         ShouldInvalidate = false;
 
       // If we /can't/ track the null pointer, we should err on the side of
@@ -1258,8 +1238,8 @@ FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
         V.getAs<loc::ConcreteInt>() || V.getAs<nonloc::ConcreteInt>()) {
       if (!IsParam)
         InitE = InitE->IgnoreParenCasts();
-      bugreporter::trackNullOrUndefValue(StoreSite, InitE, BR,
-                                         EnableNullFPSuppression);
+      bugreporter::trackExpressionValue(StoreSite, InitE, BR,
+                                   EnableNullFPSuppression);
     }
     ReturnVisitor::addVisitorIfNecessary(StoreSite, InitE->IgnoreParenCasts(),
                                          BR, EnableNullFPSuppression);
@@ -1399,7 +1379,7 @@ SuppressInlineDefensiveChecksVisitor(DefinedSVal Value, const ExplodedNode *N)
     : V(Value) {
   // Check if the visitor is disabled.
   AnalyzerOptions &Options = N->getState()->getAnalysisManager().options;
-  if (!Options.shouldSuppressInlinedDefensiveChecks())
+  if (!Options.ShouldSuppressInlinedDefensiveChecks)
     IsSatisfied = true;
 
   assert(N->getState()->isNull(V).isConstrainedTrue() &&
@@ -1515,8 +1495,8 @@ static const MemRegion *getLocationRegionIfReference(const Expr *E,
 static const Expr *peelOffOuterExpr(const Expr *Ex,
                                     const ExplodedNode *N) {
   Ex = Ex->IgnoreParenCasts();
-  if (const auto *EWC = dyn_cast<ExprWithCleanups>(Ex))
-    return peelOffOuterExpr(EWC->getSubExpr(), N);
+  if (const auto *FE = dyn_cast<FullExpr>(Ex))
+    return peelOffOuterExpr(FE->getSubExpr(), N);
   if (const auto *OVE = dyn_cast<OpaqueValueExpr>(Ex))
     return peelOffOuterExpr(OVE->getSourceExpr(), N);
   if (const auto *POE = dyn_cast<PseudoObjectExpr>(Ex)) {
@@ -1588,14 +1568,13 @@ static const ExplodedNode* findNodeForExpression(const ExplodedNode *N,
   return N;
 }
 
-bool bugreporter::trackNullOrUndefValue(const ExplodedNode *InputNode,
-                                        const Stmt *InputS,
-                                        BugReport &report,
-                                        bool EnableNullFPSuppression) {
-  if (!InputS || !InputNode || !isa<Expr>(InputS))
+bool bugreporter::trackExpressionValue(const ExplodedNode *InputNode,
+                                       const Expr *E, BugReport &report,
+                                       bool EnableNullFPSuppression) {
+  if (!E || !InputNode)
     return false;
 
-  const Expr *Inner = peelOffOuterExpr(cast<Expr>(InputS), InputNode);
+  const Expr *Inner = peelOffOuterExpr(E, InputNode);
   const ExplodedNode *LVNode = findNodeForExpression(InputNode, Inner);
   if (!LVNode)
     return false;
@@ -1606,11 +1585,11 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *InputNode,
   // At this point in the path, the receiver should be live since we are at the
   // message send expr. If it is nil, start tracking it.
   if (const Expr *Receiver = NilReceiverBRVisitor::getNilReceiver(Inner, LVNode))
-    trackNullOrUndefValue(LVNode, Receiver, report, EnableNullFPSuppression);
+    trackExpressionValue(LVNode, Receiver, report, EnableNullFPSuppression);
 
   // See if the expression we're interested refers to a variable.
   // If so, we can track both its contents and constraints on its value.
-  if (Inner && ExplodedGraph::isInterestingLValueExpr(Inner)) {
+  if (ExplodedGraph::isInterestingLValueExpr(Inner)) {
     SVal LVal = LVNode->getSVal(Inner);
 
     const MemRegion *RR = getLocationRegionIfReference(Inner, LVNode);
@@ -1703,7 +1682,7 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *InputNode,
     if (RegionRVal && isa<SymbolicRegion>(RegionRVal)) {
       report.markInteresting(RegionRVal);
       report.addVisitor(llvm::make_unique<TrackConstraintBRVisitor>(
-            loc::MemRegionVal(RegionRVal), false));
+            loc::MemRegionVal(RegionRVal), /*assumption=*/false));
     }
   }
   return true;
@@ -1751,8 +1730,8 @@ NilReceiverBRVisitor::VisitNode(const ExplodedNode *N,
   // The receiver was nil, and hence the method was skipped.
   // Register a BugReporterVisitor to issue a message telling us how
   // the receiver was null.
-  bugreporter::trackNullOrUndefValue(N, Receiver, BR,
-                                     /*EnableNullFPSuppression*/ false);
+  bugreporter::trackExpressionValue(N, Receiver, BR,
+                               /*EnableNullFPSuppression*/ false);
   // Issue a message saying that the method was skipped.
   PathDiagnosticLocation L(Receiver, BRC.getSourceManager(),
                                      N->getLocationContext());
@@ -2241,7 +2220,7 @@ void LikelyFalsePositiveSuppressionBRVisitor::finalizeVisitor(
     // the user's fault, we currently don't report them very well, and
     // Note that this will not help for any other data structure libraries, like
     // TR1, Boost, or llvm/ADT.
-    if (Options.shouldSuppressFromCXXStandardLibrary()) {
+    if (Options.ShouldSuppressFromCXXStandardLibrary) {
       BR.markInvalid(getTag(), nullptr);
       return;
     } else {
@@ -2448,15 +2427,19 @@ void FalsePositiveRefutationBRVisitor::finalizeVisitor(
 
   // Add constraints to the solver
   for (const auto &I : Constraints) {
-    SymbolRef Sym = I.first;
+    const SymbolRef Sym = I.first;
+    auto RangeIt = I.second.begin();
 
-    SMTExprRef Constraints = RefutationSolver->fromBoolean(false);
-    for (const auto &Range : I.second) {
+    SMTExprRef Constraints = SMTConv::getRangeExpr(
+        RefutationSolver, Ctx, Sym, RangeIt->From(), RangeIt->To(),
+        /*InRange=*/true);
+    while ((++RangeIt) != I.second.end()) {
       Constraints = RefutationSolver->mkOr(
           Constraints, SMTConv::getRangeExpr(RefutationSolver, Ctx, Sym,
-                                             Range.From(), Range.To(),
+                                             RangeIt->From(), RangeIt->To(),
                                              /*InRange=*/true));
     }
+
     RefutationSolver->addConstraint(Constraints);
   }
 

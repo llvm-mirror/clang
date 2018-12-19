@@ -10,9 +10,9 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/FileSystemStatCache.h"
-#include "clang/Basic/VirtualFileSystem.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -60,8 +60,8 @@ public:
 
   // Implement FileSystemStatCache::getStat().
   LookupResult getStat(StringRef Path, FileData &Data, bool isFile,
-                       std::unique_ptr<vfs::File> *F,
-                       vfs::FileSystem &FS) override {
+                       std::unique_ptr<llvm::vfs::File> *F,
+                       llvm::vfs::FileSystem &FS) override {
 #ifndef _WIN32
     SmallString<128> NormalizedPath(Path);
     llvm::sys::path::native(NormalizedPath);
@@ -222,6 +222,33 @@ TEST_F(FileManagerTest, getFileReturnsNULLForNonexistentFile) {
   EXPECT_EQ(nullptr, file);
 }
 
+// When calling getFile(OpenFile=false); getFile(OpenFile=true) the file is
+// opened for the second call.
+TEST_F(FileManagerTest, getFileDefersOpen) {
+  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> FS(
+      new llvm::vfs::InMemoryFileSystem());
+  FS->addFile("/tmp/test", 0, llvm::MemoryBuffer::getMemBufferCopy("test"));
+  FS->addFile("/tmp/testv", 0, llvm::MemoryBuffer::getMemBufferCopy("testv"));
+  FileManager manager(options, FS);
+
+  const FileEntry *file = manager.getFile("/tmp/test", /*OpenFile=*/false);
+  ASSERT_TRUE(file != nullptr);
+  ASSERT_TRUE(file->isValid());
+  // "real path name" reveals whether the file was actually opened.
+  EXPECT_FALSE(file->isOpenForTests());
+
+  file = manager.getFile("/tmp/test", /*OpenFile=*/true);
+  ASSERT_TRUE(file != nullptr);
+  ASSERT_TRUE(file->isValid());
+  EXPECT_TRUE(file->isOpenForTests());
+
+  // However we should never try to open a file previously opened as virtual.
+  ASSERT_TRUE(manager.getVirtualFile("/tmp/testv", 5, 0));
+  ASSERT_TRUE(manager.getFile("/tmp/testv", /*OpenFile=*/false));
+  file = manager.getFile("/tmp/testv", /*OpenFile=*/true);
+  EXPECT_FALSE(file->isOpenForTests());
+}
+
 // The following tests apply to Unix-like system only.
 
 #ifndef _WIN32
@@ -305,8 +332,8 @@ TEST_F(FileManagerTest, makeAbsoluteUsesVFS) {
 #endif
   llvm::sys::path::append(CustomWorkingDir, "some", "weird", "path");
 
-  auto FS =
-      IntrusiveRefCntPtr<vfs::InMemoryFileSystem>(new vfs::InMemoryFileSystem);
+  auto FS = IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem>(
+      new llvm::vfs::InMemoryFileSystem);
   // setCurrentworkingdirectory must finish without error.
   ASSERT_TRUE(!FS->setCurrentWorkingDirectory(CustomWorkingDir));
 
@@ -320,6 +347,40 @@ TEST_F(FileManagerTest, makeAbsoluteUsesVFS) {
 
   ASSERT_TRUE(Manager.makeAbsolutePath(Path));
   EXPECT_EQ(Path, ExpectedResult);
+}
+
+// getVirtualFile should always fill the real path.
+TEST_F(FileManagerTest, getVirtualFileFillsRealPathName) {
+  SmallString<64> CustomWorkingDir;
+#ifdef _WIN32
+  CustomWorkingDir = "C:/";
+#else
+  CustomWorkingDir = "/";
+#endif
+
+  auto FS = IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem>(
+      new llvm::vfs::InMemoryFileSystem);
+  // setCurrentworkingdirectory must finish without error.
+  ASSERT_TRUE(!FS->setCurrentWorkingDirectory(CustomWorkingDir));
+
+  FileSystemOptions Opts;
+  FileManager Manager(Opts, FS);
+
+  // Inject fake files into the file system.
+  auto statCache = llvm::make_unique<FakeStatCache>();
+  statCache->InjectDirectory("/tmp", 42);
+  statCache->InjectFile("/tmp/test", 43);
+
+  Manager.addStatCache(std::move(statCache));
+
+  // Check for real path.
+  const FileEntry *file = Manager.getVirtualFile("/tmp/test", 123, 1);
+  ASSERT_TRUE(file != nullptr);
+  ASSERT_TRUE(file->isValid());
+  SmallString<64> ExpectedResult = CustomWorkingDir;
+
+  llvm::sys::path::append(ExpectedResult, "tmp", "test");
+  EXPECT_EQ(file->tryGetRealPathName(), ExpectedResult);
 }
 
 } // anonymous namespace

@@ -161,6 +161,9 @@ def warn_drv_yc_multiple_inputs_clang_cl : Warning<
   "support for '/Yc' with more than one source file not implemented yet; flag ignored">,
   InGroup<ClangClPch>;
 
+def err_drv_dllexport_inlines_and_fallback : Error<
+  "option '/Zc:dllexportInlines-' is ABI-changing and not compatible with '/fallback'">;
+
 def err_drv_invalid_value : Error<"invalid value '%1' in '%0'">;
 def err_drv_invalid_int_value : Error<"invalid integral value '%1' in '%0'">;
 def err_drv_invalid_remap_file : Error<
@@ -190,6 +193,9 @@ def err_drv_mg_requires_m_or_mm : Error<
   "option '-MG' requires '-M' or '-MM'">;
 def err_drv_unknown_objc_runtime : Error<
   "unknown or ill-formed Objective-C runtime '%0'">;
+def err_drv_invalid_cf_runtime_abi
+  : Error<"invalid CoreFoundation Runtime ABI '%0'; must be one of "
+          "'objc', 'standalone', 'swift', 'swift-5.0', 'swift-4.2', 'swift-4.1'">;
 def err_drv_gnustep_objc_runtime_incompatible_binary : Error<
   "GNUstep Objective-C runtime version %0 incompatible with target binary format">;
 def err_drv_emit_llvm_link : Error<
@@ -276,6 +282,8 @@ def warn_drv_disabling_vptr_no_rtti_default : Warning<
 def warn_drv_object_size_disabled_O0 : Warning<
   "the object size sanitizer has no effect at -O0, but is explicitly enabled: %0">,
   InGroup<InvalidCommandLineArgument>, DefaultWarnNoWerror;
+def err_invalid_branch_protection: Error <
+  "invalid branch protection option '%0' in '%1'">;
 
 def note_drv_command_failed_diag_msg : Note<
   "diagnostic msg: %0">;
@@ -291,6 +299,9 @@ def err_analyzer_config_no_value : Error<
   "analyzer-config option '%0' has a key but no value">;
 def err_analyzer_config_multiple_values : Error<
   "analyzer-config option '%0' should contain only one '='">;
+def err_analyzer_config_invalid_input : Error<
+  "invalid input for analyzer-config option '%0', that expects %1 value">;
+def err_analyzer_config_unknown : Error<"unknown analyzer-config '%0'">;
 
 def err_drv_invalid_hvx_length : Error<
   "-mhvx-length is not supported without a -mhvx/-mhvx= flag">;
@@ -349,7 +360,7 @@ def warn_drv_unsupported_pic_with_mabicalls : Warning<
   "%select{implicit usage of|}1 -mabicalls and the N64 ABI">,
   InGroup<OptionIgnored>;
 def err_drv_unsupported_noabicalls_pic : Error<
-  "position-independent code requires ‘-mabicalls’">;
+  "position-independent code requires '-mabicalls'">;
 def err_drv_unsupported_indirect_jump_opt : Error<
   "'-mindirect-jump=%0' is unsupported with the '%1' architecture">;
 def err_drv_unknown_indirect_jump_opt : Error<

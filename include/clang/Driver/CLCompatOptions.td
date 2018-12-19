@@ -158,6 +158,10 @@ def _SLASH_Qvec_ : CLFlag<"Qvec-">,
 def _SLASH_showIncludes : CLFlag<"showIncludes">,
   HelpText<"Print info about included files to stderr">,
   Alias<show_includes>;
+def _SLASH_showFilenames : CLFlag<"showFilenames">,
+  HelpText<"Print the name of each compiled file">;
+def _SLASH_showFilenames_ : CLFlag<"showFilenames-">,
+  HelpText<"Don't print the name of each compiled file (default)">;
 def _SLASH_source_charset : CLCompileJoined<"source-charset:">,
   HelpText<"Source encoding, supports only UTF-8">, Alias<finput_charset_EQ>;
 def _SLASH_execution_charset : CLCompileJoined<"execution-charset:">,
@@ -317,6 +321,8 @@ def _SLASH_vmv : CLFlag<"vmv">,
 def _SLASH_volatile_ms  : Option<["/", "-"], "volatile:ms", KIND_FLAG>,
   Group<_SLASH_volatile_Group>, Flags<[CLOption, DriverOption]>,
   HelpText<"Volatile loads and stores have acquire and release semantics">;
+def _SLASH_clang : CLJoined<"clang:">,
+  HelpText<"Pass <arg> to the clang driver">, MetaVarName<"<arg>">;
 def _SLASH_Zl : CLFlag<"Zl">,
   HelpText<"Don't mention any default libraries in the object file">;
 
@@ -329,6 +335,10 @@ def _SLASH_Yu : CLJoined<"Yu">,
   MetaVarName<"<filename>">;
 def _SLASH_Y_ : CLFlag<"Y-">,
   HelpText<"Disable precompiled headers, overrides /Yc and /Yu">;
+def _SLASH_Zc_dllexportInlines : CLFlag<"Zc:dllexportInlines">,
+  HelpText<"dllexport/dllimport inline member functions of dllexport/import classes (default)">;
+def _SLASH_Zc_dllexportInlines_ : CLFlag<"Zc:dllexportInlines-">,
+  HelpText<"Don't dllexport/dllimport inline member functions of dllexport/import classes">;
 def _SLASH_Fp : CLJoined<"Fp">,
   HelpText<"Set pch filename (with /Yc and /Yu)">, MetaVarName<"<filename>">;
 
@@ -354,6 +364,7 @@ def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_FC : CLIgnoredFlag<"FC">;
 def _SLASH_Fd : CLIgnoredJoined<"Fd">;
 def _SLASH_FS : CLIgnoredFlag<"FS">;
+def _SLASH_JMC : CLIgnoredFlag<"JMC">;
 def _SLASH_kernel_ : CLIgnoredFlag<"kernel-">;
 def _SLASH_nologo : CLIgnoredFlag<"nologo">;
 def _SLASH_openmp_ : CLIgnoredFlag<"openmp-">;
@@ -405,7 +416,6 @@ def _SLASH_GZ : CLFlag<"GZ">;
 def _SLASH_H : CLFlag<"H">;
 def _SLASH_homeparams : CLFlag<"homeparams">;
 def _SLASH_hotpatch : CLFlag<"hotpatch">;
-def _SLASH_JMC : CLFlag<"JMC">;
 def _SLASH_kernel : CLFlag<"kernel">;
 def _SLASH_LN : CLFlag<"LN">;
 def _SLASH_MP : CLJoined<"MP">;

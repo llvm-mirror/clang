@@ -2205,13 +2205,12 @@ VTableLayout::VTableLayout(ArrayRef<size_t> VTableIndices,
   else
     this->VTableIndices = OwningArrayRef<size_t>(VTableIndices);
 
-  llvm::sort(this->VTableThunks.begin(), this->VTableThunks.end(),
-             [](const VTableLayout::VTableThunkTy &LHS,
-                const VTableLayout::VTableThunkTy &RHS) {
-              assert((LHS.first != RHS.first || LHS.second == RHS.second) &&
-                     "Different thunks should have unique indices!");
-              return LHS.first < RHS.first;
-            });
+  llvm::sort(this->VTableThunks, [](const VTableLayout::VTableThunkTy &LHS,
+                                    const VTableLayout::VTableThunkTy &RHS) {
+    assert((LHS.first != RHS.first || LHS.second == RHS.second) &&
+           "Different thunks should have unique indices!");
+    return LHS.first < RHS.first;
+  });
 }
 
 VTableLayout::~VTableLayout() { }
@@ -3407,10 +3406,9 @@ static void removeRedundantPaths(std::list<FullPathTy> &FullPaths) {
     for (const FullPathTy &OtherPath : FullPaths) {
       if (&SpecificPath == &OtherPath)
         continue;
-      if (std::all_of(SpecificPath.begin(), SpecificPath.end(),
-                      [&](const BaseSubobject &BSO) {
-                        return OtherPath.count(BSO) != 0;
-                      })) {
+      if (llvm::all_of(SpecificPath, [&](const BaseSubobject &BSO) {
+            return OtherPath.count(BSO) != 0;
+          })) {
         return true;
       }
     }
@@ -3486,10 +3484,9 @@ static const FullPathTy *selectBestPath(ASTContext &Context,
       // It's possible that the overrider isn't in this path.  If so, skip it
       // because this path didn't introduce it.
       const CXXRecordDecl *OverridingParent = OverridingMethod->getParent();
-      if (std::none_of(SpecificPath.begin(), SpecificPath.end(),
-                       [&](const BaseSubobject &BSO) {
-                         return BSO.getBase() == OverridingParent;
-                       }))
+      if (llvm::none_of(SpecificPath, [&](const BaseSubobject &BSO) {
+            return BSO.getBase() == OverridingParent;
+          }))
         continue;
       CurrentOverrides.insert(OverridingMethod);
     }

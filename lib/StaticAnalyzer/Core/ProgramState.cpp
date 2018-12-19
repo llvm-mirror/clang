@@ -70,10 +70,7 @@ ProgramState::~ProgramState() {
 }
 
 int64_t ProgramState::getID() const {
-  Optional<int64_t> Out = getStateManager().Alloc.identifyObject(this);
-  assert(Out && "Wrong allocator used");
-  assert(*Out % alignof(ProgramState) == 0 && "Wrong alignment information");
-  return *Out / alignof(ProgramState);
+  return getStateManager().Alloc.identifyKnownAlignedObject<ProgramState>(this);
 }
 
 ProgramStateManager::ProgramStateManager(ASTContext &Ctx,
@@ -662,22 +659,12 @@ bool ProgramState::scanReachableSymbols(SVal val, SymbolVisitor& visitor) const 
   return S.scan(val);
 }
 
-bool ProgramState::scanReachableSymbols(const SVal *I, const SVal *E,
-                                   SymbolVisitor &visitor) const {
+bool ProgramState::scanReachableSymbols(
+    llvm::iterator_range<region_iterator> Reachable,
+    SymbolVisitor &visitor) const {
   ScanReachableSymbols S(this, visitor);
-  for ( ; I != E; ++I) {
-    if (!S.scan(*I))
-      return false;
-  }
-  return true;
-}
-
-bool ProgramState::scanReachableSymbols(const MemRegion * const *I,
-                                   const MemRegion * const *E,
-                                   SymbolVisitor &visitor) const {
-  ScanReachableSymbols S(this, visitor);
-  for ( ; I != E; ++I) {
-    if (!S.scan(*I))
+  for (const MemRegion *R : Reachable) {
+    if (!S.scan(R))
       return false;
   }
   return true;
@@ -845,4 +832,3 @@ bool ProgramState::isTainted(SymbolRef Sym, TaintTagType Kind) const {
 
   return false;
 }
-

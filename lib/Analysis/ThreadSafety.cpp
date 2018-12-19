@@ -33,6 +33,7 @@
 #include "clang/Analysis/Analyses/ThreadSafetyUtil.h"
 #include "clang/Analysis/AnalysisDeclContext.h"
 #include "clang/Analysis/CFG.h"
+#include "clang/Basic/Builtins.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/SourceLocation.h"
@@ -1388,14 +1389,17 @@ const CallExpr* ThreadSafetyAnalyzer::getTrylockCallExpr(const Stmt *Cond,
   if (!Cond)
     return nullptr;
 
-  if (const auto *CallExp = dyn_cast<CallExpr>(Cond))
+  if (const auto *CallExp = dyn_cast<CallExpr>(Cond)) {
+    if (CallExp->getBuiltinCallee() == Builtin::BI__builtin_expect)
+      return getTrylockCallExpr(CallExp->getArg(0), C, Negate);
     return CallExp;
+  }
   else if (const auto *PE = dyn_cast<ParenExpr>(Cond))
     return getTrylockCallExpr(PE->getSubExpr(), C, Negate);
   else if (const auto *CE = dyn_cast<ImplicitCastExpr>(Cond))
     return getTrylockCallExpr(CE->getSubExpr(), C, Negate);
-  else if (const auto *EWC = dyn_cast<ExprWithCleanups>(Cond))
-    return getTrylockCallExpr(EWC->getSubExpr(), C, Negate);
+  else if (const auto *FE = dyn_cast<FullExpr>(Cond))
+    return getTrylockCallExpr(FE->getSubExpr(), C, Negate);
   else if (const auto *DRE = dyn_cast<DeclRefExpr>(Cond)) {
     const Expr *E = LocalVarMap.lookupExpr(DRE->getDecl(), C);
     return getTrylockCallExpr(E, C, Negate);
@@ -1431,6 +1435,17 @@ const CallExpr* ThreadSafetyAnalyzer::getTrylockCallExpr(const Stmt *Cond,
     if (BOP->getOpcode() == BO_LOr)
       return getTrylockCallExpr(BOP->getRHS(), C, Negate);
     return nullptr;
+  } else if (const auto *COP = dyn_cast<ConditionalOperator>(Cond)) {
+    bool TCond, FCond;
+    if (getStaticBooleanValue(COP->getTrueExpr(), TCond) &&
+        getStaticBooleanValue(COP->getFalseExpr(), FCond)) {
+      if (TCond && !FCond)
+        return getTrylockCallExpr(COP->getCond(), C, Negate);
+      if (!TCond && FCond) {
+        Negate = !Negate;
+        return getTrylockCallExpr(COP->getCond(), C, Negate);
+      }
+    }
   }
   return nullptr;
 }
@@ -1445,7 +1460,8 @@ void ThreadSafetyAnalyzer::getEdgeLockset(FactSet& Result,
   Result = ExitSet;
 
   const Stmt *Cond = PredBlock->getTerminatorCondition();
-  if (!Cond)
+  // We don't acquire try-locks on ?: branches, only when its result is used.
+  if (!Cond || isa<ConditionalOperator>(PredBlock->getTerminator()))
     return;
 
   bool Negate = false;
@@ -1534,6 +1550,10 @@ class BuildLockset : public ConstStmtVisitor<BuildLockset> {
                      ProtectedOperationKind POK = POK_VarAccess);
 
   void handleCall(const Expr *Exp, const NamedDecl *D, VarDecl *VD = nullptr);
+  void examineArguments(const FunctionDecl *FD,
+                        CallExpr::const_arg_iterator ArgBegin,
+                        CallExpr::const_arg_iterator ArgEnd,
+                        bool SkipFirstParam = false);
 
 public:
   BuildLockset(ThreadSafetyAnalyzer *Anlzr, CFGBlockInfo &Info)
@@ -1934,10 +1954,37 @@ void BuildLockset::VisitCastExpr(const CastExpr *CE) {
   checkAccess(CE->getSubExpr(), AK_Read);
 }
 
-void BuildLockset::VisitCallExpr(const CallExpr *Exp) {
-  bool ExamineArgs = true;
-  bool OperatorFun = false;
+void BuildLockset::examineArguments(const FunctionDecl *FD,
+                                    CallExpr::const_arg_iterator ArgBegin,
+                                    CallExpr::const_arg_iterator ArgEnd,
+                                    bool SkipFirstParam) {
+  // Currently we can't do anything if we don't know the function declaration.
+  if (!FD)
+    return;
 
+  // NO_THREAD_SAFETY_ANALYSIS does double duty here.  Normally it
+  // only turns off checking within the body of a function, but we also
+  // use it to turn off checking in arguments to the function.  This
+  // could result in some false negatives, but the alternative is to
+  // create yet another attribute.
+  if (FD->hasAttr<NoThreadSafetyAnalysisAttr>())
+    return;
+
+  const ArrayRef<ParmVarDecl *> Params = FD->parameters();
+  auto Param = Params.begin();
+  if (SkipFirstParam)
+    ++Param;
+
+  // There can be default arguments, so we stop when one iterator is at end().
+  for (auto Arg = ArgBegin; Param != Params.end() && Arg != ArgEnd;
+       ++Param, ++Arg) {
+    QualType Qt = (*Param)->getType();
+    if (Qt->isReferenceType())
+      checkAccess(*Arg, AK_Read, POK_PassByRef);
+  }
+}
+
+void BuildLockset::VisitCallExpr(const CallExpr *Exp) {
   if (const auto *CE = dyn_cast<CXXMemberCallExpr>(Exp)) {
     const auto *ME = dyn_cast<MemberExpr>(CE->getCallee());
     // ME can be null when calling a method pointer
@@ -1956,13 +2003,12 @@ void BuildLockset::VisitCallExpr(const CallExpr *Exp) {
           checkAccess(CE->getImplicitObjectArgument(), AK_Read);
       }
     }
-  } else if (const auto *OE = dyn_cast<CXXOperatorCallExpr>(Exp)) {
-    OperatorFun = true;
 
+    examineArguments(CE->getDirectCallee(), CE->arg_begin(), CE->arg_end());
+  } else if (const auto *OE = dyn_cast<CXXOperatorCallExpr>(Exp)) {
     auto OEop = OE->getOperator();
     switch (OEop) {
       case OO_Equal: {
-        ExamineArgs = false;
         const Expr *Target = OE->getArg(0);
         const Expr *Source = OE->getArg(1);
         checkAccess(Target, AK_Written);
@@ -1971,60 +2017,27 @@ void BuildLockset::VisitCallExpr(const CallExpr *Exp) {
       }
       case OO_Star:
       case OO_Arrow:
-      case OO_Subscript: {
-        const Expr *Obj = OE->getArg(0);
-        checkAccess(Obj, AK_Read);
+      case OO_Subscript:
         if (!(OEop == OO_Star && OE->getNumArgs() > 1)) {
           // Grrr.  operator* can be multiplication...
-          checkPtAccess(Obj, AK_Read);
+          checkPtAccess(OE->getArg(0), AK_Read);
         }
-        break;
-      }
+        LLVM_FALLTHROUGH;
       default: {
         // TODO: get rid of this, and rely on pass-by-ref instead.
         const Expr *Obj = OE->getArg(0);
         checkAccess(Obj, AK_Read);
+        // Check the remaining arguments. For method operators, the first
+        // argument is the implicit self argument, and doesn't appear in the
+        // FunctionDecl, but for non-methods it does.
+        const FunctionDecl *FD = OE->getDirectCallee();
+        examineArguments(FD, std::next(OE->arg_begin()), OE->arg_end(),
+                         /*SkipFirstParam*/ !isa<CXXMethodDecl>(FD));
         break;
       }
     }
-  }
-
-  if (ExamineArgs) {
-    if (const FunctionDecl *FD = Exp->getDirectCallee()) {
-      // NO_THREAD_SAFETY_ANALYSIS does double duty here.  Normally it
-      // only turns off checking within the body of a function, but we also
-      // use it to turn off checking in arguments to the function.  This
-      // could result in some false negatives, but the alternative is to
-      // create yet another attribute.
-      if (!FD->hasAttr<NoThreadSafetyAnalysisAttr>()) {
-        unsigned Fn = FD->getNumParams();
-        unsigned Cn = Exp->getNumArgs();
-        unsigned Skip = 0;
-
-        unsigned i = 0;
-        if (OperatorFun) {
-          if (isa<CXXMethodDecl>(FD)) {
-            // First arg in operator call is implicit self argument,
-            // and doesn't appear in the FunctionDecl.
-            Skip = 1;
-            Cn--;
-          } else {
-            // Ignore the first argument of operators; it's been checked above.
-            i = 1;
-          }
-        }
-        // Ignore default arguments
-        unsigned n = (Fn < Cn) ? Fn : Cn;
-
-        for (; i < n; ++i) {
-          const ParmVarDecl *Pvd = FD->getParamDecl(i);
-          const Expr *Arg = Exp->getArg(i + Skip);
-          QualType Qt = Pvd->getType();
-          if (Qt->isReferenceType())
-            checkAccess(Arg, AK_Read, POK_PassByRef);
-        }
-      }
-    }
+  } else {
+    examineArguments(Exp->getDirectCallee(), Exp->arg_begin(), Exp->arg_end());
   }
 
   auto *D = dyn_cast_or_null<NamedDecl>(Exp->getCalleeDecl());
@@ -2038,8 +2051,9 @@ void BuildLockset::VisitCXXConstructExpr(const CXXConstructExpr *Exp) {
   if (D && D->isCopyConstructor()) {
     const Expr* Source = Exp->getArg(0);
     checkAccess(Source, AK_Read);
+  } else {
+    examineArguments(D, Exp->arg_begin(), Exp->arg_end());
   }
-  // FIXME -- only handles constructors in DeclStmt below.
 }
 
 static CXXConstructorDecl *

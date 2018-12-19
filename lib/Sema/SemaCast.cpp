@@ -131,6 +131,9 @@ namespace {
       return PlaceholderKind == K;
     }
 
+    // Language specific cast restrictions for address spaces.
+    void checkAddressSpaceCast(QualType SrcType, QualType DestType);
+
     void checkCastAlign() {
       Self.CheckCastAlign(SrcExpr.get(), DestType, OpRange);
     }
@@ -561,7 +564,7 @@ CastsAwayConstness(Sema &Self, QualType SrcType, QualType DestType,
                    Qualifiers *CastAwayQualifiers = nullptr) {
   // If the only checking we care about is for Objective-C lifetime qualifiers,
   // and we're not in ObjC mode, there's nothing to check.
-  if (!CheckCVR && CheckObjCLifetime && !Self.Context.getLangOpts().ObjC1)
+  if (!CheckCVR && CheckObjCLifetime && !Self.Context.getLangOpts().ObjC)
     return CastAwayConstnessKind::CACK_None;
 
   if (!DestType->isReferenceType()) {
@@ -2276,6 +2279,27 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
   return SuccessResult;
 }
 
+void CastOperation::checkAddressSpaceCast(QualType SrcType, QualType DestType) {
+  // In OpenCL only conversions between pointers to objects in overlapping
+  // addr spaces are allowed. v2.0 s6.5.5 - Generic addr space overlaps
+  // with any named one, except for constant.
+  if (Self.getLangOpts().OpenCL) {
+    auto SrcPtrType = SrcType->getAs<PointerType>();
+    if (!SrcPtrType)
+      return;
+    auto DestPtrType = DestType->getAs<PointerType>();
+    if (!DestPtrType)
+      return;
+    if (!DestPtrType->isAddressSpaceOverlapping(*SrcPtrType)) {
+      Self.Diag(OpRange.getBegin(),
+                diag::err_typecheck_incompatible_address_space)
+          << SrcType << DestType << Sema::AA_Casting
+          << SrcExpr.get()->getSourceRange();
+      SrcExpr = ExprError();
+    }
+  }
+}
+
 void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
                                        bool ListInitialization) {
   assert(Self.getLangOpts().CPlusPlus);
@@ -2403,6 +2427,8 @@ void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
     }
   }
 
+  checkAddressSpaceCast(SrcExpr.get()->getType(), DestType);
+
   if (isValidCast(tcr)) {
     if (Kind == CK_BitCast)
       checkCastAlign();
@@ -2489,20 +2515,9 @@ void CastOperation::CheckCStyleCast() {
 
   assert(!SrcType->isPlaceholderType());
 
-  // OpenCL v1 s6.5: Casting a pointer to address space A to a pointer to
-  // address space B is illegal.
-  if (Self.getLangOpts().OpenCL && DestType->isPointerType() &&
-      SrcType->isPointerType()) {
-    const PointerType *DestPtr = DestType->getAs<PointerType>();
-    if (!DestPtr->isAddressSpaceOverlapping(*SrcType->getAs<PointerType>())) {
-      Self.Diag(OpRange.getBegin(),
-                diag::err_typecheck_incompatible_address_space)
-          << SrcType << DestType << Sema::AA_Casting
-          << SrcExpr.get()->getSourceRange();
-      SrcExpr = ExprError();
-      return;
-    }
-  }
+  checkAddressSpaceCast(SrcType, DestType);
+  if (SrcExpr.isInvalid())
+    return;
 
   if (Self.RequireCompleteType(OpRange.getBegin(), DestType,
                                diag::err_typecheck_cast_to_incomplete)) {
@@ -2539,10 +2554,11 @@ void CastOperation::CheckCStyleCast() {
 
     // OpenCL v2.0 s6.13.10 - Allow casts from '0' to event_t type.
     if (Self.getLangOpts().OpenCL && DestType->isEventT()) {
-      llvm::APSInt CastInt;
-      if (SrcExpr.get()->EvaluateAsInt(CastInt, Self.Context)) {
+      Expr::EvalResult Result;
+      if (SrcExpr.get()->EvaluateAsInt(Result, Self.Context)) {
+        llvm::APSInt CastInt = Result.Val.getInt();
         if (0 == CastInt) {
-          Kind = CK_ZeroToOCLEvent;
+          Kind = CK_ZeroToOCLOpaqueType;
           return;
         }
         Self.Diag(OpRange.getBegin(),

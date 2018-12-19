@@ -1803,7 +1803,7 @@ static void CheckConstexprCtorInitializer(Sema &SemaRef,
 static bool
 CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
                            SmallVectorImpl<SourceLocation> &ReturnStmts,
-                           SourceLocation &Cxx1yLoc) {
+                           SourceLocation &Cxx1yLoc, SourceLocation &Cxx2aLoc) {
   // - its function-body shall be [...] a compound-statement that contains only
   switch (S->getStmtClass()) {
   case Stmt::NullStmtClass:
@@ -1840,7 +1840,7 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
     CompoundStmt *CompStmt = cast<CompoundStmt>(S);
     for (auto *BodyIt : CompStmt->body()) {
       if (!CheckConstexprFunctionStmt(SemaRef, Dcl, BodyIt, ReturnStmts,
-                                      Cxx1yLoc))
+                                      Cxx1yLoc, Cxx2aLoc))
         return false;
     }
     return true;
@@ -1858,11 +1858,11 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
 
     IfStmt *If = cast<IfStmt>(S);
     if (!CheckConstexprFunctionStmt(SemaRef, Dcl, If->getThen(), ReturnStmts,
-                                    Cxx1yLoc))
+                                    Cxx1yLoc, Cxx2aLoc))
       return false;
     if (If->getElse() &&
         !CheckConstexprFunctionStmt(SemaRef, Dcl, If->getElse(), ReturnStmts,
-                                    Cxx1yLoc))
+                                    Cxx1yLoc, Cxx2aLoc))
       return false;
     return true;
   }
@@ -1881,7 +1881,7 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
     for (Stmt *SubStmt : S->children())
       if (SubStmt &&
           !CheckConstexprFunctionStmt(SemaRef, Dcl, SubStmt, ReturnStmts,
-                                      Cxx1yLoc))
+                                      Cxx1yLoc, Cxx2aLoc))
         return false;
     return true;
 
@@ -1896,8 +1896,28 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
     for (Stmt *SubStmt : S->children())
       if (SubStmt &&
           !CheckConstexprFunctionStmt(SemaRef, Dcl, SubStmt, ReturnStmts,
-                                      Cxx1yLoc))
+                                      Cxx1yLoc, Cxx2aLoc))
         return false;
+    return true;
+
+  case Stmt::CXXTryStmtClass:
+    if (Cxx2aLoc.isInvalid())
+      Cxx2aLoc = S->getBeginLoc();
+    for (Stmt *SubStmt : S->children()) {
+      if (SubStmt &&
+          !CheckConstexprFunctionStmt(SemaRef, Dcl, SubStmt, ReturnStmts,
+                                      Cxx1yLoc, Cxx2aLoc))
+        return false;
+    }
+    return true;
+
+  case Stmt::CXXCatchStmtClass:
+    // Do not bother checking the language mode (already covered by the
+    // try block check).
+    if (!CheckConstexprFunctionStmt(SemaRef, Dcl,
+                                    cast<CXXCatchStmt>(S)->getHandlerBlock(),
+                                    ReturnStmts, Cxx1yLoc, Cxx2aLoc))
+      return false;
     return true;
 
   default:
@@ -1920,6 +1940,8 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
 ///
 /// \return true if the body is OK, false if we have diagnosed a problem.
 bool Sema::CheckConstexprFunctionBody(const FunctionDecl *Dcl, Stmt *Body) {
+  SmallVector<SourceLocation, 4> ReturnStmts;
+
   if (isa<CXXTryStmt>(Body)) {
     // C++11 [dcl.constexpr]p3:
     //  The definition of a constexpr function shall satisfy the following
@@ -1930,22 +1952,35 @@ bool Sema::CheckConstexprFunctionBody(const FunctionDecl *Dcl, Stmt *Body) {
     // C++11 [dcl.constexpr]p4:
     //  In the definition of a constexpr constructor, [...]
     // - its function-body shall not be a function-try-block;
-    Diag(Body->getBeginLoc(), diag::err_constexpr_function_try_block)
+    //
+    // This restriction is lifted in C++2a, as long as inner statements also
+    // apply the general constexpr rules.
+    Diag(Body->getBeginLoc(),
+         !getLangOpts().CPlusPlus2a
+             ? diag::ext_constexpr_function_try_block_cxx2a
+             : diag::warn_cxx17_compat_constexpr_function_try_block)
         << isa<CXXConstructorDecl>(Dcl);
-    return false;
   }
-
-  SmallVector<SourceLocation, 4> ReturnStmts;
 
   // - its function-body shall be [...] a compound-statement that contains only
   //   [... list of cases ...]
-  CompoundStmt *CompBody = cast<CompoundStmt>(Body);
-  SourceLocation Cxx1yLoc;
-  for (auto *BodyIt : CompBody->body()) {
-    if (!CheckConstexprFunctionStmt(*this, Dcl, BodyIt, ReturnStmts, Cxx1yLoc))
+  //
+  // Note that walking the children here is enough to properly check for
+  // CompoundStmt and CXXTryStmt body.
+  SourceLocation Cxx1yLoc, Cxx2aLoc;
+  for (Stmt *SubStmt : Body->children()) {
+    if (SubStmt &&
+        !CheckConstexprFunctionStmt(*this, Dcl, SubStmt, ReturnStmts,
+                                    Cxx1yLoc, Cxx2aLoc))
       return false;
   }
 
+  if (Cxx2aLoc.isValid())
+    Diag(Cxx2aLoc,
+         getLangOpts().CPlusPlus2a
+           ? diag::warn_cxx17_compat_constexpr_body_invalid_stmt
+           : diag::ext_constexpr_body_invalid_stmt_cxx2a)
+      << isa<CXXConstructorDecl>(Dcl);
   if (Cxx1yLoc.isValid())
     Diag(Cxx1yLoc,
          getLangOpts().CPlusPlus14
@@ -2835,7 +2870,8 @@ static const ParsedAttr *getMSPropertyAttr(const ParsedAttributesView &list) {
 // Check if there is a field shadowing.
 void Sema::CheckShadowInheritedFields(const SourceLocation &Loc,
                                       DeclarationName FieldName,
-                                      const CXXRecordDecl *RD) {
+                                      const CXXRecordDecl *RD,
+                                      bool DeclIsField) {
   if (Diags.isIgnored(diag::warn_shadow_field, Loc))
     return;
 
@@ -2875,7 +2911,7 @@ void Sema::CheckShadowInheritedFields(const SourceLocation &Loc,
     if (AS_none !=
         CXXRecordDecl::MergeAccess(P.Access, BaseField->getAccess())) {
       Diag(Loc, diag::warn_shadow_field)
-        << FieldName << RD << Base;
+        << FieldName << RD << Base << DeclIsField;
       Diag(BaseField->getLocation(), diag::note_shadow_field);
       Bases.erase(It);
     }
@@ -3232,7 +3268,7 @@ namespace {
         ME = dyn_cast<MemberExpr>(ME->getBase()->IgnoreParenImpCasts());
       }
 
-      // Binding a reference to an unintialized field is not an
+      // Binding a reference to an uninitialized field is not an
       // uninitialized use.
       if (CheckReferenceOnly && !ReferenceField)
         return true;
@@ -3730,8 +3766,7 @@ Sema::ActOnMemInitializer(Decl *ConstructorD,
                           ArrayRef<Expr *> Args,
                           SourceLocation RParenLoc,
                           SourceLocation EllipsisLoc) {
-  Expr *List = new (Context) ParenListExpr(Context, LParenLoc,
-                                           Args, RParenLoc);
+  Expr *List = ParenListExpr::Create(Context, LParenLoc, Args, RParenLoc);
   return BuildMemInitializer(ConstructorD, S, SS, MemberOrBase, TemplateTypeTy,
                              DS, IdLoc, List, EllipsisLoc);
 }
@@ -5706,8 +5741,28 @@ void Sema::checkClassLevelDLLAttribute(CXXRecordDecl *Class) {
       continue;
 
     if (!getDLLAttr(Member)) {
-      auto *NewAttr =
-          cast<InheritableAttr>(ClassAttr->clone(getASTContext()));
+      InheritableAttr *NewAttr = nullptr;
+
+      // Do not export/import inline function when -fno-dllexport-inlines is
+      // passed. But add attribute for later local static var check.
+      if (!getLangOpts().DllExportInlines && MD && MD->isInlined() &&
+          TSK != TSK_ExplicitInstantiationDeclaration &&
+          TSK != TSK_ExplicitInstantiationDefinition) {
+        if (ClassExported) {
+          NewAttr = ::new (getASTContext())
+            DLLExportStaticLocalAttr(ClassAttr->getRange(),
+                                     getASTContext(),
+                                     ClassAttr->getSpellingListIndex());
+        } else {
+          NewAttr = ::new (getASTContext())
+            DLLImportStaticLocalAttr(ClassAttr->getRange(),
+                                     getASTContext(),
+                                     ClassAttr->getSpellingListIndex());
+        }
+      } else {
+        NewAttr = cast<InheritableAttr>(ClassAttr->clone(getASTContext()));
+      }
+
       NewAttr->setInherited(true);
       Member->addAttr(NewAttr);
 
@@ -7222,8 +7277,17 @@ bool Sema::ShouldDeleteSpecialMember(CXXMethodDecl *MD, CXXSpecialMember CSM,
   if (getLangOpts().CUDA) {
     // We should delete the special member in CUDA mode if target inference
     // failed.
-    return inferCUDATargetForImplicitSpecialMember(RD, CSM, MD, SMI.ConstArg,
-                                                   Diagnose);
+    // For inherited constructors (non-null ICI), CSM may be passed so that MD
+    // is treated as certain special member, which may not reflect what special
+    // member MD really is. However inferCUDATargetForImplicitSpecialMember
+    // expects CSM to match MD, therefore recalculate CSM.
+    assert(ICI || CSM == getSpecialMember(MD));
+    auto RealCSM = CSM;
+    if (ICI)
+      RealCSM = getSpecialMember(MD);
+
+    return inferCUDATargetForImplicitSpecialMember(RD, RealCSM, MD,
+                                                   SMI.ConstArg, Diagnose);
   }
 
   return false;
@@ -7654,7 +7718,7 @@ struct FindHiddenVirtualMethod {
   SmallVector<CXXMethodDecl *, 8> OverloadedMethods;
 
 private:
-  /// Check whether any most overriden method from MD in Methods
+  /// Check whether any most overridden method from MD in Methods
   static bool CheckMostOverridenMethods(
       const CXXMethodDecl *MD,
       const llvm::SmallPtrSetImpl<const CXXMethodDecl *> &Methods) {
@@ -7738,7 +7802,7 @@ void Sema::FindHiddenVirtualMethods(CXXMethodDecl *MD,
   FHVM.Method = MD;
   FHVM.S = this;
 
-  // Keep the base methods that were overriden or introduced in the subclass
+  // Keep the base methods that were overridden or introduced in the subclass
   // by 'using' in a set. A base method not in this set is hidden.
   CXXRecordDecl *DC = MD->getParent();
   DeclContext::lookup_result R = DC->lookup(MD->getDeclName());
@@ -8135,7 +8199,7 @@ QualType Sema::CheckConstructorDeclarator(Declarator &D, QualType R,
     return R;
 
   FunctionProtoType::ExtProtoInfo EPI = Proto->getExtProtoInfo();
-  EPI.TypeQuals = 0;
+  EPI.TypeQuals = Qualifiers();
   EPI.RefQualifier = RQ_None;
 
   return Context.getFunctionType(Context.VoidTy, Proto->getParamTypes(), EPI);
@@ -8341,7 +8405,7 @@ QualType Sema::CheckDestructorDeclarator(Declarator &D, QualType R,
   const FunctionProtoType *Proto = R->getAs<FunctionProtoType>();
   FunctionProtoType::ExtProtoInfo EPI = Proto->getExtProtoInfo();
   EPI.Variadic = false;
-  EPI.TypeQuals = 0;
+  EPI.TypeQuals = Qualifiers();
   EPI.RefQualifier = RQ_None;
   return Context.getFunctionType(Context.VoidTy, None, EPI);
 }
@@ -11927,7 +11991,7 @@ void Sema::DefineImplicitCopyAssignment(SourceLocation CurrentLocation,
     // Dereference "this".
     DerefBuilder DerefThis(This);
     CastBuilder To(DerefThis,
-                   Context.getCVRQualifiedType(
+                   Context.getQualifiedType(
                        BaseType, CopyAssignOperator->getTypeQualifiers()),
                    VK_LValue, BasePath);
 
@@ -12294,7 +12358,7 @@ void Sema::DefineImplicitMoveAssignment(SourceLocation CurrentLocation,
 
     // Implicitly cast "this" to the appropriately-qualified base type.
     CastBuilder To(DerefThis,
-                   Context.getCVRQualifiedType(
+                   Context.getQualifiedType(
                        BaseType, MoveAssignOperator->getTypeQualifiers()),
                    VK_LValue, BasePath);
 
@@ -13679,7 +13743,7 @@ VarDecl *Sema::BuildExceptionDeclaration(Scope *S,
 
   // Only the non-fragile NeXT runtime currently supports C++ catches
   // of ObjC types, and no runtime supports catching ObjC types by value.
-  if (!Invalid && getLangOpts().ObjC1) {
+  if (!Invalid && getLangOpts().ObjC) {
     QualType T = ExDeclType;
     if (const ReferenceType *RT = T->getAs<ReferenceType>())
       T = RT->getPointeeType();
@@ -13831,6 +13895,8 @@ Decl *Sema::BuildStaticAssertDeclaration(SourceLocation StaticAssertLoc,
     ExprResult Converted = PerformContextuallyConvertToBool(AssertExpr);
     if (Converted.isInvalid())
       Failed = true;
+    else
+      Converted = ConstantExpr::Create(Context, Converted.get());
 
     llvm::APSInt Cond;
     if (!Failed && VerifyIntegerConstantExpression(Converted.get(), &Cond,
@@ -13847,9 +13913,9 @@ Decl *Sema::BuildStaticAssertDeclaration(SourceLocation StaticAssertLoc,
       Expr *InnerCond = nullptr;
       std::string InnerCondDescription;
       std::tie(InnerCond, InnerCondDescription) =
-        findFailedBooleanCondition(Converted.get(),
-                                   /*AllowTopLevelCond=*/false);
-      if (InnerCond) {
+        findFailedBooleanCondition(Converted.get());
+      if (InnerCond && !isa<CXXBoolLiteralExpr>(InnerCond)
+                    && !isa<IntegerLiteral>(InnerCond)) {
         Diag(StaticAssertLoc, diag::err_static_assert_requirement_failed)
           << InnerCondDescription << !AssertMessage
           << Msg.str() << InnerCond->getSourceRange();
@@ -14937,8 +15003,11 @@ void Sema::MarkVTableUsed(SourceLocation Loc, CXXRecordDecl *Class,
   // region.
   if (LangOpts.OpenMP && LangOpts.OpenMPIsDevice &&
       !isInOpenMPDeclareTargetContext() &&
-      !isInOpenMPTargetExecutionDirective())
+      !isInOpenMPTargetExecutionDirective()) {
+    if (!DefinitionRequired)
+      MarkVirtualMembersReferenced(Loc, Class);
     return;
+  }
 
   // Try to insert this class into the map.
   LoadExternalVTableUses();

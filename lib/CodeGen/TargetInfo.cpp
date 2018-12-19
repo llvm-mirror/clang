@@ -19,9 +19,9 @@
 #include "CGValue.h"
 #include "CodeGenFunction.h"
 #include "clang/AST/RecordLayout.h"
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/CodeGen/SwiftCallingConv.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
@@ -2337,7 +2337,7 @@ static std::string qualifyWindowsLibrary(llvm::StringRef Lib) {
   bool Quote = (Lib.find(" ") != StringRef::npos);
   std::string ArgStr = Quote ? "\"" : "";
   ArgStr += Lib;
-  if (!Lib.endswith_lower(".lib"))
+  if (!Lib.endswith_lower(".lib") && !Lib.endswith_lower(".a"))
     ArgStr += ".lib";
   ArgStr += Quote ? "\"" : "";
   return ArgStr;
@@ -3944,18 +3944,39 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
     return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(), Width));
   }
 
-  // Bool type is always extended to the ABI, other builtin types are not
-  // extended.
-  const BuiltinType *BT = Ty->getAs<BuiltinType>();
-  if (BT && BT->getKind() == BuiltinType::Bool)
-    return ABIArgInfo::getExtend(Ty);
+  if (const BuiltinType *BT = Ty->getAs<BuiltinType>()) {
+    switch (BT->getKind()) {
+    case BuiltinType::Bool:
+      // Bool type is always extended to the ABI, other builtin types are not
+      // extended.
+      return ABIArgInfo::getExtend(Ty);
 
-  // Mingw64 GCC uses the old 80 bit extended precision floating point unit. It
-  // passes them indirectly through memory.
-  if (IsMingw64 && BT && BT->getKind() == BuiltinType::LongDouble) {
-    const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
-    if (LDF == &llvm::APFloat::x87DoubleExtended())
-      return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+    case BuiltinType::LongDouble:
+      // Mingw64 GCC uses the old 80 bit extended precision floating point
+      // unit. It passes them indirectly through memory.
+      if (IsMingw64) {
+        const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
+        if (LDF == &llvm::APFloat::x87DoubleExtended())
+          return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+      }
+      break;
+
+    case BuiltinType::Int128:
+    case BuiltinType::UInt128:
+      // If it's a parameter type, the normal ABI rule is that arguments larger
+      // than 8 bytes are passed indirectly. GCC follows it. We follow it too,
+      // even though it isn't particularly efficient.
+      if (!IsReturnType)
+        return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+
+      // Mingw64 GCC returns i128 in XMM0. Coerce to v2i64 to handle that.
+      // Clang matches them for compatibility.
+      return ABIArgInfo::getDirect(
+          llvm::VectorType::get(llvm::Type::getInt64Ty(getVMContext()), 2));
+
+    default:
+      break;
+    }
   }
 
   return ABIArgInfo::getDirect();
@@ -4978,13 +4999,21 @@ public:
     llvm::Function *Fn = cast<llvm::Function>(GV);
 
     auto Kind = CGM.getCodeGenOpts().getSignReturnAddress();
-    if (Kind == CodeGenOptions::SignReturnAddressScope::None)
-      return;
+    if (Kind != CodeGenOptions::SignReturnAddressScope::None) {
+      Fn->addFnAttr("sign-return-address",
+                    Kind == CodeGenOptions::SignReturnAddressScope::All
+                        ? "all"
+                        : "non-leaf");
 
-    Fn->addFnAttr("sign-return-address",
-                  Kind == CodeGenOptions::SignReturnAddressScope::All
-                      ? "all"
-                      : "non-leaf");
+      auto Key = CGM.getCodeGenOpts().getSignReturnAddressKey();
+      Fn->addFnAttr("sign-return-address-key",
+                    Key == CodeGenOptions::SignReturnAddressKeyValue::AKey
+                        ? "a_key"
+                        : "b_key");
+    }
+
+    if (CGM.getCodeGenOpts().BranchTargetEnforcement)
+      Fn->addFnAttr("branch-target-enforcement");
   }
 };
 
@@ -4992,6 +5021,9 @@ class WindowsAArch64TargetCodeGenInfo : public AArch64TargetCodeGenInfo {
 public:
   WindowsAArch64TargetCodeGenInfo(CodeGenTypes &CGT, AArch64ABIInfo::ABIKind K)
       : AArch64TargetCodeGenInfo(CGT, K) {}
+
+  void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
+                           CodeGen::CodeGenModule &CGM) const override;
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
@@ -5003,6 +5035,14 @@ public:
     Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
   }
 };
+
+void WindowsAArch64TargetCodeGenInfo::setTargetAttributes(
+    const Decl *D, llvm::GlobalValue *GV, CodeGen::CodeGenModule &CGM) const {
+  AArch64TargetCodeGenInfo::setTargetAttributes(D, GV, CGM);
+  if (GV->isDeclaration())
+    return;
+  addStackProbeTargetAttributes(D, GV, CGM);
+}
 }
 
 ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty) const {
@@ -8209,6 +8249,137 @@ SparcV9TargetCodeGenInfo::initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
   return false;
 }
 
+// ARC ABI implementation.
+namespace {
+
+class ARCABIInfo : public DefaultABIInfo {
+public:
+  using DefaultABIInfo::DefaultABIInfo;
+
+private:
+  Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                    QualType Ty) const override;
+
+  void updateState(const ABIArgInfo &Info, QualType Ty, CCState &State) const {
+    if (!State.FreeRegs)
+      return;
+    if (Info.isIndirect() && Info.getInReg())
+      State.FreeRegs--;
+    else if (Info.isDirect() && Info.getInReg()) {
+      unsigned sz = (getContext().getTypeSize(Ty) + 31) / 32;
+      if (sz < State.FreeRegs)
+        State.FreeRegs -= sz;
+      else
+        State.FreeRegs = 0;
+    }
+  }
+
+  void computeInfo(CGFunctionInfo &FI) const override {
+    CCState State(FI.getCallingConvention());
+    // ARC uses 8 registers to pass arguments.
+    State.FreeRegs = 8;
+
+    if (!getCXXABI().classifyReturnType(FI))
+      FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+    updateState(FI.getReturnInfo(), FI.getReturnType(), State);
+    for (auto &I : FI.arguments()) {
+      I.info = classifyArgumentType(I.type, State.FreeRegs);
+      updateState(I.info, I.type, State);
+    }
+  }
+
+  ABIArgInfo getIndirectByRef(QualType Ty, bool HasFreeRegs) const;
+  ABIArgInfo getIndirectByValue(QualType Ty) const;
+  ABIArgInfo classifyArgumentType(QualType Ty, uint8_t FreeRegs) const;
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+};
+
+class ARCTargetCodeGenInfo : public TargetCodeGenInfo {
+public:
+  ARCTargetCodeGenInfo(CodeGenTypes &CGT)
+      : TargetCodeGenInfo(new ARCABIInfo(CGT)) {}
+};
+
+
+ABIArgInfo ARCABIInfo::getIndirectByRef(QualType Ty, bool HasFreeRegs) const {
+  return HasFreeRegs ? getNaturalAlignIndirectInReg(Ty) :
+                       getNaturalAlignIndirect(Ty, false);
+}
+
+ABIArgInfo ARCABIInfo::getIndirectByValue(QualType Ty) const {
+  // Compute the byval alignment. 
+  const unsigned MinABIStackAlignInBytes = 4;
+  unsigned TypeAlign = getContext().getTypeAlign(Ty) / 8;
+  return ABIArgInfo::getIndirect(CharUnits::fromQuantity(4), /*ByVal=*/true,
+                                 TypeAlign > MinABIStackAlignInBytes);
+}
+
+Address ARCABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                              QualType Ty) const {
+  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*indirect*/ false,
+                          getContext().getTypeInfoInChars(Ty),
+                          CharUnits::fromQuantity(4), true);
+}
+
+ABIArgInfo ARCABIInfo::classifyArgumentType(QualType Ty,
+                                            uint8_t FreeRegs) const {
+  // Handle the generic C++ ABI.
+  const RecordType *RT = Ty->getAs<RecordType>();
+  if (RT) {
+    CGCXXABI::RecordArgABI RAA = getRecordArgABI(RT, getCXXABI());
+    if (RAA == CGCXXABI::RAA_Indirect)
+      return getIndirectByRef(Ty, FreeRegs > 0);
+
+    if (RAA == CGCXXABI::RAA_DirectInMemory)
+      return getIndirectByValue(Ty);
+  }
+
+  // Treat an enum type as its underlying type.
+  if (const EnumType *EnumTy = Ty->getAs<EnumType>())
+    Ty = EnumTy->getDecl()->getIntegerType();
+
+  auto SizeInRegs = llvm::alignTo(getContext().getTypeSize(Ty), 32) / 32;
+
+  if (isAggregateTypeForABI(Ty)) {
+    // Structures with flexible arrays are always indirect.
+    if (RT && RT->getDecl()->hasFlexibleArrayMember())
+      return getIndirectByValue(Ty);
+
+    // Ignore empty structs/unions.
+    if (isEmptyRecord(getContext(), Ty, true))
+      return ABIArgInfo::getIgnore();
+
+    llvm::LLVMContext &LLVMContext = getVMContext();
+
+    llvm::IntegerType *Int32 = llvm::Type::getInt32Ty(LLVMContext);
+    SmallVector<llvm::Type *, 3> Elements(SizeInRegs, Int32);
+    llvm::Type *Result = llvm::StructType::get(LLVMContext, Elements);
+
+    return FreeRegs >= SizeInRegs ?
+        ABIArgInfo::getDirectInReg(Result) :
+        ABIArgInfo::getDirect(Result, 0, nullptr, false);
+  }
+
+  return Ty->isPromotableIntegerType() ?
+      (FreeRegs >= SizeInRegs ? ABIArgInfo::getExtendInReg(Ty) :
+                                ABIArgInfo::getExtend(Ty)) :
+      (FreeRegs >= SizeInRegs ? ABIArgInfo::getDirectInReg() :
+                                ABIArgInfo::getDirect());
+}
+
+ABIArgInfo ARCABIInfo::classifyReturnType(QualType RetTy) const {
+  if (RetTy->isAnyComplexType())
+    return ABIArgInfo::getDirectInReg();
+
+  // Arguments of size > 4 registers are indirect.  
+  auto RetSize = llvm::alignTo(getContext().getTypeSize(RetTy), 32) / 32;
+  if (RetSize > 4)
+    return getIndirectByRef(RetTy, /*HasFreeRegs*/ true);
+
+  return DefaultABIInfo::classifyReturnType(RetTy);
+}
+
+} // End anonymous namespace.
 
 //===----------------------------------------------------------------------===//
 // XCore ABI Implementation
@@ -9230,6 +9401,8 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     return SetCGInfo(new SparcV9TargetCodeGenInfo(Types));
   case llvm::Triple::xcore:
     return SetCGInfo(new XCoreTargetCodeGenInfo(Types));
+  case llvm::Triple::arc:
+    return SetCGInfo(new ARCTargetCodeGenInfo(Types));
   case llvm::Triple::spir:
   case llvm::Triple::spir64:
     return SetCGInfo(new SPIRTargetCodeGenInfo(Types));

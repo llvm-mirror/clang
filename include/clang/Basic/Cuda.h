@@ -62,6 +62,9 @@ enum class CudaArch {
   GFX810,
   GFX900,
   GFX902,
+  GFX904,
+  GFX906,
+  GFX909,
   LAST,
 };
 const char *CudaArchToString(CudaArch A);

@@ -58,7 +58,10 @@ import shutil
 import sys
 import threading
 import time
-import Queue
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 
 ###############################################################################
 # Helper functions.
@@ -255,6 +258,13 @@ def applyPatch(Dir, PBuildLogFile):
         sys.exit(1)
 
 
+def generateAnalyzerConfig(Args):
+    Out = "serialize-stats=true,stable-report-filename=true"
+    if Args.extra_analyzer_config:
+        Out += "," + Args.extra_analyzer_config
+    return Out
+
+
 def runScanBuild(Args, Dir, SBOutputDir, PBuildLogFile):
     """
     Build the project with scan-build by reading in the commands and
@@ -277,15 +287,7 @@ def runScanBuild(Args, Dir, SBOutputDir, PBuildLogFile):
     SBOptions += "-plist-html -o '%s' " % SBOutputDir
     SBOptions += "-enable-checker " + AllCheckers + " "
     SBOptions += "--keep-empty "
-    AnalyzerConfig = [
-        ("stable-report-filename", "true"),
-        ("serialize-stats", "true"),
-    ]
-    AnalyzerConfigSerialized = ",".join(
-        "%s=%s" % (key, value) for (key, value) in AnalyzerConfig)
-    if Args.extra_args:
-        AnalyzerConfigSerialized += "," + Args.extra_args
-    SBOptions += "-analyzer-config '%s' " % AnalyzerConfigSerialized
+    SBOptions += "-analyzer-config '%s' " % generateAnalyzerConfig(Args)
 
     # Always use ccc-analyze to ensure that we can locate the failures
     # directory.
@@ -306,6 +308,7 @@ def runScanBuild(Args, Dir, SBOutputDir, PBuildLogFile):
                 SBPrefix = ""
                 ExtraEnv['OUTPUT'] = SBOutputDir
                 ExtraEnv['CC'] = Clang
+                ExtraEnv['ANALYZER_CONFIG'] = generateAnalyzerConfig(Args)
                 continue
 
             # If using 'make', auto imply a -jX argument
@@ -330,7 +333,7 @@ def runScanBuild(Args, Dir, SBOutputDir, PBuildLogFile):
         sys.exit(1)
 
 
-def runAnalyzePreprocessed(Dir, SBOutputDir, Mode):
+def runAnalyzePreprocessed(Args, Dir, SBOutputDir, Mode):
     """
     Run analysis on a set of preprocessed files.
     """
@@ -351,6 +354,7 @@ def runAnalyzePreprocessed(Dir, SBOutputDir, Mode):
     CmdPrefix += "-analyze -analyzer-output=plist -w "
     CmdPrefix += "-analyzer-checker=" + Checkers
     CmdPrefix += " -fcxx-exceptions -fblocks "
+    CmdPrefix += " -analyzer-config %s " % generateAnalyzerConfig(Args)
 
     if (Mode == 2):
         CmdPrefix += "-std=c++11 "
@@ -381,7 +385,7 @@ def runAnalyzePreprocessed(Dir, SBOutputDir, Mode):
             check_call(Command, cwd=Dir, stderr=LogFile,
                        stdout=LogFile,
                        shell=True)
-        except CalledProcessError, e:
+        except CalledProcessError as e:
             Local.stderr.write("Error: Analyzes of %s failed. "
                                "See %s for details."
                                "Error code %d.\n" % (
@@ -435,7 +439,7 @@ def buildProject(Args, Dir, SBOutputDir, ProjectBuildMode, IsReferenceBuild):
             runCleanupScript(Dir, PBuildLogFile)
             runScanBuild(Args, Dir, SBOutputDir, PBuildLogFile)
         else:
-            runAnalyzePreprocessed(Dir, SBOutputDir, ProjectBuildMode)
+            runAnalyzePreprocessed(Args, Dir, SBOutputDir, ProjectBuildMode)
 
         if IsReferenceBuild:
             runCleanupScript(Dir, PBuildLogFile)
@@ -741,7 +745,7 @@ def multiThreadedTestAll(Args, ProjectsToTest, Jobs):
 
     :return: whether tests have passed.
     """
-    TasksQueue = Queue.Queue()
+    TasksQueue = queue.Queue()
 
     for ProjArgs in ProjectsToTest:
         TasksQueue.put(ProjArgs)
@@ -794,9 +798,10 @@ if __name__ == '__main__':
     Parser.add_argument('-j', '--jobs', dest='jobs', type=int,
                         default=0,
                         help='Number of projects to test concurrently')
-    Parser.add_argument('--extra-analyzer-args', dest='extra_args',
-                        type=str, default="",
-                        help="Extra arguments to add to -analyzer-config")
+    Parser.add_argument('--extra-analyzer-config', dest='extra_analyzer_config',
+                        type=str,
+                        default="",
+                        help="Arguments passed to to -analyzer-config")
     Args = Parser.parse_args()
 
     TestsPassed = testAll(Args)

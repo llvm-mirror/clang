@@ -19,8 +19,6 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Sema/LoopHint.h"
-#include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
@@ -1047,10 +1045,9 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
   // exception to our over-conservative rules about not jumping to
   // statements following block literals with non-trivial cleanups.
   RunCleanupsScope cleanupScope(*this);
-  if (const ExprWithCleanups *cleanups =
-        dyn_cast_or_null<ExprWithCleanups>(RV)) {
-    enterFullExpression(cleanups);
-    RV = cleanups->getSubExpr();
+  if (const FullExpr *fe = dyn_cast_or_null<FullExpr>(RV)) {
+    enterFullExpression(fe);
+    RV = fe->getSubExpr();
   }
 
   // FIXME: Clean this up by using an LValue for ReturnTemp,
@@ -1823,9 +1820,9 @@ llvm::Value* CodeGenFunction::EmitAsmInput(
   // If this can't be a register or memory, i.e., has to be a constant
   // (immediate or symbolic), try to emit it as such.
   if (!Info.allowsRegister() && !Info.allowsMemory()) {
-    llvm::APSInt Result;
+    Expr::EvalResult Result;
     if (InputExpr->EvaluateAsInt(Result, getContext()))
-      return llvm::ConstantInt::get(getLLVMContext(), Result);
+      return llvm::ConstantInt::get(getLLVMContext(), Result.Val.getInt());
     assert(!Info.requiresImmediateConstant() &&
            "Required-immediate inlineasm arg isn't constant?");
   }

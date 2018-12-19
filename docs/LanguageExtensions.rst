@@ -112,18 +112,22 @@ of ``cxx_rvalue_references``.
 ``__has_cpp_attribute``
 -----------------------
 
-This function-like macro takes a single argument that is the name of a
-C++11-style attribute. The argument can either be a single identifier, or a
-scoped identifier. If the attribute is supported, a nonzero value is returned.
-If the attribute is a standards-based attribute, this macro returns a nonzero
-value based on the year and month in which the attribute was voted into the
-working draft. If the attribute is not supported by the current compliation
-target, this macro evaluates to 0.  It can be used like this:
+This function-like macro is available in C++2a by default, and is provided as an
+extension in earlier language standards. It takes a single argument that is the
+name of a double-square-bracket-style attribute. The argument can either be a
+single identifier or a scoped identifier. If the attribute is supported, a
+nonzero value is returned. If the attribute is a standards-based attribute, this
+macro returns a nonzero value based on the year and month in which the attribute
+was voted into the working draft. See `WG21 SD-6
+<https://isocpp.org/std/standing-documents/sd-6-sg10-feature-test-recommendations>`_
+for the list of values returned for standards-based attributes. If the attribute
+is not supported by the current compliation target, this macro evaluates to 0.
+It can be used like this:
 
 .. code-block:: c++
 
-  #ifndef __has_cpp_attribute         // Optional of course.
-    #define __has_cpp_attribute(x) 0  // Compatibility with non-clang compilers.
+  #ifndef __has_cpp_attribute         // For backwards compatibility
+    #define __has_cpp_attribute(x) 0
   #endif
 
   ...
@@ -134,10 +138,11 @@ target, this macro evaluates to 0.  It can be used like this:
   #endif
   ...
 
-The attribute identifier (but not scope) can also be specified with a preceding
-and following ``__`` (double underscore) to avoid interference from a macro with
-the same name.  For instance, ``gnu::__const__`` can be used instead of
-``gnu::const``.
+The attribute scope tokens ``clang`` and ``_Clang`` are interchangeable, as are
+the attribute scope tokens ``gnu`` and ``__gnu__``. Attribute tokens in either
+of these namespaces can be specified with a preceding and following ``__``
+(double underscore) to avoid interference from a macro with the same name. For
+instance, ``gnu::__const__`` can be used instead of ``gnu::const``.
 
 ``__has_c_attribute``
 ---------------------
@@ -162,11 +167,11 @@ current compilation target, this macro evaluates to 0. It can be used like this:
   #endif
   ...
 
-The attribute identifier (but not scope) can also be specified with a preceding
-and following ``__`` (double underscore) to avoid interference from a macro with
-the same name.  For instance, ``gnu::__const__`` can be used instead of
-``gnu::const``.
-
+The attribute scope tokens ``clang`` and ``_Clang`` are interchangeable, as are
+the attribute scope tokens ``gnu`` and ``__gnu__``. Attribute tokens in either
+of these namespaces can be specified with a preceding and following ``__``
+(double underscore) to avoid interference from a macro with the same name. For
+instance, ``gnu::__const__`` can be used instead of ``gnu::const``.
 
 ``__has_attribute``
 -------------------
@@ -590,7 +595,7 @@ which does not provide them.  The features which can be tested are listed here.
 Since Clang 3.4, the C++ SD-6 feature test macros are also supported.
 These are macros with names of the form ``__cpp_<feature_name>``, and are
 intended to be a portable way to query the supported features of the compiler.
-See `the C++ status page <http://clang.llvm.org/cxx_status.html#ts>`_ for
+See `the C++ status page <https://clang.llvm.org/cxx_status.html#ts>`_ for
 information on the version of SD-6 supported by each Clang release, and the
 macros provided by that revision of the recommendations.
 
@@ -1013,7 +1018,7 @@ Modules
 Use ``__has_feature(modules)`` to determine if Modules have been enabled.
 For example, compiling code with ``-fmodules`` enables the use of Modules.
 
-More information could be found `here <http://clang.llvm.org/docs/Modules.html>`_.
+More information could be found `here <https://clang.llvm.org/docs/Modules.html>`_.
 
 Checks for Type Trait Primitives
 ================================
@@ -1353,7 +1358,7 @@ In Objective-C, functions and methods are generally assumed to follow the
 conventions for ownership of object arguments and
 return values. However, there are exceptions, and so Clang provides attributes
 to allow these exceptions to be documented. This are used by ARC and the
-`static analyzer <http://clang-analyzer.llvm.org>`_ Some exceptions may be
+`static analyzer <https://clang-analyzer.llvm.org>`_ Some exceptions may be
 better described using the ``objc_method_family`` attribute instead.
 
 **Usage**: The ``ns_returns_retained``, ``ns_returns_not_retained``,
@@ -1390,7 +1395,7 @@ method; it specifies that the method expects its ``self`` parameter to have a
   - (void) baz:(id) __attribute__((ns_consumed)) x;
 
 Further examples of these attributes are available in the static analyzer's `list of annotations for analysis
-<http://clang-analyzer.llvm.org/annotations.html#cocoa_mem>`_.
+<https://clang-analyzer.llvm.org/annotations.html#cocoa_mem>`_.
 
 Query for these features with ``__has_attribute(ns_consumed)``,
 ``__has_attribute(ns_returns_retained)``, etc.
@@ -1411,7 +1416,7 @@ Objective-C methods.  If such a check was missed, the program would compile
 fine, run fine on newer systems, but crash on older systems.
 
 As of LLVM 5.0, ``-Wunguarded-availability`` uses the `availability attributes
-<http://clang.llvm.org/docs/AttributeReference.html#availability>`_ together
+<https://clang.llvm.org/docs/AttributeReference.html#availability>`_ together
 with the new ``@available()`` keyword to assist with this issue.
 When a method that's introduced in the OS newer than the target OS is called, a
 -Wunguarded-availability warning is emitted if that call is not guarded:
@@ -1454,7 +1459,7 @@ More than one platform can be listed in ``@available()``:
 
 If the caller of ``my_fun()`` already checks that ``my_fun()`` is only called
 on 10.12, then add an `availability attribute
-<http://clang.llvm.org/docs/AttributeReference.html#availability>`_ to it,
+<https://clang.llvm.org/docs/AttributeReference.html#availability>`_ to it,
 which will also suppress the warning and require that calls to my_fun() are
 checked:
 
@@ -2041,7 +2046,7 @@ Floating point builtins
 Returns the platform specific canonical encoding of a floating point
 number. This canonicalization is useful for implementing certain
 numeric primitives such as frexp. See `LLVM canonicalize intrinsic
-<http://llvm.org/docs/LangRef.html#llvm-canonicalize-intrinsic>`_ for
+<https://llvm.org/docs/LangRef.html#llvm-canonicalize-intrinsic>`_ for
 more information on the semantics.
 
 String builtins
@@ -2255,7 +2260,7 @@ standard library to implement `std::experimental::coroutine_handle` type.
 
 Other coroutine builtins are either for internal clang use or for use during
 development of the coroutine feature. See `Coroutines in LLVM
-<http://llvm.org/docs/Coroutines.html#intrinsics>`_ for
+<https://llvm.org/docs/Coroutines.html#intrinsics>`_ for
 more information on their semantics. Note that builtins matching the intrinsics
 that take token as the first parameter (llvm.coro.begin, llvm.coro.alloc, 
 llvm.coro.free and llvm.coro.suspend) omit the token parameter and fill it to
@@ -2362,9 +2367,9 @@ Extensions for Static Analysis
 
 Clang supports additional attributes that are useful for documenting program
 invariants and rules for static analysis tools, such as the `Clang Static
-Analyzer <http://clang-analyzer.llvm.org/>`_. These attributes are documented
+Analyzer <https://clang-analyzer.llvm.org/>`_. These attributes are documented
 in the analyzer's `list of source-level annotations
-<http://clang-analyzer.llvm.org/annotations.html>`_.
+<https://clang-analyzer.llvm.org/annotations.html>`_.
 
 
 Extensions for Dynamic Analysis
@@ -2651,17 +2656,19 @@ Specifying an attribute for multiple declarations (#pragma clang attribute)
 
 The ``#pragma clang attribute`` directive can be used to apply an attribute to
 multiple declarations. The ``#pragma clang attribute push`` variation of the
-directive pushes a new attribute to the attribute stack. The declarations that
-follow the pragma receive the attributes that are on the attribute stack, until
-the stack is cleared using a ``#pragma clang attribute pop`` directive. Multiple
-push directives can be nested inside each other.
+directive pushes a new "scope" of ``#pragma clang attribute`` that attributes
+can be added to. The ``#pragma clang attribute (...)`` variation adds an
+attribute to that scope, and the ``#pragma clang attribute pop`` variation pops
+the scope. You can also use ``#pragma clang attribute push (...)``, which is a
+shorthand for when you want to add one attribute to a new scope. Multiple push
+directives can be nested inside each other.
 
 The attributes that are used in the ``#pragma clang attribute`` directives
 can be written using the GNU-style syntax:
 
 .. code-block:: c++
 
-  #pragma clang attribute push(__attribute__((annotate("custom"))), apply_to = function)
+  #pragma clang attribute push (__attribute__((annotate("custom"))), apply_to = function)
 
   void function(); // The function now has the annotate("custom") attribute
 
@@ -2671,7 +2678,7 @@ The attributes can also be written using the C++11 style syntax:
 
 .. code-block:: c++
 
-  #pragma clang attribute push([[noreturn]], apply_to = function)
+  #pragma clang attribute push ([[noreturn]], apply_to = function)
 
   void function(); // The function now has the [[noreturn]] attribute
 
@@ -2681,7 +2688,7 @@ The ``__declspec`` style syntax is also supported:
 
 .. code-block:: c++
 
-  #pragma clang attribute push(__declspec(dllexport), apply_to = function)
+  #pragma clang attribute push (__declspec(dllexport), apply_to = function)
 
   void function(); // The function now has the __declspec(dllexport) attribute
 

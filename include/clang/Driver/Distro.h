@@ -10,7 +10,7 @@
 #ifndef LLVM_CLANG_DRIVER_DISTRO_H
 #define LLVM_CLANG_DRIVER_DISTRO_H
 
-#include "clang/Basic/VirtualFileSystem.h"
+#include "llvm/Support/VirtualFileSystem.h"
 
 namespace clang {
 namespace driver {
@@ -62,6 +62,7 @@ public:
     UbuntuArtful,
     UbuntuBionic,
     UbuntuCosmic,
+    UbuntuDisco,
     UnknownDistro
   };
 
@@ -80,7 +81,7 @@ public:
   Distro(DistroType D) : DistroVal(D) {}
 
   /// Detects the distribution using specified VFS.
-  explicit Distro(clang::vfs::FileSystem& VFS);
+  explicit Distro(llvm::vfs::FileSystem &VFS);
 
   bool operator==(const Distro &Other) const {
     return DistroVal == Other.DistroVal;
@@ -115,7 +116,7 @@ public:
   }
 
   bool IsUbuntu() const {
-    return DistroVal >= UbuntuHardy && DistroVal <= UbuntuCosmic;
+    return DistroVal >= UbuntuHardy && DistroVal <= UbuntuDisco;
   }
 
   bool IsAlpineLinux() const {

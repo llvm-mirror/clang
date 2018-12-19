@@ -113,6 +113,7 @@ public:
             return true;
           }
         }
+      break;
     case OMF_dealloc:
       break;
     }
@@ -253,7 +254,7 @@ private:
     }
     while (OuterS && (isa<ParenExpr>(OuterS) ||
                       isa<CastExpr>(OuterS) ||
-                      isa<ExprWithCleanups>(OuterS)));
+                      isa<FullExpr>(OuterS)));
 
     if (!OuterS)
       return std::make_pair(prevStmt, nextStmt);
@@ -376,8 +377,8 @@ private:
 
     RecContainer = StmtE;
     Rec = Init->IgnoreParenImpCasts();
-    if (ExprWithCleanups *EWC = dyn_cast<ExprWithCleanups>(Rec))
-      Rec = EWC->getSubExpr()->IgnoreParenImpCasts();
+    if (FullExpr *FE = dyn_cast<FullExpr>(Rec))
+      Rec = FE->getSubExpr()->IgnoreParenImpCasts();
     RecRange = Rec->getSourceRange();
     if (SM.isMacroArgExpansion(RecRange.getBegin()))
       RecRange.setBegin(SM.getImmediateSpellingLoc(RecRange.getBegin()));

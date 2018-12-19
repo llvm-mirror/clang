@@ -225,6 +225,7 @@ public:
     case 'Y':
       if ((++I != E) && ((*I == '0') || (*I == 'z')))
         return "xmm0";
+      break;
     default:
       break;
     }
@@ -290,9 +291,6 @@ public:
     return checkCPUKind(CPU = getCPUKind(Name));
   }
 
-  bool supportsMultiVersioning() const override {
-    return getTriple().isOSBinFormatELF();
-  }
   unsigned multiVersionSortPriority(StringRef Name) const override;
 
   bool setFPMath(StringRef Name) override;

@@ -16,14 +16,15 @@
 #include "CGDebugInfo.h"
 #include "CGRecordLayout.h"
 #include "CodeGenFunction.h"
+#include "TargetInfo.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Transforms/Utils/SanitizerStats.h"
@@ -2012,8 +2013,19 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
                                              bool NewPointerIsChecked) {
   CallArgList Args;
 
+  LangAS SlotAS = E->getType().getAddressSpace();
+  QualType ThisType = D->getThisType(getContext());
+  LangAS ThisAS = ThisType.getTypePtr()->getPointeeType().getAddressSpace();
+  llvm::Value *ThisPtr = This.getPointer();
+  if (SlotAS != ThisAS) {
+    unsigned TargetThisAS = getContext().getTargetAddressSpace(ThisAS);
+    llvm::Type *NewType =
+        ThisPtr->getType()->getPointerElementType()->getPointerTo(TargetThisAS);
+    ThisPtr = getTargetHooks().performAddrSpaceCast(*this, This.getPointer(),
+                                                    ThisAS, SlotAS, NewType);
+  }
   // Push the this ptr.
-  Args.add(RValue::get(This.getPointer()), D->getThisType(getContext()));
+  Args.add(RValue::get(ThisPtr), D->getThisType(getContext()));
 
   // If this is a trivial constructor, emit a memcpy now before we lose
   // the alignment information on the argument.
@@ -2122,7 +2134,7 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
     CGM.getAddrOfCXXStructor(D, getFromCtorType(Type));
   const CGFunctionInfo &Info = CGM.getTypes().arrangeCXXConstructorCall(
       Args, D, Type, ExtraArgs.Prefix, ExtraArgs.Suffix, PassPrototypeArgs);
-  CGCallee Callee = CGCallee::forDirect(CalleePtr, D);
+  CGCallee Callee = CGCallee::forDirect(CalleePtr, GlobalDecl(D, Type));
   EmitCall(Info, Callee, ReturnValueSlot(), Args);
 
   // Generate vtable assumptions if we're constructing a complete object
@@ -2808,7 +2820,7 @@ void CodeGenFunction::EmitForwardingCallToLambda(
   // variadic arguments.
 
   // Now emit our call.
-  auto callee = CGCallee::forDirect(calleePtr, callOperator);
+  auto callee = CGCallee::forDirect(calleePtr, GlobalDecl(callOperator));
   RValue RV = EmitCall(calleeFnInfo, callee, returnSlot, callArgs);
 
   // If necessary, copy the returned value into the slot.
@@ -2839,7 +2851,7 @@ void CodeGenFunction::EmitLambdaBlockInvokeBody() {
   CallArgList CallArgs;
 
   QualType ThisType = getContext().getPointerType(getContext().getRecordType(Lambda));
-  Address ThisPtr = GetAddrOfBlockDecl(variable, false);
+  Address ThisPtr = GetAddrOfBlockDecl(variable);
   CallArgs.add(RValue::get(ThisPtr.getPointer()), ThisType);
 
   // Add the rest of the parameters.

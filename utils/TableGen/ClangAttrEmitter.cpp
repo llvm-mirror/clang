@@ -2935,9 +2935,9 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
       if (I != List.cbegin())
         OS << " else ";
       if (I->first.empty())
-        OS << "if (!Scope || Scope->getName() == \"\") {\n";
+        OS << "if (ScopeName == \"\") {\n";
       else
-        OS << "if (Scope->getName() == \"" << I->first << "\") {\n";
+        OS << "if (ScopeName == \"" << I->first << "\") {\n";
       OS << "  return llvm::StringSwitch<int>(Name)\n";
       GenerateHasAttrSpellingStringSwitch(I->second, OS, Spelling, I->first);
       OS << "}";
@@ -3961,10 +3961,10 @@ void EmitClangAttrDocs(RecordKeeper &Records, raw_ostream &OS) {
   for (auto &I : SplitDocs) {
     WriteCategoryHeader(I.first, OS);
 
-    llvm::sort(I.second.begin(), I.second.end(),
+    llvm::sort(I.second,
                [](const DocumentationData &D1, const DocumentationData &D2) {
                  return D1.Heading < D2.Heading;
-              });
+               });
 
     // Walk over each of the attributes in the category and write out their
     // documentation.
@@ -3977,12 +3977,7 @@ void EmitTestPragmaAttributeSupportedAttributes(RecordKeeper &Records,
                                                 raw_ostream &OS) {
   PragmaClangAttributeSupport Support = getPragmaAttributeSupport(Records);
   ParsedAttrMap Attrs = getParsedAttrList(Records);
-  unsigned NumAttrs = 0;
-  for (const auto &I : Attrs) {
-    if (Support.isAttributedSupported(*I.second))
-      ++NumAttrs;
-  }
-  OS << "#pragma clang attribute supports " << NumAttrs << " attributes:\n";
+  OS << "#pragma clang attribute supports the following attributes:\n";
   for (const auto &I : Attrs) {
     if (!Support.isAttributedSupported(*I.second))
       continue;
@@ -4014,6 +4009,7 @@ void EmitTestPragmaAttributeSupportedAttributes(RecordKeeper &Records,
     }
     OS << ")\n";
   }
+  OS << "End of supported attributes.\n";
 }
 
 } // end namespace clang

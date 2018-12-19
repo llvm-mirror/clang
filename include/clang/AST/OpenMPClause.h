@@ -765,6 +765,179 @@ public:
   }
 };
 
+/// This represents 'unified_shared_memory' clause in the '#pragma omp requires'
+/// directive.
+///
+/// \code
+/// #pragma omp requires unified_shared_memory
+/// \endcode
+/// In this example directive '#pragma omp requires' has 'unified_shared_memory'
+/// clause.
+class OMPUnifiedSharedMemoryClause final : public OMPClause {
+public:
+  friend class OMPClauseReader;
+  /// Build 'unified_shared_memory' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  OMPUnifiedSharedMemoryClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_unified_shared_memory, StartLoc, EndLoc) {}
+
+  /// Build an empty clause.
+  OMPUnifiedSharedMemoryClause()
+      : OMPClause(OMPC_unified_shared_memory, SourceLocation(), SourceLocation()) {}
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_unified_shared_memory;
+  }
+};
+
+/// This represents 'reverse_offload' clause in the '#pragma omp requires'
+/// directive.
+///
+/// \code
+/// #pragma omp requires reverse_offload
+/// \endcode
+/// In this example directive '#pragma omp requires' has 'reverse_offload'
+/// clause.
+class OMPReverseOffloadClause final : public OMPClause {
+public:
+  friend class OMPClauseReader;
+  /// Build 'reverse_offload' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  OMPReverseOffloadClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_reverse_offload, StartLoc, EndLoc) {}
+
+  /// Build an empty clause.
+  OMPReverseOffloadClause()
+      : OMPClause(OMPC_reverse_offload, SourceLocation(), SourceLocation()) {}
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_reverse_offload;
+  }
+};
+
+/// This represents 'dynamic_allocators' clause in the '#pragma omp requires'
+/// directive.
+///
+/// \code
+/// #pragma omp requires dynamic_allocators
+/// \endcode
+/// In this example directive '#pragma omp requires' has 'dynamic_allocators'
+/// clause.
+class OMPDynamicAllocatorsClause final : public OMPClause {
+public:
+  friend class OMPClauseReader;
+  /// Build 'dynamic_allocators' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  OMPDynamicAllocatorsClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_dynamic_allocators, StartLoc, EndLoc) {}
+
+  /// Build an empty clause.
+  OMPDynamicAllocatorsClause()
+      : OMPClause(OMPC_dynamic_allocators, SourceLocation(), SourceLocation()) {
+  }
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_dynamic_allocators;
+  }
+};
+
+/// This represents 'atomic_default_mem_order' clause in the '#pragma omp
+/// requires'  directive.
+///
+/// \code
+/// #pragma omp requires atomic_default_mem_order(seq_cst)
+/// \endcode
+/// In this example directive '#pragma omp requires' has simple
+/// atomic_default_mem_order' clause with kind 'seq_cst'.
+class OMPAtomicDefaultMemOrderClause final : public OMPClause {
+  friend class OMPClauseReader;
+
+  /// Location of '('
+  SourceLocation LParenLoc;
+
+  /// A kind of the 'atomic_default_mem_order' clause.
+  OpenMPAtomicDefaultMemOrderClauseKind Kind =
+      OMPC_ATOMIC_DEFAULT_MEM_ORDER_unknown;
+
+  /// Start location of the kind in source code.
+  SourceLocation KindKwLoc;
+
+  /// Set kind of the clause.
+  ///
+  /// \param K Kind of clause.
+  void setAtomicDefaultMemOrderKind(OpenMPAtomicDefaultMemOrderClauseKind K) {
+    Kind = K;
+  }
+
+  /// Set clause kind location.
+  ///
+  /// \param KLoc Kind location.
+  void setAtomicDefaultMemOrderKindKwLoc(SourceLocation KLoc) {
+    KindKwLoc = KLoc;
+  }
+
+public:
+  /// Build 'atomic_default_mem_order' clause with argument \a A ('seq_cst',
+  /// 'acq_rel' or 'relaxed').
+  ///
+  /// \param A Argument of the clause ('seq_cst', 'acq_rel' or 'relaxed').
+  /// \param ALoc Starting location of the argument.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  OMPAtomicDefaultMemOrderClause(OpenMPAtomicDefaultMemOrderClauseKind A,
+                                 SourceLocation ALoc, SourceLocation StartLoc,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation EndLoc)
+      : OMPClause(OMPC_atomic_default_mem_order, StartLoc, EndLoc),
+        LParenLoc(LParenLoc), Kind(A), KindKwLoc(ALoc) {}
+
+  /// Build an empty clause.
+  OMPAtomicDefaultMemOrderClause()
+      : OMPClause(OMPC_atomic_default_mem_order, SourceLocation(),
+                  SourceLocation()) {}
+
+  /// Sets the location of '('.
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+
+  /// Returns the locaiton of '('.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// Returns kind of the clause.
+  OpenMPAtomicDefaultMemOrderClauseKind getAtomicDefaultMemOrderKind() const {
+    return Kind;
+  }
+
+  /// Returns location of clause kind.
+  SourceLocation getAtomicDefaultMemOrderKindKwLoc() const { return KindKwLoc; }
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_atomic_default_mem_order;
+  }
+};
+
 /// This represents 'schedule' clause in the '#pragma omp ...' directive.
 ///
 /// \code
@@ -5109,6 +5282,22 @@ class OMPClauseVisitor :
 template<class ImplClass, typename RetTy = void>
 class ConstOMPClauseVisitor :
       public OMPClauseVisitorBase <ImplClass, const_ptr, RetTy> {};
+
+class OMPClausePrinter final : public OMPClauseVisitor<OMPClausePrinter> {
+  raw_ostream &OS;
+  const PrintingPolicy &Policy;
+
+  /// Process clauses with list of variables.
+  template <typename T> void VisitOMPClauseList(T *Node, char StartSym);
+
+public:
+  OMPClausePrinter(raw_ostream &OS, const PrintingPolicy &Policy)
+      : OS(OS), Policy(Policy) {}
+
+#define OPENMP_CLAUSE(Name, Class) void Visit##Class(Class *S);
+#include "clang/Basic/OpenMPKinds.def"
+};
+
 } // namespace clang
 
 #endif // LLVM_CLANG_AST_OPENMPCLAUSE_H

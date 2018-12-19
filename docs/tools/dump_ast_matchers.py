@@ -38,7 +38,7 @@ def esc(text):
   text = re.sub(r'>', '&gt;', text)
   def link_if_exists(m):
     name = m.group(1)
-    url = 'http://clang.llvm.org/doxygen/classclang_1_1%s.html' % name
+    url = 'https://clang.llvm.org/doxygen/classclang_1_1%s.html' % name
     if url not in doxygen_probes:
       try:
         print 'Probing %s...' % url
@@ -181,9 +181,9 @@ def act_on_decl(declaration, comment, allowed_types):
         raise Exception('Inconsistent documentation for: %s' % name)
       for result_type in result_types:
         add_matcher(result_type, name, 'Matcher<Type>', comment)
-        if loc:
-          add_matcher('%sLoc' % result_type, '%sLoc' % name, 'Matcher<TypeLoc>',
-                      comment)
+        # if loc:
+        #   add_matcher('%sLoc' % result_type, '%sLoc' % name, 'Matcher<TypeLoc>',
+        #               comment)
       return
 
     m = re.match(r"""^\s*AST_POLYMORPHIC_MATCHER(_P)?(.?)(?:_OVERLOAD)?\(
@@ -354,7 +354,7 @@ for line in open(MATCHERS_FILE).read().splitlines():
         allowed_types += [m.group(1)]
     continue
   if line.strip() and line.lstrip()[0] == '/':
-    comment += re.sub(r'/+\s?', '', line) + '\n'
+    comment += re.sub(r'^/+\s?', '', line) + '\n'
   else:
     declaration += ' ' + line
     if ((not line.strip()) or 

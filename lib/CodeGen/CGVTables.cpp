@@ -16,9 +16,9 @@
 #include "CodeGenModule.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/RecordLayout.h"
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -304,7 +304,7 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Constant *CalleePtr,
         CGM.ErrorUnsupported(
             MD, "non-trivial argument copy for return-adjusting thunk");
     }
-    EmitMustTailThunk(MD, AdjustedThisPtr, CalleePtr);
+    EmitMustTailThunk(CurGD, AdjustedThisPtr, CalleePtr);
     return;
   }
 
@@ -350,13 +350,12 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Constant *CalleePtr,
                                   : FPT->getReturnType();
   ReturnValueSlot Slot;
   if (!ResultType->isVoidType() &&
-      CurFnInfo->getReturnInfo().getKind() == ABIArgInfo::Indirect &&
-      !hasScalarEvaluationKind(CurFnInfo->getReturnType()))
+      CurFnInfo->getReturnInfo().getKind() == ABIArgInfo::Indirect)
     Slot = ReturnValueSlot(ReturnValue, ResultType.isVolatileQualified());
 
   // Now emit our call.
   llvm::Instruction *CallOrInvoke;
-  CGCallee Callee = CGCallee::forDirect(CalleePtr, MD);
+  CGCallee Callee = CGCallee::forDirect(CalleePtr, CurGD);
   RValue RV = EmitCall(*CurFnInfo, Callee, Slot, CallArgs, &CallOrInvoke);
 
   // Consider return adjustment if we have ThunkInfo.
@@ -375,7 +374,7 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Constant *CalleePtr,
   FinishThunk();
 }
 
-void CodeGenFunction::EmitMustTailThunk(const CXXMethodDecl *MD,
+void CodeGenFunction::EmitMustTailThunk(GlobalDecl GD,
                                         llvm::Value *AdjustedThisPtr,
                                         llvm::Value *CalleePtr) {
   // Emitting a musttail call thunk doesn't use any of the CGCall.cpp machinery
@@ -412,7 +411,7 @@ void CodeGenFunction::EmitMustTailThunk(const CXXMethodDecl *MD,
   // Apply the standard set of call attributes.
   unsigned CallingConv;
   llvm::AttributeList Attrs;
-  CGM.ConstructAttributeList(CalleePtr->getName(), *CurFnInfo, MD, Attrs,
+  CGM.ConstructAttributeList(CalleePtr->getName(), *CurFnInfo, GD, Attrs,
                              CallingConv, /*AttrOnCallSite=*/true);
   Call->setAttributes(Attrs);
   Call->setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));

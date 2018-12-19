@@ -343,6 +343,10 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     K = CXCursor_CharacterLiteral;
     break;
 
+  case Stmt::ConstantExprClass:
+    return MakeCXCursor(cast<ConstantExpr>(S)->getSubExpr(),
+                        Parent, TU, RegionOfInterest);
+
   case Stmt::ParenExprClass:
     K = CXCursor_ParenExpr;
     break;
@@ -1008,10 +1012,6 @@ const Attr *cxcursor::getCursorAttr(CXCursor Cursor) {
   return static_cast<const Attr *>(Cursor.data[1]);
 }
 
-const Decl *cxcursor::getCursorParentDecl(CXCursor Cursor) {
-  return static_cast<const Decl *>(Cursor.data[0]);
-}
-
 ASTContext &cxcursor::getCursorContext(CXCursor Cursor) {
   return getCursorASTUnit(Cursor)->getASTContext();
 }
@@ -1164,6 +1164,9 @@ int clang_Cursor_getNumArguments(CXCursor C) {
     if (const CallExpr *CE = dyn_cast<CallExpr>(E)) {
       return CE->getNumArgs();
     }
+    if (const CXXConstructExpr *CE = dyn_cast<CXXConstructExpr>(E)) {
+      return CE->getNumArgs();
+    }
   }
 
   return -1;
@@ -1186,6 +1189,13 @@ CXCursor clang_Cursor_getArgument(CXCursor C, unsigned i) {
   if (clang_isExpression(C.kind)) {
     const Expr *E = cxcursor::getCursorExpr(C);
     if (const CallExpr *CE = dyn_cast<CallExpr>(E)) {
+      if (i < CE->getNumArgs()) {
+        return cxcursor::MakeCXCursor(CE->getArg(i),
+                                      getCursorDecl(C),
+                                      cxcursor::getCursorTU(C));
+      }
+    }
+    if (const CXXConstructExpr *CE = dyn_cast<CXXConstructExpr>(E)) {
       if (i < CE->getNumArgs()) {
         return cxcursor::MakeCXCursor(CE->getArg(i),
                                       getCursorDecl(C),

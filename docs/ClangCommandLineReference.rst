@@ -792,6 +792,16 @@ Don't use blacklist file for sanitizers
 
 .. option:: -fparse-all-comments
 
+.. option:: -frecord-command-line, -frecord-gcc-switches, -fno-record-command-line, -fno-record-gcc-switches
+
+Generate a section named ".GCC.command.line" containing the clang driver
+command-line. After linking, the section may contain multiple command lines,
+which will be individually terminated by null bytes. Separate arguments within
+a command line are combined with spaces; spaces and backslashes within an
+argument are escaped with backslashes. This format differs from the format of
+the equivalent section produced by GCC with the -frecord-gcc-switches flag.
+This option is currently only supported on ELF targets.
+
 .. option:: -fsanitize-address-field-padding=<arg>
 
 Level of field padding for AddressSanitizer
@@ -800,9 +810,15 @@ Level of field padding for AddressSanitizer
 
 Enable linker dead stripping of globals in AddressSanitizer
 
-.. option:: -fsanitize-address-poison-class-member-array-new-cookie, -fno-sanitize-address-poison-class-member-array-new-cookie
+.. option:: -fsanitize-address-use-odr-indicator, -fno-sanitize-address-use-odr-indicator
 
-Enable poisoning array cookies when using class member operator new\[\] in AddressSanitizer
+Enable ODR indicator globals to avoid false ODR violation reports in partially sanitized programs at the cost of an increase in binary size
+
+.. option:: -fsanitize-address-poison-custom-array-cookie, -fno-sanitize-address-poison-custom-array-cookie
+
+Enable "poisoning" array cookies when allocating arrays with a custom operator new\[\] in Address Sanitizer, preventing accesses to the cookies from user code. An array cookie is a small implementation-defined header added to certain array allocations to record metadata such as the length of the array. Accesses to array cookies from user code are technically allowed by the standard but are more likely to be the result of an out-of-bounds array access.
+
+An operator new\[\] is "custom" if it is not one of the allocation functions provided by the C++ standard library. Array cookies from non-custom allocation functions are always poisoned.
 
 .. option:: -fsanitize-address-use-after-scope, -fno-sanitize-address-use-after-scope
 
@@ -2146,7 +2162,7 @@ Link stack frames through backchain on System Z
 
 .. option:: -mconsole<arg>
 
-.. option:: -mcpu=<arg>, -mv4 (equivalent to -mcpu=hexagonv4), -mv5 (equivalent to -mcpu=hexagonv5), -mv55 (equivalent to -mcpu=hexagonv55), -mv60 (equivalent to -mcpu=hexagonv60), -mv62 (equivalent to -mcpu=hexagonv62), -mv65 (equivalent to -mcpu=hexagonv65)
+.. option:: -mcpu=<arg>, -mv5 (equivalent to -mcpu=hexagonv5), -mv55 (equivalent to -mcpu=hexagonv55), -mv60 (equivalent to -mcpu=hexagonv60), -mv62 (equivalent to -mcpu=hexagonv62), -mv65 (equivalent to -mcpu=hexagonv65)
 
 .. option:: -mcrc, -mno-crc
 
@@ -2825,7 +2841,7 @@ Embed source text in DWARF debug sections
 
 .. option:: -gpubnames, -gno-pubnames
 
-.. option:: -grecord-gcc-switches, -gno-record-gcc-switches
+.. option:: -grecord-command-line, -grecord-gcc-switches, -gno-record-command-line, -gno-record-gcc-switches
 
 .. option:: -gsplit-dwarf
 

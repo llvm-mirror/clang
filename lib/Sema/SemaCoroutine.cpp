@@ -565,8 +565,8 @@ VarDecl *Sema::buildCoroutinePromise(SourceLocation Loc) {
 
   // Create an initialization sequence for the promise type using the
   // constructor arguments, wrapped in a parenthesized list expression.
-  Expr *PLE = new (Context) ParenListExpr(Context, FD->getLocation(),
-                                          CtorArgExprs, FD->getLocation());
+  Expr *PLE = ParenListExpr::Create(Context, FD->getLocation(),
+                                    CtorArgExprs, FD->getLocation());
   InitializedEntity Entity = InitializedEntity::InitializeVariable(VD);
   InitializationKind Kind = InitializationKind::CreateForInit(
       VD->getLocation(), /*DirectInit=*/true, PLE);
@@ -839,6 +839,19 @@ StmtResult Sema::BuildCoreturnStmt(SourceLocation Loc, Expr *E,
     ExprResult R = CheckPlaceholderExpr(E);
     if (R.isInvalid()) return StmtError();
     E = R.get();
+  }
+
+  // Move the return value if we can
+  if (E) {
+    auto NRVOCandidate = this->getCopyElisionCandidate(E->getType(), E, CES_AsIfByStdMove);
+    if (NRVOCandidate) {
+      InitializedEntity Entity =
+          InitializedEntity::InitializeResult(Loc, E->getType(), NRVOCandidate);
+      ExprResult MoveResult = this->PerformMoveOrCopyInitialization(
+          Entity, NRVOCandidate, E->getType(), E);
+      if (MoveResult.get())
+        E = MoveResult.get();
+    }
   }
 
   // FIXME: If the operand is a reference to a variable that's about to go out

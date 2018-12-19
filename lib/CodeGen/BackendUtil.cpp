@@ -8,10 +8,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CodeGen/BackendUtil.h"
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/TargetOptions.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Lex/HeaderSearchOptions.h"
@@ -37,6 +37,7 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/BuryPointer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -235,11 +236,12 @@ static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   bool Recover = CGOpts.SanitizeRecover.has(SanitizerKind::Address);
   bool UseAfterScope = CGOpts.SanitizeAddressUseAfterScope;
+  bool UseOdrIndicator = CGOpts.SanitizeAddressUseOdrIndicator;
   bool UseGlobalsGC = asanUseGlobalsGC(T, CGOpts);
   PM.add(createAddressSanitizerFunctionPass(/*CompileKernel*/ false, Recover,
                                             UseAfterScope));
   PM.add(createAddressSanitizerModulePass(/*CompileKernel*/ false, Recover,
-                                          UseGlobalsGC));
+                                          UseGlobalsGC, UseOdrIndicator));
 }
 
 static void addKernelAddressSanitizerPasses(const PassManagerBuilder &Builder,
@@ -247,7 +249,8 @@ static void addKernelAddressSanitizerPasses(const PassManagerBuilder &Builder,
   PM.add(createAddressSanitizerFunctionPass(
       /*CompileKernel*/ true, /*Recover*/ true, /*UseAfterScope*/ false));
   PM.add(createAddressSanitizerModulePass(
-      /*CompileKernel*/ true, /*Recover*/ true));
+      /*CompileKernel*/ true, /*Recover*/ true, /*UseGlobalsGC*/ true,
+      /*UseOdrIndicator*/ false));
 }
 
 static void addHWAddressSanitizerPasses(const PassManagerBuilder &Builder,
@@ -428,7 +431,7 @@ static void initTargetOptions(llvm::TargetOptions &Options,
   switch (LangOpts.getDefaultFPContractMode()) {
   case LangOptions::FPC_Off:
     // Preserve any contraction performed by the front-end.  (Strict performs
-    // splitting of the muladd instrinsic in the backend.)
+    // splitting of the muladd intrinsic in the backend.)
     Options.AllowFPOpFusion = llvm::FPOpFusion::Standard;
     break;
   case LangOptions::FPC_On:
@@ -468,7 +471,7 @@ static void initTargetOptions(llvm::TargetOptions &Options,
   Options.EmitStackSizeSection = CodeGenOpts.StackSizeSection;
   Options.EmitAddrsig = CodeGenOpts.Addrsig;
 
-  if (CodeGenOpts.EnableSplitDwarf)
+  if (CodeGenOpts.getSplitDwarfMode() != CodeGenOptions::NoFission)
     Options.MCOptions.SplitDwarfFile = CodeGenOpts.SplitDwarfFile;
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
   Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
@@ -503,6 +506,8 @@ static Optional<GCOVOptions> getGCOVOptions(const CodeGenOptions &CodeGenOpts) {
   Options.UseCfgChecksum = CodeGenOpts.CoverageExtraChecksum;
   Options.NoRedZone = CodeGenOpts.DisableRedZone;
   Options.FunctionNamesInData = !CodeGenOpts.CoverageNoFunctionNamesInData;
+  Options.Filter = CodeGenOpts.ProfileFilterFiles;
+  Options.Exclude = CodeGenOpts.ProfileExcludeFiles;
   Options.ExitBlockBeforeBody = CodeGenOpts.CoverageExitBlockBeforeBody;
   return Options;
 }
@@ -832,7 +837,8 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
     break;
 
   default:
-    if (!CodeGenOpts.SplitDwarfFile.empty()) {
+    if (!CodeGenOpts.SplitDwarfFile.empty() &&
+        (CodeGenOpts.getSplitDwarfMode() == CodeGenOptions::SplitFileFission)) {
       DwoOS = openOutputFile(CodeGenOpts.SplitDwarfFile);
       if (!DwoOS)
         return;
@@ -930,18 +936,21 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     PGOOpt = PGOOptions(CodeGenOpts.InstrProfileOutput.empty()
                             ? DefaultProfileGenName
                             : CodeGenOpts.InstrProfileOutput,
-                        "", "", true, CodeGenOpts.DebugInfoForProfiling);
+                        "", "", "", true,
+                        CodeGenOpts.DebugInfoForProfiling);
   else if (CodeGenOpts.hasProfileIRUse())
     // -fprofile-use.
-    PGOOpt = PGOOptions("", CodeGenOpts.ProfileInstrumentUsePath, "", false,
+    PGOOpt = PGOOptions("", CodeGenOpts.ProfileInstrumentUsePath, "",
+                        CodeGenOpts.ProfileRemappingFile, false,
                         CodeGenOpts.DebugInfoForProfiling);
   else if (!CodeGenOpts.SampleProfileFile.empty())
     // -fprofile-sample-use
-    PGOOpt = PGOOptions("", "", CodeGenOpts.SampleProfileFile, false,
+    PGOOpt = PGOOptions("", "", CodeGenOpts.SampleProfileFile,
+                        CodeGenOpts.ProfileRemappingFile, false,
                         CodeGenOpts.DebugInfoForProfiling);
   else if (CodeGenOpts.DebugInfoForProfiling)
     // -fdebug-info-for-profiling
-    PGOOpt = PGOOptions("", "", "", false, true);
+    PGOOpt = PGOOptions("", "", "", "", false, true);
 
   PassBuilder PB(TM.get(), PGOOpt);
 
@@ -1130,6 +1139,7 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
                               const LangOptions &LOpts,
                               std::unique_ptr<raw_pwrite_stream> OS,
                               std::string SampleProfile,
+                              std::string ProfileRemapping,
                               BackendAction Action) {
   StringMap<DenseMap<GlobalValue::GUID, GlobalValueSummary *>>
       ModuleToDefinedGVSummaries;
@@ -1147,15 +1157,14 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
       continue;
 
     auto GUID = GlobalList.first;
-    assert(GlobalList.second.SummaryList.size() == 1 &&
-           "Expected individual combined index to have one summary per GUID");
-    auto &Summary = GlobalList.second.SummaryList[0];
-    // Skip the summaries for the importing module. These are included to
-    // e.g. record required linkage changes.
-    if (Summary->modulePath() == M->getModuleIdentifier())
-      continue;
-    // Add an entry to provoke importing by thinBackend.
-    ImportList[Summary->modulePath()].insert(GUID);
+    for (auto &Summary : GlobalList.second.SummaryList) {
+      // Skip the summaries for the importing module. These are included to
+      // e.g. record required linkage changes.
+      if (Summary->modulePath() == M->getModuleIdentifier())
+        continue;
+      // Add an entry to provoke importing by thinBackend.
+      ImportList[Summary->modulePath()].insert(GUID);
+    }
   }
 
   std::vector<std::unique_ptr<llvm::MemoryBuffer>> OwnedImports;
@@ -1202,6 +1211,7 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
   Conf.CGOptLevel = getCGOptLevel(CGOpts);
   initTargetOptions(Conf.Options, CGOpts, TOpts, LOpts, HeaderOpts);
   Conf.SampleProfile = std::move(SampleProfile);
+  Conf.ProfileRemapping = std::move(ProfileRemapping);
   Conf.UseNewPM = CGOpts.ExperimentalNewPassManager;
   Conf.DebugPassManager = CGOpts.DebugPassManager;
   Conf.RemarksWithHotness = CGOpts.DiagnosticsWithHotness;
@@ -1268,7 +1278,7 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
       if (!CombinedIndex->skipModuleByDistributedBackend()) {
         runThinLTOBackend(CombinedIndex.get(), M, HeaderOpts, CGOpts, TOpts,
                           LOpts, std::move(OS), CGOpts.SampleProfileFile,
-                          Action);
+                          CGOpts.ProfileRemappingFile, Action);
         return;
       }
       // Distributed indexing detected that nothing from the module is needed

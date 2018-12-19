@@ -363,6 +363,8 @@ void Sema::ActOnStartOfObjCMethodDef(Scope *FnBodyScope, Decl *D) {
   assert((getCurMethodDecl() == nullptr) && "Methodparsing confused");
   ObjCMethodDecl *MDecl = dyn_cast_or_null<ObjCMethodDecl>(D);
 
+  PushExpressionEvaluationContext(ExprEvalContexts.back().Context);
+
   // If we don't have a valid method decl, simply return.
   if (!MDecl)
     return;
@@ -2882,7 +2884,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
                                  IMPDecl, PI, IncompleteImpl, false,
                                  WarnCategoryMethodImpl);
 
-    // FIXME. For now, we are not checking for extact match of methods
+    // FIXME. For now, we are not checking for exact match of methods
     // in category implementation and its primary class's super class.
     if (!WarnCategoryMethodImpl && I->getSuperClass())
       MatchAllMethodDeclarations(InsMap, ClsMap, InsMapSeen, ClsMapSeen,

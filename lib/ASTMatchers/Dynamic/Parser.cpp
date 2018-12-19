@@ -110,6 +110,10 @@ private:
     }
 
     switch (Code[0]) {
+    case '#':
+      Result.Kind = TokenInfo::TK_Eof;
+      Result.Text = "";
+      return Result;
     case ',':
       Result.Kind = TokenInfo::TK_Comma;
       Result.Text = Code.substr(0, 1);
@@ -645,12 +649,12 @@ Parser::completeExpression(StringRef Code, unsigned CompletionOffset, Sema *S,
   P.parseExpressionImpl(&Dummy);
 
   // Sort by specificity, then by name.
-  llvm::sort(P.Completions.begin(), P.Completions.end(),
+  llvm::sort(P.Completions,
              [](const MatcherCompletion &A, const MatcherCompletion &B) {
-    if (A.Specificity != B.Specificity)
-      return A.Specificity > B.Specificity;
-    return A.TypedText < B.TypedText;
-  });
+               if (A.Specificity != B.Specificity)
+                 return A.Specificity > B.Specificity;
+               return A.TypedText < B.TypedText;
+             });
 
   return P.Completions;
 }

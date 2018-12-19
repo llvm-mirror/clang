@@ -31,7 +31,6 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorLexer.h"
-#include "clang/Lex/PTHLexer.h"
 #include "clang/Lex/Token.h"
 #include "clang/Lex/TokenLexer.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -404,10 +403,7 @@ void Preprocessor::HandlePragmaOnce(Token &OnceTok) {
 
 void Preprocessor::HandlePragmaMark() {
   assert(CurPPLexer && "No current lexer?");
-  if (CurLexer)
-    CurLexer->ReadToEndOfLine();
-  else
-    CurPTHLexer->DiscardToEndOfLine();
+  CurLexer->ReadToEndOfLine();
 }
 
 /// HandlePragmaPoison - Handle \#pragma GCC poison.  PoisonTok is the 'poison'.
@@ -810,12 +806,6 @@ void Preprocessor::HandlePragmaModuleBuild(Token &Tok) {
     DiscardUntilEndOfDirective();
   }
 
-  if (CurPTHLexer) {
-    // FIXME: Support this somehow?
-    Diag(Loc, diag::err_pp_module_build_pth);
-    return;
-  }
-
   CurLexer->LexingRawMode = true;
 
   auto TryConsumeIdentifier = [&](StringRef Ident) -> bool {
@@ -1130,10 +1120,6 @@ struct PragmaDebugHandler : public PragmaHandler {
   }
 
   void HandleCaptured(Preprocessor &PP) {
-    // Skip if emitting preprocessed output.
-    if (PP.isPreprocessedOutput())
-      return;
-
     Token Tok;
     PP.LexUnexpandedToken(Tok);
 

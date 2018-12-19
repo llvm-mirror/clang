@@ -235,6 +235,20 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
 
   while (true) {
     if (HasScopeSpecifier) {
+      if (Tok.is(tok::code_completion)) {
+        // Code completion for a nested-name-specifier, where the code
+        // completion token follows the '::'.
+        Actions.CodeCompleteQualifiedId(getCurScope(), SS, EnteringContext,
+                                        ObjectType.get());
+        // Include code completion token into the range of the scope otherwise
+        // when we try to annotate the scope tokens the dangling code completion
+        // token will cause assertion in
+        // Preprocessor::AnnotatePreviousCachedTokens.
+        SS.setEndLoc(Tok.getLocation());
+        cutOffParsing();
+        return true;
+      }
+
       // C++ [basic.lookup.classref]p5:
       //   If the qualified-id has the form
       //
@@ -246,19 +260,6 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
       // To implement this, we clear out the object type as soon as we've
       // seen a leading '::' or part of a nested-name-specifier.
       ObjectType = nullptr;
-
-      if (Tok.is(tok::code_completion)) {
-        // Code completion for a nested-name-specifier, where the code
-        // completion token follows the '::'.
-        Actions.CodeCompleteQualifiedId(getCurScope(), SS, EnteringContext);
-        // Include code completion token into the range of the scope otherwise
-        // when we try to annotate the scope tokens the dangling code completion
-        // token will cause assertion in
-        // Preprocessor::AnnotatePreviousCachedTokens.
-        SS.setEndLoc(Tok.getLocation());
-        cutOffParsing();
-        return true;
-      }
     }
 
     // nested-name-specifier:
@@ -774,7 +775,7 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro,
         // send. In that case, fail here and let the ObjC message
         // expression parser perform the completion.
         if (Tok.is(tok::code_completion) &&
-            !(getLangOpts().ObjC1 && Intro.Default == LCD_None &&
+            !(getLangOpts().ObjC && Intro.Default == LCD_None &&
               !Intro.Captures.empty())) {
           Actions.CodeCompleteLambdaIntroducer(getCurScope(), Intro,
                                                /*AfterAmpersand=*/false);
@@ -790,7 +791,7 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro,
     if (Tok.is(tok::code_completion)) {
       // If we're in Objective-C++ and we have a bare '[', then this is more
       // likely to be a message receiver.
-      if (getLangOpts().ObjC1 && first)
+      if (getLangOpts().ObjC && first)
         Actions.CodeCompleteObjCMessageReceiver(getCurScope());
       else
         Actions.CodeCompleteLambdaIntroducer(getCurScope(), Intro,
@@ -1773,7 +1774,13 @@ Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
     //   if (; true);
     if (InitStmt && Tok.is(tok::semi)) {
       WarnOnInit();
-      SourceLocation SemiLoc = ConsumeToken();
+      SourceLocation SemiLoc = Tok.getLocation();
+      if (!Tok.hasLeadingEmptyMacro() && !SemiLoc.isMacroID()) {
+        Diag(SemiLoc, diag::warn_empty_init_statement)
+            << (CK == Sema::ConditionKind::Switch)
+            << FixItHint::CreateRemoval(SemiLoc);
+      }
+      ConsumeToken();
       *InitStmt = Actions.ActOnNullStmt(SemiLoc);
       return ParseCXXCondition(nullptr, Loc, CK);
     }

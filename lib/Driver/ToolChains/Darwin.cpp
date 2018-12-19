@@ -12,7 +12,6 @@
 #include "CommonArgs.h"
 #include "clang/Basic/AlignedAllocation.h"
 #include "clang/Basic/ObjCRuntime.h"
-#include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -23,6 +22,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/TargetParser.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include <cstdlib> // ::getenv
 
 using namespace clang::driver;
@@ -98,7 +98,7 @@ void darwin::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     SourceAction = SourceAction->getInputs()[0];
   }
 
-  // If -fno-integrated-as is used add -Q to the darwin assember driver to make
+  // If -fno-integrated-as is used add -Q to the darwin assembler driver to make
   // sure it runs its system assembler not clang's integrated assembler.
   // Applicable to darwin11+ and Xcode 4+.  darwin<10 lacked integrated-as.
   // FIXME: at run-time detect assembler capabilities or rely on version
@@ -1034,9 +1034,17 @@ void Darwin::addProfileRTLibs(const ArgList &Args,
   // runtime, automatically export symbols necessary to implement some of the
   // runtime's functionality.
   if (hasExportSymbolDirective(Args)) {
-    addExportedSymbol(CmdArgs, "___llvm_profile_filename");
-    addExportedSymbol(CmdArgs, "___llvm_profile_raw_version");
-    addExportedSymbol(CmdArgs, "_lprofCurFilename");
+    if (needsGCovInstrumentation(Args)) {
+      addExportedSymbol(CmdArgs, "___gcov_flush");
+      addExportedSymbol(CmdArgs, "_flush_fn_list");
+      addExportedSymbol(CmdArgs, "_writeout_fn_list");
+    } else {
+      addExportedSymbol(CmdArgs, "___llvm_profile_filename");
+      addExportedSymbol(CmdArgs, "___llvm_profile_raw_version");
+      addExportedSymbol(CmdArgs, "_lprofCurFilename");
+      addExportedSymbol(CmdArgs, "_lprofMergeValueProfData");
+    }
+    addExportedSymbol(CmdArgs, "_lprofDirMode");
   }
 }
 
@@ -1674,6 +1682,38 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   }
 }
 
+void DarwinClang::AddClangCXXStdlibIncludeArgs(
+    const llvm::opt::ArgList &DriverArgs,
+    llvm::opt::ArgStringList &CC1Args) const {
+  // The implementation from a base class will pass through the -stdlib to
+  // CC1Args.
+  // FIXME: this should not be necessary, remove usages in the frontend
+  //        (e.g. HeaderSearchOptions::UseLibcxx) and don't pipe -stdlib.
+  ToolChain::AddClangCXXStdlibIncludeArgs(DriverArgs, CC1Args);
+
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc) ||
+      DriverArgs.hasArg(options::OPT_nostdincxx))
+    return;
+
+  switch (GetCXXStdlibType(DriverArgs)) {
+  case ToolChain::CST_Libcxx: {
+    llvm::StringRef InstallDir = getDriver().getInstalledDir();
+    if (InstallDir.empty())
+      break;
+    // On Darwin, libc++ may be installed alongside the compiler in
+    // include/c++/v1.
+    // Get from 'foo/bin' to 'foo'.
+    SmallString<128> P = llvm::sys::path::parent_path(InstallDir);
+    // Get to 'foo/include/c++/v1'.
+    llvm::sys::path::append(P, "include", "c++", "v1");
+    addSystemInclude(DriverArgs, CC1Args, P);
+    break;
+  }
+  case ToolChain::CST_Libstdcxx:
+    // FIXME: should we do something about it?
+    break;
+  }
+}
 void DarwinClang::AddCXXStdlibLibArgs(const ArgList &Args,
                                       ArgStringList &CmdArgs) const {
   CXXStdlibType Type = GetCXXStdlibType(Args);

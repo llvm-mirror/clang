@@ -227,14 +227,14 @@ int bar(int n){
   // CHECK: ret void
 
 // CHECK: define weak void @__omp_offloading_{{.*}}ftemplate{{.*}}_l37(
-// CHECK: call void @__kmpc_spmd_kernel_init(i32 {{.+}}, i16 1, i16 1)
+// CHECK: call void @__kmpc_spmd_kernel_init(i32 {{.+}}, i16 1, i16 0)
 // CHECK: call void @__kmpc_data_sharing_init_stack_spmd
 // CHECK-NOT: call i8* @__kmpc_data_sharing_push_stack(
 // CHECK-NOT: call void @__kmpc_serialized_parallel(
 // CHECK: call void [[L0:@.+]](i32* %{{.+}}, i32* %{{.+}}, i16* %{{.*}})
 // CHECK-NOT: call void @__kmpc_end_serialized_parallel(
 // CHECK-NOT: call void @__kmpc_data_sharing_pop_stack(
-// CHECK: call void @__kmpc_spmd_kernel_deinit()
+// CHECK: call void @__kmpc_spmd_kernel_deinit_v2(i16 1)
 // CHECK: ret
 
 // CHECK: define internal void [[L0]](i32* noalias %{{.+}}, i32* noalias %{{.+}}, i16* dereferenceable

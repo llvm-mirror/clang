@@ -37,10 +37,10 @@ createVirtualFileIfNeeded(ASTUnit *ToAST, StringRef FileName,
                           std::unique_ptr<llvm::MemoryBuffer> &&Buffer) {
   assert(ToAST);
   ASTContext &ToCtx = ToAST->getASTContext();
-  auto *OFS = static_cast<vfs::OverlayFileSystem *>(
+  auto *OFS = static_cast<llvm::vfs::OverlayFileSystem *>(
       ToCtx.getSourceManager().getFileManager().getVirtualFileSystem().get());
-  auto *MFS =
-      static_cast<vfs::InMemoryFileSystem *>(OFS->overlays_begin()->get());
+  auto *MFS = static_cast<llvm::vfs::InMemoryFileSystem *>(
+      OFS->overlays_begin()->get());
   MFS->addFile(FileName, 0, std::move(Buffer));
 }
 
@@ -139,6 +139,7 @@ class TestImportBase : public ParameterizedTestsFixture {
     auto Imported = importNode(FromAST.get(), ToAST.get(), Importer, ToImport);
     if (!Imported)
       return testing::AssertionFailure() << "Import failed, nullptr returned!";
+
 
     return Verifier.match(Imported, WrapperMatcher);
   }
@@ -502,7 +503,6 @@ TEST_P(CanonicalRedeclChain, ShouldBeSameForAllDeclInTheChain) {
   EXPECT_THAT(RedeclsD1, ::testing::ContainerEq(RedeclsD2));
 }
 
-
 TEST_P(ImportExpr, ImportStringLiteral) {
   MatchVerifier<Decl> Verifier;
   testImport(
@@ -719,18 +719,17 @@ TEST_P(ImportExpr, ImportDesignatedInitExpr) {
           initListExpr(
               has(designatedInitExpr(
                   designatorCountIs(2),
-                  has(floatLiteral(equals(1.0))),
-                  has(integerLiteral(equals(2))))),
+                  hasDescendant(floatLiteral(equals(1.0))),
+                  hasDescendant(integerLiteral(equals(2))))),
               has(designatedInitExpr(
                   designatorCountIs(2),
-                  has(floatLiteral(equals(2.0))),
-                  has(integerLiteral(equals(2))))),
+                  hasDescendant(floatLiteral(equals(2.0))),
+                  hasDescendant(integerLiteral(equals(2))))),
               has(designatedInitExpr(
                   designatorCountIs(2),
-                  has(floatLiteral(equals(1.0))),
-                  has(integerLiteral(equals(0)))))))));
+                  hasDescendant(floatLiteral(equals(1.0))),
+                  hasDescendant(integerLiteral(equals(0)))))))));
 }
-
 
 TEST_P(ImportExpr, ImportPredefinedExpr) {
   MatchVerifier<Decl> Verifier;
@@ -2482,7 +2481,7 @@ TEST_P(ImportFriendFunctions, ImportFriendChangesLookup) {
   LookupRes = ToTU->noload_lookup(ToName);
   EXPECT_EQ(LookupRes.size(), 1u);
   EXPECT_EQ(DeclCounter<FunctionDecl>().match(ToTU, Pattern), 1u);
-  
+
   auto *ToFriendF = cast<FunctionDecl>(Import(FromFriendF, Lang_CXX));
   LookupRes = ToTU->noload_lookup(ToName);
   EXPECT_EQ(LookupRes.size(), 1u);
@@ -2758,7 +2757,7 @@ TEST_P(ASTImporterTestBase, ImportOfEquivalentRecord) {
 
     ToR2 = Import(FromR, Lang_CXX);
   }
-  
+
   EXPECT_EQ(ToR1, ToR2);
 }
 
@@ -2922,8 +2921,9 @@ TEST_P(ASTImporterTestBase, ImportUnnamedFieldsInCorrectOrder) {
     ASSERT_FALSE(FromField->getDeclName());
     auto *ToField = cast_or_null<FieldDecl>(Import(FromField, Lang_CXX11));
     EXPECT_TRUE(ToField);
-    unsigned ToIndex = ASTImporter::getFieldIndex(ToField);
-    EXPECT_EQ(ToIndex, FromIndex + 1);
+    Optional<unsigned> ToIndex = ASTImporter::getFieldIndex(ToField);
+    EXPECT_TRUE(ToIndex);
+    EXPECT_EQ(*ToIndex, FromIndex);
     ++FromIndex;
   }
 
@@ -3723,6 +3723,77 @@ TEST_P(ImportFunctionTemplateSpecializations, DefinitionThenPrototype) {
   EXPECT_TRUE(To0->doesThisDeclarationHaveABody());
   EXPECT_FALSE(To1->doesThisDeclarationHaveABody());
   EXPECT_EQ(To1->getPreviousDecl(), To0);
+}
+
+TEST_P(ASTImporterTestBase,
+    ImportShouldNotReportFalseODRErrorWhenRecordIsBeingDefined) {
+  {
+    Decl *FromTU = getTuDecl(
+        R"(
+            template <typename T>
+            struct B;
+            )",
+        Lang_CXX, "input0.cc");
+    auto *FromD = FirstDeclMatcher<ClassTemplateDecl>().match(
+        FromTU, classTemplateDecl(hasName("B")));
+
+    Import(FromD, Lang_CXX);
+  }
+
+  {
+    Decl *FromTU = getTuDecl(
+        R"(
+            template <typename T>
+            struct B {
+              void f();
+              B* b;
+            };
+            )",
+        Lang_CXX, "input1.cc");
+    FunctionDecl *FromD = FirstDeclMatcher<FunctionDecl>().match(
+        FromTU, functionDecl(hasName("f")));
+    Import(FromD, Lang_CXX);
+    auto *FromCTD = FirstDeclMatcher<ClassTemplateDecl>().match(
+        FromTU, classTemplateDecl(hasName("B")));
+    auto *ToCTD = cast<ClassTemplateDecl>(Import(FromCTD, Lang_CXX));
+    EXPECT_TRUE(ToCTD->isThisDeclarationADefinition());
+
+    // We expect no (ODR) warning during the import.
+    auto *ToTU = ToAST->getASTContext().getTranslationUnitDecl();
+    EXPECT_EQ(0u, ToTU->getASTContext().getDiagnostics().getNumWarnings());
+  }
+}
+
+TEST_P(ASTImporterTestBase, ImportingTypedefShouldImportTheCompleteType) {
+  // We already have an incomplete underlying type in the "To" context.
+  auto Code =
+      R"(
+      template <typename T>
+      struct S {
+        void foo();
+      };
+      using U = S<int>;
+      )";
+  Decl *ToTU = getToTuDecl(Code, Lang_CXX11);
+  auto *ToD = FirstDeclMatcher<TypedefNameDecl>().match(ToTU,
+      typedefNameDecl(hasName("U")));
+  ASSERT_TRUE(ToD->getUnderlyingType()->isIncompleteType());
+
+  // The "From" context has the same typedef, but the underlying type is
+  // complete this time.
+  Decl *FromTU = getTuDecl(std::string(Code) +
+      R"(
+      void foo(U* u) {
+        u->foo();
+      }
+      )", Lang_CXX11);
+  auto *FromD = FirstDeclMatcher<TypedefNameDecl>().match(FromTU,
+      typedefNameDecl(hasName("U")));
+  ASSERT_FALSE(FromD->getUnderlyingType()->isIncompleteType());
+
+  // The imported type should be complete.
+  auto *ImportedD = cast<TypedefNameDecl>(Import(FromD, Lang_CXX11));
+  EXPECT_FALSE(ImportedD->getUnderlyingType()->isIncompleteType());
 }
 
 INSTANTIATE_TEST_CASE_P(ParameterizedTests, DeclContextTest,

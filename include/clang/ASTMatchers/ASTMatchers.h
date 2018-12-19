@@ -645,12 +645,12 @@ AST_MATCHER(FunctionDecl, isMain) {
 ///
 /// Given
 /// \code
-///   tempalate<typename T> class A {};
-///   typedef A<int> B;
+///   template<typename T> class A {}; #1
+///   template<> class A<int> {}; #2
 /// \endcode
 /// classTemplateSpecializationDecl(hasSpecializedTemplate(classTemplateDecl()))
-///   matches 'B' with classTemplateDecl() matching the class template
-///   declaration of 'A'.
+///   matches '#2' with classTemplateDecl() matching the class template
+///   declaration of 'A' at #1.
 AST_MATCHER_P(ClassTemplateSpecializationDecl, hasSpecializedTemplate,
               internal::Matcher<ClassTemplateDecl>, InnerMatcher) {
   const ClassTemplateDecl* Decl = Node.getSpecializedTemplate();
@@ -811,9 +811,26 @@ AST_MATCHER_P(Expr, ignoringParenImpCasts,
 ///   varDecl(hasType(pointerType(pointee(ignoringParens(functionType())))))
 /// \endcode
 /// would match the declaration for fp.
-AST_MATCHER_P(QualType, ignoringParens,
-              internal::Matcher<QualType>, InnerMatcher) {
+AST_MATCHER_P_OVERLOAD(QualType, ignoringParens, internal::Matcher<QualType>,
+                       InnerMatcher, 0) {
   return InnerMatcher.matches(Node.IgnoreParens(), Finder, Builder);
+}
+
+/// Overload \c ignoringParens for \c Expr.
+///
+/// Given
+/// \code
+///   const char* str = ("my-string");
+/// \endcode
+/// The matcher
+/// \code
+///   implicitCastExpr(hasSourceExpression(ignoringParens(stringLiteral())))
+/// \endcode
+/// would match the implicit cast resulting from the assignment.
+AST_MATCHER_P_OVERLOAD(Expr, ignoringParens, internal::Matcher<Expr>,
+                       InnerMatcher, 1) {
+  const Expr *E = Node.IgnoreParens();
+  return InnerMatcher.matches(*E, Finder, Builder);
 }
 
 /// Matches expressions that are instantiation-dependent even if it is
@@ -929,7 +946,7 @@ AST_MATCHER_P(TemplateArgument, refersToType,
 /// Given
 /// \code
 ///   template<template <typename> class S> class X {};
-///   template<typename T> class Y {};"
+///   template<typename T> class Y {};
 ///   X<Y> xi;
 /// \endcode
 /// classTemplateSpecializationDecl(hasAnyTemplateArgument(
@@ -1239,6 +1256,28 @@ extern const internal::VariadicDynCastAllOfMatcher<Stmt,
 ///   y();
 /// \endcode
 extern const internal::VariadicDynCastAllOfMatcher<Stmt, CallExpr> callExpr;
+
+/// Matches call expressions which were resolved using ADL.
+///
+/// Example matches y(x) but not y(42) or NS::y(x).
+/// \code
+///   namespace NS {
+///     struct X {};
+///     void y(X);
+///   }
+///
+///   void y(...);
+///
+///   void test() {
+///     NS::X x;
+///     y(x); // Matches
+///     NS::y(x); // Doesn't match
+///     y(42); // Doesn't match
+///     using NS::y;
+///     y(x); // Found by both unqualified lookup and ADL, doesn't match
+//    }
+/// \endcode
+AST_MATCHER(CallExpr, usesADL) { return Node.usesADL(); }
 
 /// Matches lambda expressions.
 ///
@@ -1574,6 +1613,18 @@ extern const internal::VariadicDynCastAllOfMatcher<Decl,
                                                    UnresolvedUsingTypenameDecl>
     unresolvedUsingTypenameDecl;
 
+/// Matches a constant expression wrapper.
+///
+/// Example matches the constant in the case statement:
+///     (matcher = constantExpr())
+/// \code
+///   switch (a) {
+///   case 37: break;
+///   }
+/// \endcode
+extern const internal::VariadicDynCastAllOfMatcher<Stmt, ConstantExpr>
+    constantExpr;
+
 /// Matches parentheses used in expressions.
 ///
 /// Example matches (foo() + 1)
@@ -1746,6 +1797,14 @@ extern const internal::VariadicDynCastAllOfMatcher<Stmt, DeclRefExpr>
 /// \endcode
 extern const internal::VariadicDynCastAllOfMatcher<Stmt, ObjCIvarRefExpr>
     objcIvarRefExpr;
+
+/// Matches a reference to a block.
+///
+/// Example: matches "^{}":
+/// \code
+///   void f() { ^{}(); }
+/// \endcode
+extern const internal::VariadicDynCastAllOfMatcher<Stmt, BlockExpr> blockExpr;
 
 /// Matches if statements.
 ///
@@ -2425,8 +2484,9 @@ AST_MATCHER_P(UnaryExprOrTypeTraitExpr, ofKind, UnaryExprOrTypeTrait, Kind) {
 /// alignof.
 inline internal::Matcher<Stmt> alignOfExpr(
     const internal::Matcher<UnaryExprOrTypeTraitExpr> &InnerMatcher) {
-  return stmt(unaryExprOrTypeTraitExpr(allOf(
-      ofKind(UETT_AlignOf), InnerMatcher)));
+  return stmt(unaryExprOrTypeTraitExpr(
+      allOf(anyOf(ofKind(UETT_AlignOf), ofKind(UETT_PreferredAlignOf)),
+            InnerMatcher)));
 }
 
 /// Same as unaryExprOrTypeTraitExpr, but only matching
@@ -3299,6 +3359,20 @@ AST_MATCHER_P(
           InnerMatcher.matches(*Initializer, Finder, Builder));
 }
 
+/// \brief Matches a static variable with local scope.
+///
+/// Example matches y (matcher = varDecl(isStaticLocal()))
+/// \code
+/// void f() {
+///   int x;
+///   static int y;
+/// }
+/// static int z;
+/// \endcode
+AST_MATCHER(VarDecl, isStaticLocal) {
+  return Node.isStaticLocal();
+}
+
 /// Matches a variable declaration that has function scope and is a
 /// non-static local variable.
 ///
@@ -3484,7 +3558,7 @@ AST_MATCHER_P2(DeclStmt, containsDeclaration, unsigned, N,
 ///   } catch (...) {
 ///     // ...
 ///   }
-/// /endcode
+/// \endcode
 /// cxxCatchStmt(isCatchAll()) matches catch(...) but not catch(int).
 AST_MATCHER(CXXCatchStmt, isCatchAll) {
   return Node.getExceptionDecl() == nullptr;
@@ -5283,7 +5357,7 @@ AST_TYPE_TRAVERSE_MATCHER(hasDeducedType, getDeducedType,
 ///   decltype(2.0) b = 2.0;
 /// \endcode
 /// decltypeType(hasUnderlyingType(isInteger()))
-///   matches "auto a"
+///   matches the type of "a"
 ///
 /// Usable as: Matcher<DecltypeType>
 AST_TYPE_TRAVERSE_MATCHER(hasUnderlyingType, getUnderlyingType,

@@ -13,7 +13,6 @@
 #include "ToolChains/Clang.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Basic/Sanitizers.h"
-#include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Config/config.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Driver.h"
@@ -39,6 +38,7 @@
 #include "llvm/Support/TargetParser.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/VersionTuple.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include <cassert>
 #include <cstddef>
 #include <cstring>
@@ -99,7 +99,9 @@ void ToolChain::setTripleEnvironment(llvm::Triple::EnvironmentType Env) {
 
 ToolChain::~ToolChain() = default;
 
-vfs::FileSystem &ToolChain::getVFS() const { return getDriver().getVFS(); }
+llvm::vfs::FileSystem &ToolChain::getVFS() const {
+  return getDriver().getVFS();
+}
 
 bool ToolChain::useIntegratedAs() const {
   return Args.hasFlag(options::OPT_fintegrated_as,
@@ -367,8 +369,10 @@ std::string ToolChain::getCompilerRT(const ArgList &Args, StringRef Component,
       TT.isWindowsMSVCEnvironment() || TT.isWindowsItaniumEnvironment();
 
   const char *Prefix = IsITANMSVCWindows ? "" : "lib";
-  const char *Suffix = Shared ? (Triple.isOSWindows() ? ".dll" : ".so")
+  const char *Suffix = Shared ? (Triple.isOSWindows() ? ".lib" : ".so")
                               : (IsITANMSVCWindows ? ".lib" : ".a");
+  if (Shared && Triple.isWindowsGNUEnvironment())
+    Suffix = ".dll.a";
 
   for (const auto &LibPath : getLibraryPaths()) {
     SmallString<128> P(LibPath);
@@ -399,17 +403,21 @@ std::string ToolChain::getArchSpecificLibPath() const {
 }
 
 bool ToolChain::needsProfileRT(const ArgList &Args) {
-  if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
-                   false) ||
+  if (needsGCovInstrumentation(Args) ||
       Args.hasArg(options::OPT_fprofile_generate) ||
       Args.hasArg(options::OPT_fprofile_generate_EQ) ||
       Args.hasArg(options::OPT_fprofile_instr_generate) ||
       Args.hasArg(options::OPT_fprofile_instr_generate_EQ) ||
-      Args.hasArg(options::OPT_fcreate_profile) ||
-      Args.hasArg(options::OPT_coverage))
+      Args.hasArg(options::OPT_fcreate_profile))
     return true;
 
   return false;
+}
+
+bool ToolChain::needsGCovInstrumentation(const llvm::opt::ArgList &Args) {
+  return Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                      false) ||
+         Args.hasArg(options::OPT_coverage);
 }
 
 Tool *ToolChain::SelectTool(const JobAction &JA) const {
@@ -596,7 +604,7 @@ std::string ToolChain::ComputeLLVMTriple(const ArgList &Args,
 
     // Check to see if an explicit choice to use thumb has been made via
     // -mthumb. For assembler files we must check for -mthumb in the options
-    // passed to the assember via -Wa or -Xassembler.
+    // passed to the assembler via -Wa or -Xassembler.
     bool IsThumb = false;
     if (InputType != types::TY_PP_Asm)
       IsThumb = Args.hasFlag(options::OPT_mthumb, options::OPT_mno_thumb,
