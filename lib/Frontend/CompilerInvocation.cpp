@@ -33,6 +33,7 @@
 #include "clang/Frontend/DependencyOutputOptions.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/FrontendOptions.h"
+#include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Frontend/LangStandard.h"
 #include "clang/Frontend/MigratorOptions.h"
 #include "clang/Frontend/PreprocessorOutputOptions.h"
@@ -906,6 +907,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << S;
   }
   Opts.LTOUnit = Args.hasFlag(OPT_flto_unit, OPT_fno_lto_unit, false);
+  Opts.EnableSplitLTOUnit = Args.hasArg(OPT_fsplit_lto_unit);
   if (Arg *A = Args.getLastArg(OPT_fthinlto_index_EQ)) {
     if (IK.getLanguage() != InputKind::LLVM_IR)
       Diags.Report(diag::err_drv_argument_only_allowed_with)
@@ -1317,6 +1319,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.KeepStaticConsts = Args.hasArg(OPT_fkeep_static_consts);
 
   Opts.SpeculativeLoadHardening = Args.hasArg(OPT_mspeculative_load_hardening);
+
+  Opts.DefaultFunctionAttrs = Args.getAllArgValues(OPT_default_function_attr);
 
   return Success;
 }
@@ -2843,6 +2847,11 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
                            Opts.OpenMPCUDABlocksPerSM, Diags);
   }
 
+  // Prevent auto-widening the representation of loop counters during an
+  // OpenMP collapse clause.
+  Opts.OpenMPOptimisticCollapse =
+      Args.hasArg(options::OPT_fopenmp_optimistic_collapse) ? 1 : 0;
+
   // Get the OpenMP target triples if any.
   if (Arg *A = Args.getLastArg(options::OPT_fopenmp_targets_EQ)) {
 
@@ -2936,6 +2945,19 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   case 1: Opts.setStackProtector(LangOptions::SSPOn);  break;
   case 2: Opts.setStackProtector(LangOptions::SSPStrong); break;
   case 3: Opts.setStackProtector(LangOptions::SSPReq); break;
+  }
+
+  if (Arg *A = Args.getLastArg(OPT_ftrivial_auto_var_init)) {
+    StringRef Val = A->getValue();
+    if (Val == "uninitialized")
+      Opts.setTrivialAutoVarInit(
+          LangOptions::TrivialAutoVarInitKind::Uninitialized);
+    else if (Val == "zero")
+      Opts.setTrivialAutoVarInit(LangOptions::TrivialAutoVarInitKind::Zero);
+    else if (Val == "pattern")
+      Opts.setTrivialAutoVarInit(LangOptions::TrivialAutoVarInitKind::Pattern);
+    else
+      Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << Val;
   }
 
   // Parse -fsanitize= arguments.
@@ -3193,6 +3215,14 @@ static void ParseTargetArgs(TargetOptions &Opts, ArgList &Args,
   Opts.ForceEnableInt128 = Args.hasArg(OPT_fforce_enable_int128);
   Opts.NVPTXUseShortPointers = Args.hasFlag(
       options::OPT_fcuda_short_ptr, options::OPT_fno_cuda_short_ptr, false);
+  if (Arg *A = Args.getLastArg(options::OPT_target_sdk_version_EQ)) {
+    llvm::VersionTuple Version;
+    if (Version.tryParse(A->getValue()))
+      Diags.Report(diag::err_drv_invalid_value)
+          << A->getAsString(Args) << A->getValue();
+    else
+      Opts.SDKVersion = Version;
+  }
 }
 
 bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,

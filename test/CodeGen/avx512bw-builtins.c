@@ -992,87 +992,75 @@ __m512i test_mm512_maskz_packus_epi16(__mmask64 __M, __m512i __A, __m512i __B) {
 }
 __m512i test_mm512_adds_epi8(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_adds_epi8
-  // CHECK: @llvm.x86.avx512.padds.b.512
+  // CHECK: @llvm.sadd.sat.v64i8
   return _mm512_adds_epi8(__A,__B); 
 }
 __m512i test_mm512_mask_adds_epi8(__m512i __W, __mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_adds_epi8
-  // CHECK: @llvm.x86.avx512.padds.b.512
+  // CHECK: @llvm.sadd.sat.v64i8
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
  return _mm512_mask_adds_epi8(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_adds_epi8(__mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_adds_epi8
-  // CHECK: @llvm.x86.avx512.padds.b.512
+  // CHECK: @llvm.sadd.sat.v64i8
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
   return _mm512_maskz_adds_epi8(__U,__A,__B); 
 }
 __m512i test_mm512_adds_epi16(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_adds_epi16
-  // CHECK: @llvm.x86.avx512.padds.w.512
+  // CHECK: @llvm.sadd.sat.v32i16
  return _mm512_adds_epi16(__A,__B); 
 }
 __m512i test_mm512_mask_adds_epi16(__m512i __W, __mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_adds_epi16
-  // CHECK: @llvm.x86.avx512.padds.w.512
+  // CHECK: @llvm.sadd.sat.v32i16
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_mask_adds_epi16(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_adds_epi16(__mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_adds_epi16
-  // CHECK: @llvm.x86.avx512.padds.w.512
+  // CHECK: @llvm.sadd.sat.v32i16
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
 return _mm512_maskz_adds_epi16(__U,__A,__B); 
 }
 __m512i test_mm512_adds_epu8(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_adds_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.b.512
-  // CHECK: add <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: select <64 x i1> %{{.*}}, <64 x i8> <i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1>, <64 x i8> {{.*}}
+  // CHECK: call <64 x i8> @llvm.uadd.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
   return _mm512_adds_epu8(__A,__B); 
 }
 __m512i test_mm512_mask_adds_epu8(__m512i __W, __mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_adds_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.b.512
-  // CHECK: add <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: select <64 x i1> %{{.*}}, <64 x i8> <i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1>, <64 x i8> {{.*}}
+  // CHECK: call <64 x i8> @llvm.uadd.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
   return _mm512_mask_adds_epu8(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_adds_epu8(__mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_adds_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.b.512
-  // CHECK: add <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <64 x i8> %{{.*}}, %{{.*}}
-  // CHECK: select <64 x i1> %{{.*}}, <64 x i8> <i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1, i8 -1>, <64 x i8> {{.*}}
+  // CHECK: call <64 x i8> @llvm.uadd.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
   return _mm512_maskz_adds_epu8(__U,__A,__B); 
 }
 __m512i test_mm512_adds_epu16(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_adds_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.w.512
-  // CHECK: add <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> <i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1>, <32 x i16> {{.*}}
+  // CHECK: call <32 x i16> @llvm.uadd.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
   return _mm512_adds_epu16(__A,__B); 
 }
 __m512i test_mm512_mask_adds_epu16(__m512i __W, __mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_adds_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.w.512
-  // CHECK: add <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> <i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1>, <32 x i16> {{.*}}
+  // CHECK: call <32 x i16> @llvm.uadd.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_mask_adds_epu16(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_adds_epu16(__mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_adds_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.paddus.w.512
-  // CHECK: add <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: icmp ugt <32 x i16> %{{.*}}, %{{.*}}
-  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> <i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1, i16 -1>, <32 x i16> {{.*}}
+  // CHECK: call <32 x i16> @llvm.uadd.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_maskz_adds_epu16(__U,__A,__B); 
 }
@@ -1327,87 +1315,75 @@ __m512i test_mm512_maskz_shuffle_epi8(__mmask64 __U, __m512i __A, __m512i __B) {
 }
 __m512i test_mm512_subs_epi8(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_subs_epi8
-  // CHECK: @llvm.x86.avx512.psubs.b.512
+  // CHECK: @llvm.ssub.sat.v64i8
 return _mm512_subs_epi8(__A,__B); 
 }
 __m512i test_mm512_mask_subs_epi8(__m512i __W, __mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_subs_epi8
-  // CHECK: @llvm.x86.avx512.psubs.b.512
+  // CHECK: @llvm.ssub.sat.v64i8
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
 return _mm512_mask_subs_epi8(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_subs_epi8(__mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_subs_epi8
-  // CHECK: @llvm.x86.avx512.psubs.b.512
+  // CHECK: @llvm.ssub.sat.v64i8
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
 return _mm512_maskz_subs_epi8(__U,__A,__B); 
 }
 __m512i test_mm512_subs_epi16(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_subs_epi16
-  // CHECK: @llvm.x86.avx512.psubs.w.512
+  // CHECK: @llvm.ssub.sat.v32i16
 return _mm512_subs_epi16(__A,__B); 
 }
 __m512i test_mm512_mask_subs_epi16(__m512i __W, __mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_subs_epi16
-  // CHECK: @llvm.x86.avx512.psubs.w.512
+  // CHECK: @llvm.ssub.sat.v32i16
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
 return _mm512_mask_subs_epi16(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_subs_epi16(__mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_subs_epi16
-  // CHECK: @llvm.x86.avx512.psubs.w.512
+  // CHECK: @llvm.ssub.sat.v32i16
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
 return _mm512_maskz_subs_epi16(__U,__A,__B); 
 }
 __m512i test_mm512_subs_epu8(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_subs_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.b.512
-  // CHECK: icmp ugt <64 x i8> {{.*}}, {{.*}}
-  // CHECK: select <64 x i1> {{.*}}, <64 x i8> {{.*}}, <64 x i8> {{.*}}
-  // CHECK: sub <64 x i8> {{.*}}, {{.*}}
+  // CHECK: call <64 x i8> @llvm.usub.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
 return _mm512_subs_epu8(__A,__B); 
 }
 __m512i test_mm512_mask_subs_epu8(__m512i __W, __mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_subs_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.b.512
-  // CHECK: icmp ugt <64 x i8> {{.*}}, {{.*}}
-  // CHECK: select <64 x i1> {{.*}}, <64 x i8> {{.*}}, <64 x i8> {{.*}}
-  // CHECK: sub <64 x i8> {{.*}}, {{.*}}
+  // CHECK: call <64 x i8> @llvm.usub.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
 return _mm512_mask_subs_epu8(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_subs_epu8(__mmask64 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_subs_epu8
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.b.512
-  // CHECK: icmp ugt <64 x i8> {{.*}}, {{.*}}
-  // CHECK: select <64 x i1> {{.*}}, <64 x i8> {{.*}}, <64 x i8> {{.*}}
-  // CHECK: sub <64 x i8> {{.*}}, {{.*}}
+  // CHECK: call <64 x i8> @llvm.usub.sat.v64i8(<64 x i8> %{{.*}}, <64 x i8> %{{.*}})
   // CHECK: select <64 x i1> %{{.*}}, <64 x i8> %{{.*}}, <64 x i8> %{{.*}}
 return _mm512_maskz_subs_epu8(__U,__A,__B); 
 }
 __m512i test_mm512_subs_epu16(__m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_subs_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.w.512
-  // CHECK: icmp ugt <32 x i16> {{.*}}, {{.*}}
-  // CHECK: select <32 x i1> {{.*}}, <32 x i16> {{.*}}, <32 x i16> {{.*}}
-  // CHECK: sub <32 x i16> {{.*}}, {{.*}}
+  // CHECK: call <32 x i16> @llvm.usub.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
 return _mm512_subs_epu16(__A,__B); 
 }
 __m512i test_mm512_mask_subs_epu16(__m512i __W, __mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_mask_subs_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.w.512
-  // CHECK: icmp ugt <32 x i16> {{.*}}, {{.*}}
-  // CHECK: select <32 x i1> {{.*}}, <32 x i16> {{.*}}, <32 x i16> {{.*}}
-  // CHECK: sub <32 x i16> {{.*}}, {{.*}}
+  // CHECK: call <32 x i16> @llvm.usub.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
 return _mm512_mask_subs_epu16(__W,__U,__A,__B); 
 }
 __m512i test_mm512_maskz_subs_epu16(__mmask32 __U, __m512i __A, __m512i __B) {
   // CHECK-LABEL: @test_mm512_maskz_subs_epu16
   // CHECK-NOT: @llvm.x86.avx512.mask.psubus.w.512
-  // CHECK: icmp ugt <32 x i16> {{.*}}, {{.*}}
-  // CHECK: select <32 x i1> {{.*}}, <32 x i16> {{.*}}, <32 x i16> {{.*}}
-  // CHECK: sub <32 x i16> {{.*}}, {{.*}}
+  // CHECK: call <32 x i16> @llvm.usub.sat.v32i16(<32 x i16> %{{.*}}, <32 x i16> %{{.*}})
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
 return _mm512_maskz_subs_epu16(__U,__A,__B); 
 }
@@ -1784,6 +1760,12 @@ __m512i test_mm512_slli_epi16(__m512i __A) {
   return _mm512_slli_epi16(__A, 5); 
 }
 
+__m512i test_mm512_slli_epi16_2(__m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_slli_epi16_2
+  // CHECK: @llvm.x86.avx512.pslli.w.512
+  return _mm512_slli_epi16(__A, __B); 
+}
+
 __m512i test_mm512_mask_slli_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_mask_slli_epi16
   // CHECK: @llvm.x86.avx512.pslli.w.512
@@ -1791,11 +1773,25 @@ __m512i test_mm512_mask_slli_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   return _mm512_mask_slli_epi16(__W, __U, __A, 5); 
 }
 
+__m512i test_mm512_mask_slli_epi16_2(__m512i __W, __mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_mask_slli_epi16_2
+  // CHECK: @llvm.x86.avx512.pslli.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_mask_slli_epi16(__W, __U, __A, __B); 
+}
+
 __m512i test_mm512_maskz_slli_epi16(__mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_maskz_slli_epi16
   // CHECK: @llvm.x86.avx512.pslli.w.512
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_maskz_slli_epi16(__U, __A, 5); 
+}
+
+__m512i test_mm512_maskz_slli_epi16_2(__mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_maskz_slli_epi16_2
+  // CHECK: @llvm.x86.avx512.pslli.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_maskz_slli_epi16(__U, __A, __B); 
 }
 
 __m512i test_mm512_bslli_epi128(__m512i __A) {
@@ -1870,6 +1866,12 @@ __m512i test_mm512_srai_epi16(__m512i __A) {
   return _mm512_srai_epi16(__A, 5); 
 }
 
+__m512i test_mm512_srai_epi16_2(__m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_srai_epi16_2
+  // CHECK: @llvm.x86.avx512.psrai.w.512
+  return _mm512_srai_epi16(__A, __B); 
+}
+
 __m512i test_mm512_mask_srai_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_mask_srai_epi16
   // CHECK: @llvm.x86.avx512.psrai.w.512
@@ -1877,11 +1879,25 @@ __m512i test_mm512_mask_srai_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   return _mm512_mask_srai_epi16(__W, __U, __A, 5); 
 }
 
+__m512i test_mm512_mask_srai_epi16_2(__m512i __W, __mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_mask_srai_epi16_2
+  // CHECK: @llvm.x86.avx512.psrai.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_mask_srai_epi16(__W, __U, __A, __B); 
+}
+
 __m512i test_mm512_maskz_srai_epi16(__mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_maskz_srai_epi16
   // CHECK: @llvm.x86.avx512.psrai.w.512
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_maskz_srai_epi16(__U, __A, 5); 
+}
+
+__m512i test_mm512_maskz_srai_epi16_2(__mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_maskz_srai_epi16_2
+  // CHECK: @llvm.x86.avx512.psrai.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_maskz_srai_epi16(__U, __A, __B); 
 }
 
 __m512i test_mm512_srl_epi16(__m512i __A, __m128i __B) {
@@ -1910,6 +1926,12 @@ __m512i test_mm512_srli_epi16(__m512i __A) {
   return _mm512_srli_epi16(__A, 5); 
 }
 
+__m512i test_mm512_srli_epi16_2(__m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_srli_epi16_2
+  // CHECK: @llvm.x86.avx512.psrli.w.512
+  return _mm512_srli_epi16(__A, __B); 
+}
+
 __m512i test_mm512_mask_srli_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_mask_srli_epi16
   // CHECK: @llvm.x86.avx512.psrli.w.512
@@ -1917,11 +1939,25 @@ __m512i test_mm512_mask_srli_epi16(__m512i __W, __mmask32 __U, __m512i __A) {
   return _mm512_mask_srli_epi16(__W, __U, __A, 5); 
 }
 
+__m512i test_mm512_mask_srli_epi16_2(__m512i __W, __mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_mask_srli_epi16_2
+  // CHECK: @llvm.x86.avx512.psrli.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_mask_srli_epi16(__W, __U, __A, __B); 
+}
+
 __m512i test_mm512_maskz_srli_epi16(__mmask32 __U, __m512i __A) {
   // CHECK-LABEL: @test_mm512_maskz_srli_epi16
   // CHECK: @llvm.x86.avx512.psrli.w.512
   // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
   return _mm512_maskz_srli_epi16(__U, __A, 5); 
+}
+
+__m512i test_mm512_maskz_srli_epi16_2(__mmask32 __U, __m512i __A, int __B) {
+  // CHECK-LABEL: @test_mm512_maskz_srli_epi16_2
+  // CHECK: @llvm.x86.avx512.psrli.w.512
+  // CHECK: select <32 x i1> %{{.*}}, <32 x i16> %{{.*}}, <32 x i16> %{{.*}}
+  return _mm512_maskz_srli_epi16(__U, __A, __B); 
 }
 
 __m512i test_mm512_bsrli_epi128(__m512i __A) {

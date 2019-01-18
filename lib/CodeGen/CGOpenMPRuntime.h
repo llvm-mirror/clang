@@ -15,6 +15,7 @@
 #define LLVM_CLANG_LIB_CODEGEN_CGOPENMPRUNTIME_H
 
 #include "CGValue.h"
+#include "clang/AST/DeclOpenMP.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/SourceLocation.h"
@@ -1366,6 +1367,15 @@ public:
                                           llvm::Constant *&OutlinedFnID,
                                           bool IsOffloadEntry,
                                           const RegionCodeGenTy &CodeGen);
+
+  /// Emit code that pushes the trip count of loops associated with constructs
+  /// 'target teams distribute' and 'teams distribute parallel for'.
+  /// \param SizeEmitter Emits the int64 value for the number of iterations of
+  /// the associated loop.
+  virtual void emitTargetNumIterationsCall(
+      CodeGenFunction &CGF, const OMPExecutableDirective &D, const Expr *Device,
+      const llvm::function_ref<llvm::Value *(
+          CodeGenFunction &CGF, const OMPLoopDirective &D)> &SizeEmitter);
 
   /// Emit the target offloading code associated with \a D. The emitted
   /// code attempts offloading the execution to the device, an the event of

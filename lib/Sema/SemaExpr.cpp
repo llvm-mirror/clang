@@ -66,6 +66,12 @@ bool Sema::CanUseDecl(NamedDecl *D, bool TreatUnavailableAsInvalid) {
     if (getLangOpts().CPlusPlus14 && FD->getReturnType()->isUndeducedType() &&
         DeduceReturnType(FD, SourceLocation(), /*Diagnose*/ false))
       return false;
+
+    // See if this is an aligned allocation/deallocation function that is
+    // unavailable.
+    if (TreatUnavailableAsInvalid &&
+        isUnavailableAlignedAllocationFunction(*FD))
+      return false;
   }
 
   // See if this function is unavailable.
@@ -115,7 +121,7 @@ void Sema::NoteDeletedFunction(FunctionDecl *Decl) {
     return NoteDeletedInheritingConstructor(Ctor);
 
   Diag(Decl->getLocation(), diag::note_availability_specified_here)
-    << Decl << true;
+    << Decl << 1;
 }
 
 /// Determine whether a FunctionDecl was ever declared with an
@@ -228,6 +234,8 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
     //   The function 'main' shall not be used within a program.
     if (cast<FunctionDecl>(D)->isMain())
       Diag(Loc, diag::ext_main_used);
+
+    diagnoseUnavailableAlignedAllocation(*cast<FunctionDecl>(D), Loc);
   }
 
   // See if this is an auto-typed variable whose initializer we are parsing.
@@ -2577,7 +2585,7 @@ Sema::PerformObjectMemberConversion(Expr *From,
     if (Method->isStatic())
       return From;
 
-    DestType = Method->getThisType(Context);
+    DestType = Method->getThisType();
     DestRecordType = DestType->getPointeeType();
 
     if (FromType->getAs<PointerType>()) {
@@ -4728,8 +4736,9 @@ bool Sema::CheckCXXDefaultArgExpr(SourceLocation CallLoc, FunctionDecl *FD,
     if (Result.isInvalid())
       return true;
 
-    Result = ActOnFinishFullExpr(Result.getAs<Expr>(),
-                                 Param->getOuterLocStart());
+    Result =
+        ActOnFinishFullExpr(Result.getAs<Expr>(), Param->getOuterLocStart(),
+                            /*DiscardedValue*/ false);
     if (Result.isInvalid())
       return true;
 
@@ -5431,8 +5440,8 @@ ExprResult Sema::ActOnCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
                                ArgExprs.back()->getEndLoc()));
       }
 
-      return new (Context)
-          CallExpr(Context, Fn, None, Context.VoidTy, VK_RValue, RParenLoc);
+      return CallExpr::Create(Context, Fn, /*Args=*/{}, Context.VoidTy,
+                              VK_RValue, RParenLoc);
     }
     if (Fn->getType() == Context.PseudoObjectTy) {
       ExprResult result = CheckPlaceholderExpr(Fn);
@@ -5444,7 +5453,7 @@ ExprResult Sema::ActOnCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
     // in which case we won't do any semantic analysis now.
     if (Fn->isTypeDependent() || Expr::hasAnyTypeDependentArguments(ArgExprs)) {
       if (ExecConfig) {
-        return new (Context) CUDAKernelCallExpr(
+        return CUDAKernelCallExpr::Create(
             Context, Fn, cast<CallExpr>(ExecConfig), ArgExprs,
             Context.DependentTy, VK_RValue, RParenLoc);
       } else {
@@ -5453,8 +5462,8 @@ ExprResult Sema::ActOnCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
             *this, dyn_cast<UnresolvedMemberExpr>(Fn->IgnoreParens()),
             Fn->getBeginLoc());
 
-        return new (Context) CallExpr(
-            Context, Fn, ArgExprs, Context.DependentTy, VK_RValue, RParenLoc);
+        return CallExpr::Create(Context, Fn, ArgExprs, Context.DependentTy,
+                                VK_RValue, RParenLoc);
       }
     }
 
@@ -5482,8 +5491,8 @@ ExprResult Sema::ActOnCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
     // We aren't supposed to apply this logic if there's an '&' involved.
     if (!find.HasFormOfMemberPointer) {
       if (Expr::hasAnyTypeDependentArguments(ArgExprs))
-        return new (Context) CallExpr(
-            Context, Fn, ArgExprs, Context.DependentTy, VK_RValue, RParenLoc);
+        return CallExpr::Create(Context, Fn, ArgExprs, Context.DependentTy,
+                                VK_RValue, RParenLoc);
       OverloadExpr *ovl = find.Expression;
       if (UnresolvedLookupExpr *ULE = dyn_cast<UnresolvedLookupExpr>(ovl))
         return BuildOverloadedCallExpr(
@@ -5672,12 +5681,12 @@ ExprResult Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
   if (Config) {
     assert(UsesADL == ADLCallKind::NotADL &&
            "CUDAKernelCallExpr should not use ADL");
-    TheCall = new (Context)
-        CUDAKernelCallExpr(Context, Fn, cast<CallExpr>(Config), Args, ResultTy,
-                           VK_RValue, RParenLoc, NumParams);
+    TheCall =
+        CUDAKernelCallExpr::Create(Context, Fn, cast<CallExpr>(Config), Args,
+                                   ResultTy, VK_RValue, RParenLoc, NumParams);
   } else {
-    TheCall = new (Context) CallExpr(Context, Fn, Args, ResultTy, VK_RValue,
-                                     RParenLoc, NumParams, UsesADL);
+    TheCall = CallExpr::Create(Context, Fn, Args, ResultTy, VK_RValue,
+                               RParenLoc, NumParams, UsesADL);
   }
 
   if (!getLangOpts().CPlusPlus) {
@@ -9135,16 +9144,6 @@ static void diagnoseStringPlusInt(Sema &Self, SourceLocation OpLoc,
   if (!IsStringPlusInt || IndexExpr->isValueDependent())
     return;
 
-  Expr::EvalResult Result;
-  if (IndexExpr->EvaluateAsInt(Result, Self.getASTContext())) {
-    llvm::APSInt index = Result.Val.getInt();
-    unsigned StrLenWithNull = StrExpr->getLength() + 1;
-    if (index.isNonNegative() &&
-        index <= llvm::APSInt(llvm::APInt(index.getBitWidth(), StrLenWithNull),
-                              index.isUnsigned()))
-      return;
-  }
-
   SourceRange DiagRange(LHSExpr->getBeginLoc(), RHSExpr->getEndLoc());
   Self.Diag(OpLoc, diag::warn_string_plus_int)
       << DiagRange << IndexExpr->IgnoreImpCasts()->getType();
@@ -11215,17 +11214,23 @@ static bool CheckForModifiableLvalue(Expr *E, SourceLocation Loc, Sema &S) {
         if (var->isARCPseudoStrong() &&
             (!var->getTypeSourceInfo() ||
              !var->getTypeSourceInfo()->getType().isConstQualified())) {
-          // There are two pseudo-strong cases:
+          // There are three pseudo-strong cases:
           //  - self
           ObjCMethodDecl *method = S.getCurMethodDecl();
-          if (method && var == method->getSelfDecl())
+          if (method && var == method->getSelfDecl()) {
             DiagID = method->isClassMethod()
               ? diag::err_typecheck_arc_assign_self_class_method
               : diag::err_typecheck_arc_assign_self;
 
+          //  - Objective-C externally_retained attribute.
+          } else if (var->hasAttr<ObjCExternallyRetainedAttr>() ||
+                     isa<ParmVarDecl>(var)) {
+            DiagID = diag::err_typecheck_arc_assign_externally_retained;
+
           //  - fast enumeration variables
-          else
+          } else {
             DiagID = diag::err_typecheck_arr_assign_enumeration;
+          }
 
           SourceRange Assign;
           if (Loc != OrigLoc)
@@ -14552,6 +14557,10 @@ void Sema::DiscardCleanupsInEvaluationContext() {
 }
 
 ExprResult Sema::HandleExprEvaluationContextForTypeof(Expr *E) {
+  ExprResult Result = CheckPlaceholderExpr(E);
+  if (Result.isInvalid())
+    return ExprError();
+  E = Result.get();
   if (!E->getType()->isVariablyModifiedType())
     return E;
   return TransformToPotentiallyEvaluated(E);
@@ -15036,9 +15045,8 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
         // According to the blocks spec, the capture of a variable from
         // the stack requires a const copy constructor.  This is not true
         // of the copy/move done to move a __block variable to the heap.
-        Expr *DeclRef = new (S.Context) DeclRefExpr(Var, Nested,
-                                                  DeclRefType.withConst(),
-                                                  VK_LValue, Loc);
+        Expr *DeclRef = new (S.Context) DeclRefExpr(
+            S.Context, Var, Nested, DeclRefType.withConst(), VK_LValue, Loc);
 
         ExprResult Result
           = S.PerformCopyInitialization(
@@ -15114,8 +15122,8 @@ static bool captureInCapturedRegion(CapturedRegionScopeInfo *RSI,
     if (S.getLangOpts().OpenMP && RSI->CapRegionKind == CR_OpenMP)
       S.setOpenMPCaptureKind(Field, Var, RSI->OpenMPLevel);
 
-    CopyExpr = new (S.Context) DeclRefExpr(Var, RefersToCapturedVariable,
-                                            DeclRefType, VK_LValue, Loc);
+    CopyExpr = new (S.Context) DeclRefExpr(
+        S.Context, Var, RefersToCapturedVariable, DeclRefType, VK_LValue, Loc);
     Var->setReferenced(true);
     Var->markUsed(S.Context);
   }
@@ -16540,7 +16548,7 @@ ExprResult RebuildUnknownAnyExpr::resolveDecl(Expr *E, ValueDecl *VD) {
       DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E);
       if (DRE && Proto && Proto->getParamTypes().empty() && Proto->isVariadic()) {
         SourceLocation Loc = FD->getLocation();
-        FunctionDecl *NewFD = FunctionDecl::Create(FD->getASTContext(),
+        FunctionDecl *NewFD = FunctionDecl::Create(S.Context,
                                       FD->getDeclContext(),
                                       Loc, Loc, FD->getNameInfo().getName(),
                                       DestType, FD->getTypeSourceInfo(),
@@ -16768,9 +16776,10 @@ ExprResult Sema::CheckPlaceholderExpr(Expr *E) {
       auto *FD = cast<FunctionDecl>(DRE->getDecl());
       if (FD->getBuiltinID() == Builtin::BI__noop) {
         E = ImpCastExprToType(E, Context.getPointerType(FD->getType()),
-                              CK_BuiltinFnToFnPtr).get();
-        return new (Context) CallExpr(Context, E, None, Context.IntTy,
-                                      VK_RValue, SourceLocation());
+                              CK_BuiltinFnToFnPtr)
+                .get();
+        return CallExpr::Create(Context, E, /*Args=*/{}, Context.IntTy,
+                                VK_RValue, SourceLocation());
       }
     }
 

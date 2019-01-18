@@ -128,11 +128,19 @@ struct ObjCEntrypoints {
   /// void objc_autoreleasePoolPop(void*);
   llvm::Constant *objc_autoreleasePoolPop;
 
+  /// void objc_autoreleasePoolPop(void*);
+  /// Note this method is used when we are using exception handling
+  llvm::Constant *objc_autoreleasePoolPopInvoke;
+
   /// void *objc_autoreleasePoolPush(void);
   llvm::Constant *objc_autoreleasePoolPush;
 
   /// id objc_autorelease(id);
   llvm::Constant *objc_autorelease;
+
+  /// id objc_autorelease(id);
+  /// Note this is the runtime method not the intrinsic.
+  llvm::Constant *objc_autoreleaseRuntimeFunction;
 
   /// id objc_autoreleaseReturnValue(id);
   llvm::Constant *objc_autoreleaseReturnValue;
@@ -158,6 +166,10 @@ struct ObjCEntrypoints {
   /// id objc_retain(id);
   llvm::Constant *objc_retain;
 
+  /// id objc_retain(id);
+  /// Note this is the runtime method not the intrinsic.
+  llvm::Constant *objc_retainRuntimeFunction;
+
   /// id objc_retainAutorelease(id);
   llvm::Constant *objc_retainAutorelease;
 
@@ -172,6 +184,10 @@ struct ObjCEntrypoints {
 
   /// void objc_release(id);
   llvm::Constant *objc_release;
+
+  /// void objc_release(id);
+  /// Note this is the runtime method not the intrinsic.
+  llvm::Constant *objc_releaseRuntimeFunction;
 
   /// void objc_storeStrong(id*, id);
   llvm::Constant *objc_storeStrong;

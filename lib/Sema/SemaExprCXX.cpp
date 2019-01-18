@@ -1064,7 +1064,7 @@ QualType Sema::getCurrentThisType() {
 
   if (CXXMethodDecl *method = dyn_cast<CXXMethodDecl>(DC)) {
     if (method && method->isInstance())
-      ThisTy = method->getThisType(Context);
+      ThisTy = method->getThisType();
   }
 
   if (ThisTy.isNull() && isLambdaCallOperator(CurContext) &&
@@ -1511,11 +1511,19 @@ namespace {
         Destroying = true;
         ++NumBaseParams;
       }
-      if (FD->getNumParams() == NumBaseParams + 2)
-        HasAlignValT = HasSizeT = true;
-      else if (FD->getNumParams() == NumBaseParams + 1) {
-        HasSizeT = FD->getParamDecl(NumBaseParams)->getType()->isIntegerType();
-        HasAlignValT = !HasSizeT;
+
+      if (NumBaseParams < FD->getNumParams() &&
+          S.Context.hasSameUnqualifiedType(
+              FD->getParamDecl(NumBaseParams)->getType(),
+              S.Context.getSizeType())) {
+        ++NumBaseParams;
+        HasSizeT = true;
+      }
+
+      if (NumBaseParams < FD->getNumParams() &&
+          FD->getParamDecl(NumBaseParams)->getType()->isAlignValT()) {
+        ++NumBaseParams;
+        HasAlignValT = true;
       }
 
       // In CUDA, determine how much we'd like / dislike to call this.
@@ -1744,28 +1752,33 @@ static bool isLegalArrayNewInitializer(CXXNewExpr::InitializationStyle Style,
   return false;
 }
 
+bool
+Sema::isUnavailableAlignedAllocationFunction(const FunctionDecl &FD) const {
+  if (!getLangOpts().AlignedAllocationUnavailable)
+    return false;
+  if (FD.isDefined())
+    return false;
+  bool IsAligned = false;
+  if (FD.isReplaceableGlobalAllocationFunction(&IsAligned) && IsAligned)
+    return true;
+  return false;
+}
+
 // Emit a diagnostic if an aligned allocation/deallocation function that is not
 // implemented in the standard library is selected.
-static void diagnoseUnavailableAlignedAllocation(const FunctionDecl &FD,
-                                                 SourceLocation Loc, bool IsDelete,
-                                                 Sema &S) {
-  if (!S.getLangOpts().AlignedAllocationUnavailable)
-    return;
-
-  // Return if there is a definition.
-  if (FD.isDefined())
-    return;
-
-  bool IsAligned = false;
-  if (FD.isReplaceableGlobalAllocationFunction(&IsAligned) && IsAligned) {
-    const llvm::Triple &T = S.getASTContext().getTargetInfo().getTriple();
+void Sema::diagnoseUnavailableAlignedAllocation(const FunctionDecl &FD,
+                                                SourceLocation Loc) {
+  if (isUnavailableAlignedAllocationFunction(FD)) {
+    const llvm::Triple &T = getASTContext().getTargetInfo().getTriple();
     StringRef OSName = AvailabilityAttr::getPlatformNameSourceSpelling(
-        S.getASTContext().getTargetInfo().getPlatformName());
+        getASTContext().getTargetInfo().getPlatformName());
 
-    S.Diag(Loc, diag::err_aligned_allocation_unavailable)
+    OverloadedOperatorKind Kind = FD.getDeclName().getCXXOverloadedOperator();
+    bool IsDelete = Kind == OO_Delete || Kind == OO_Array_Delete;
+    Diag(Loc, diag::err_aligned_allocation_unavailable)
         << IsDelete << FD.getType().getAsString() << OSName
         << alignedAllocMinVersion(T.getOS()).getAsString();
-    S.Diag(Loc, diag::note_silence_aligned_allocation_unavailable);
+    Diag(Loc, diag::note_silence_aligned_allocation_unavailable);
   }
 }
 
@@ -1860,12 +1873,11 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
     if (Braced && !getLangOpts().CPlusPlus17)
       Diag(Initializer->getBeginLoc(), diag::ext_auto_new_list_init)
           << AllocType << TypeRange;
-    Expr *Deduce = Inits[0];
     QualType DeducedType;
-    if (DeduceAutoType(AllocTypeInfo, Deduce, DeducedType) == DAR_Failed)
+    if (DeduceAutoType(AllocTypeInfo, Inits[0], DeducedType) == DAR_Failed)
       return ExprError(Diag(StartLoc, diag::err_auto_new_deduction_failure)
-                       << AllocType << Deduce->getType()
-                       << TypeRange << Deduce->getSourceRange());
+                       << AllocType << Inits[0]->getType()
+                       << TypeRange << Inits[0]->getSourceRange());
     if (DeducedType.isNull())
       return ExprError();
     AllocType = DeducedType;
@@ -2149,13 +2161,11 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
     if (DiagnoseUseOfDecl(OperatorNew, StartLoc))
       return ExprError();
     MarkFunctionReferenced(StartLoc, OperatorNew);
-    diagnoseUnavailableAlignedAllocation(*OperatorNew, StartLoc, false, *this);
   }
   if (OperatorDelete) {
     if (DiagnoseUseOfDecl(OperatorDelete, StartLoc))
       return ExprError();
     MarkFunctionReferenced(StartLoc, OperatorDelete);
-    diagnoseUnavailableAlignedAllocation(*OperatorDelete, StartLoc, true, *this);
   }
 
   // C++0x [expr.new]p17:
@@ -2176,11 +2186,11 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
     }
   }
 
-  return new (Context)
-      CXXNewExpr(Context, UseGlobal, OperatorNew, OperatorDelete, PassAlignment,
-                 UsualArrayDeleteWantsSize, PlacementArgs, TypeIdParens,
-                 ArraySize, initStyle, Initializer, ResultType, AllocTypeInfo,
-                 Range, DirectInitRange);
+  return CXXNewExpr::Create(Context, UseGlobal, OperatorNew, OperatorDelete,
+                            PassAlignment, UsualArrayDeleteWantsSize,
+                            PlacementArgs, TypeIdParens, ArraySize, initStyle,
+                            Initializer, ResultType, AllocTypeInfo, Range,
+                            DirectInitRange);
 }
 
 /// Checks that a type is suitable as the allocated type
@@ -3405,8 +3415,7 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
       }
     }
 
-    diagnoseUnavailableAlignedAllocation(*OperatorDelete, StartLoc, true,
-                                         *this);
+    DiagnoseUseOfDecl(OperatorDelete, StartLoc);
 
     // Convert the operand to the type of the first parameter of operator
     // delete. This is only necessary if we selected a destroying operator
@@ -3539,6 +3548,9 @@ Sema::SemaBuiltinOperatorNewDeleteOverloaded(ExprResult TheCallResult,
     return ExprError();
   assert(OperatorNewOrDelete && "should be found");
 
+  DiagnoseUseOfDecl(OperatorNewOrDelete, TheCall->getExprLoc());
+  MarkFunctionReferenced(TheCall->getExprLoc(), OperatorNewOrDelete);
+
   TheCall->setType(OperatorNewOrDelete->getReturnType());
   for (unsigned i = 0; i != TheCall->getNumArgs(); ++i) {
     QualType ParamTy = OperatorNewOrDelete->getParamDecl(i)->getType();
@@ -3583,7 +3595,7 @@ void Sema::CheckVirtualDtorCall(CXXDestructorDecl *dtor, SourceLocation Loc,
   if (getSourceManager().isInSystemHeader(PointeeRD->getLocation()))
     return;
 
-  QualType ClassType = dtor->getThisType(Context)->getPointeeType();
+  QualType ClassType = dtor->getThisType()->getPointeeType();
   if (PointeeRD->isAbstract()) {
     // If the class is abstract, we warn by default, because we're
     // sure the code has undefined behavior.
@@ -6538,6 +6550,11 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
              ExpressionEvaluationContextRecord::EK_Decltype &&
          "not in a decltype expression");
 
+  ExprResult Result = CheckPlaceholderExpr(E);
+  if (Result.isInvalid())
+    return ExprError();
+  E = Result.get();
+
   // C++11 [expr.call]p11:
   //   If a function call is a prvalue of object type,
   // -- if the function call is either
@@ -7184,8 +7201,8 @@ ExprResult Sema::BuildCXXMemberCallExpr(Expr *E, NamedDecl *FoundDecl,
   ExprValueKind VK = Expr::getValueKindForType(ResultType);
   ResultType = ResultType.getNonLValueExprType(Context);
 
-  CXXMemberCallExpr *CE = new (Context) CXXMemberCallExpr(
-      Context, ME, None, ResultType, VK, Exp.get()->getEndLoc());
+  CXXMemberCallExpr *CE = CXXMemberCallExpr::Create(
+      Context, ME, /*Args=*/{}, ResultType, VK, Exp.get()->getEndLoc());
 
   if (CheckFunctionCall(Method, CE,
                         Method->getType()->castAs<FunctionProtoType>()))
@@ -7798,6 +7815,8 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
     FullExpr = IgnoredValueConversions(FullExpr.get());
     if (FullExpr.isInvalid())
       return ExprError();
+
+    DiagnoseUnusedExprResult(FullExpr.get());
   }
 
   FullExpr = CorrectDelayedTyposInExpr(FullExpr.get());

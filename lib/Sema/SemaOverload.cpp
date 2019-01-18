@@ -63,8 +63,8 @@ CreateFunctionRefExpr(Sema &S, FunctionDecl *Fn, NamedDecl *FoundDecl,
     return ExprError();
   if (auto *FPT = Fn->getType()->getAs<FunctionProtoType>())
     S.ResolveExceptionSpec(Loc, FPT);
-  DeclRefExpr *DRE = new (S.Context) DeclRefExpr(Fn, false, Fn->getType(),
-                                                 VK_LValue, Loc, LocInfo);
+  DeclRefExpr *DRE = new (S.Context)
+      DeclRefExpr(S.Context, Fn, false, Fn->getType(), VK_LValue, Loc, LocInfo);
   if (HadMultipleCandidates)
     DRE->setHadMultipleCandidates(true);
 
@@ -1039,6 +1039,36 @@ Sema::CheckOverload(Scope *S, FunctionDecl *New, const LookupResult &Old,
       Match = *I;
       return Ovl_NonFunction;
     }
+  }
+
+  // C++ [temp.friend]p1:
+  //   For a friend function declaration that is not a template declaration:
+  //    -- if the name of the friend is a qualified or unqualified template-id,
+  //       [...], otherwise
+  //    -- if the name of the friend is a qualified-id and a matching
+  //       non-template function is found in the specified class or namespace,
+  //       the friend declaration refers to that function, otherwise,
+  //    -- if the name of the friend is a qualified-id and a matching function
+  //       template is found in the specified class or namespace, the friend
+  //       declaration refers to the deduced specialization of that function
+  //       template, otherwise
+  //    -- the name shall be an unqualified-id [...]
+  // If we get here for a qualified friend declaration, we've just reached the
+  // third bullet. If the type of the friend is dependent, skip this lookup
+  // until instantiation.
+  if (New->getFriendObjectKind() && New->getQualifier() &&
+      !New->getDependentSpecializationInfo() &&
+      !New->getType()->isDependentType()) {
+    LookupResult TemplateSpecResult(LookupResult::Temporary, Old);
+    TemplateSpecResult.addAllDecls(Old);
+    if (CheckFunctionTemplateSpecialization(New, nullptr, TemplateSpecResult,
+                                            /*QualifiedFriend*/true)) {
+      New->setInvalidDecl();
+      return Ovl_Overload;
+    }
+
+    Match = TemplateSpecResult.getAsSingle<FunctionDecl>();
+    return Ovl_Match;
   }
 
   return Ovl_Overload;
@@ -2824,11 +2854,9 @@ void Sema::HandleFunctionTypeMismatch(PartialDiagnostic &PDiag,
     return;
   }
 
-  // FIXME: OpenCL: Need to consider address spaces
-  unsigned FromQuals = FromFunction->getTypeQuals().getCVRUQualifiers();
-  unsigned ToQuals = ToFunction->getTypeQuals().getCVRUQualifiers();
-  if (FromQuals != ToQuals) {
-    PDiag << ft_qualifer_mismatch << ToQuals << FromQuals;
+  if (FromFunction->getTypeQuals() != ToFunction->getTypeQuals()) {
+    PDiag << ft_qualifer_mismatch << ToFunction->getTypeQuals()
+          << FromFunction->getTypeQuals();
     return;
   }
 
@@ -3250,7 +3278,7 @@ IsInitializerListConstructorConversion(Sema &S, Expr *From, QualType ToType,
   case OR_Success: {
     // Record the standard conversion we used and the conversion function.
     CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(Best->Function);
-    QualType ThisType = Constructor->getThisType(S.Context);
+    QualType ThisType = Constructor->getThisType();
     // Initializer lists don't have conversions as such.
     User.Before.setAsIdentityConversion();
     User.HadMultipleCandidates = HadMultipleCandidates;
@@ -3431,7 +3459,7 @@ IsUserDefinedConversion(Sema &S, Expr *From, QualType ToType,
       //   sequence converts the source type to the type required by
       //   the argument of the constructor.
       //
-      QualType ThisType = Constructor->getThisType(S.Context);
+      QualType ThisType = Constructor->getThisType();
       if (isa<InitListExpr>(From)) {
         // Initializer lists don't have conversions as such.
         User.Before.setAsIdentityConversion();
@@ -5185,12 +5213,12 @@ Sema::PerformObjectArgumentInitialization(Expr *From,
                                           CXXMethodDecl *Method) {
   QualType FromRecordType, DestType;
   QualType ImplicitParamRecordType  =
-    Method->getThisType(Context)->getAs<PointerType>()->getPointeeType();
+    Method->getThisType()->getAs<PointerType>()->getPointeeType();
 
   Expr::Classification FromClassification;
   if (const PointerType *PT = From->getType()->getAs<PointerType>()) {
     FromRecordType = PT->getPointeeType();
-    DestType = Method->getThisType(Context);
+    DestType = Method->getThisType();
     FromClassification = Expr::Classification::makeSimpleLValue();
   } else {
     FromRecordType = From->getType();
@@ -6983,8 +7011,8 @@ Sema::AddConversionCandidate(CXXConversionDecl *Conversion,
   // lvalues/rvalues and the type. Fortunately, we can allocate this
   // call on the stack and we don't need its arguments to be
   // well-formed.
-  DeclRefExpr ConversionRef(Conversion, false, Conversion->getType(), VK_LValue,
-                            From->getBeginLoc());
+  DeclRefExpr ConversionRef(Context, Conversion, false, Conversion->getType(),
+                            VK_LValue, From->getBeginLoc());
   ImplicitCastExpr ConversionFn(ImplicitCastExpr::OnStack,
                                 Context.getPointerType(Conversion->getType()),
                                 CK_FunctionToPointerDecay,
@@ -7003,13 +7031,17 @@ Sema::AddConversionCandidate(CXXConversionDecl *Conversion,
   // there are 0 arguments (i.e., nothing is allocated using ASTContext's
   // allocator).
   QualType CallResultType = ConversionType.getNonLValueExprType(Context);
-  CallExpr Call(Context, &ConversionFn, None, CallResultType, VK,
-                From->getBeginLoc());
+
+  llvm::AlignedCharArray<alignof(CallExpr), sizeof(CallExpr) + sizeof(Stmt *)>
+      Buffer;
+  CallExpr *TheTemporaryCall = CallExpr::CreateTemporary(
+      Buffer.buffer, &ConversionFn, CallResultType, VK, From->getBeginLoc());
+
   ImplicitConversionSequence ICS =
-    TryCopyInitialization(*this, &Call, ToType,
-                          /*SuppressUserConversions=*/true,
-                          /*InOverloadResolution=*/false,
-                          /*AllowObjCWritebackConversion=*/false);
+      TryCopyInitialization(*this, TheTemporaryCall, ToType,
+                            /*SuppressUserConversions=*/true,
+                            /*InOverloadResolution=*/false,
+                            /*AllowObjCWritebackConversion=*/false);
 
   switch (ICS.getKind()) {
   case ImplicitConversionSequence::StandardConversion:
@@ -9020,6 +9052,11 @@ static bool isBetterMultiversionCandidate(const OverloadCandidate &Cand1,
   if (!Cand1.Function || !Cand1.Function->isMultiVersion() || !Cand2.Function ||
       !Cand2.Function->isMultiVersion())
     return false;
+
+  // If Cand1 is invalid, it cannot be a better match, if Cand2 is invalid, this
+  // is obviously better.
+  if (Cand1.Function->isInvalidDecl()) return false;
+  if (Cand2.Function->isInvalidDecl()) return true;
 
   // If this is a cpu_dispatch/cpu_specific multiversion situation, prefer
   // cpu_dispatch, else arbitrarily based on the identifiers.
@@ -11988,12 +12025,12 @@ bool Sema::buildOverloadedCallSet(Scope *S, Expr *Fn,
     if (CandidateSet->empty() ||
         CandidateSet->BestViableFunction(*this, Fn->getBeginLoc(), Best) ==
             OR_No_Viable_Function) {
-      // In Microsoft mode, if we are inside a template class member function then
-      // create a type dependent CallExpr. The goal is to postpone name lookup
-      // to instantiation time to be able to search into type dependent base
-      // classes.
-      CallExpr *CE = new (Context) CallExpr(
-          Context, Fn, Args, Context.DependentTy, VK_RValue, RParenLoc);
+      // In Microsoft mode, if we are inside a template class member function
+      // then create a type dependent CallExpr. The goal is to postpone name
+      // lookup to instantiation time to be able to search into type dependent
+      // base classes.
+      CallExpr *CE = CallExpr::Create(Context, Fn, Args, Context.DependentTy,
+                                      VK_RValue, RParenLoc);
       CE->setTypeDependent(true);
       CE->setValueDependent(true);
       CE->setInstantiationDependent(true);
@@ -12199,14 +12236,12 @@ Sema::CreateOverloadedUnaryOp(SourceLocation OpLoc, UnaryOperatorKind Opc,
                                          VK_RValue, OK_Ordinary, OpLoc, false);
 
     CXXRecordDecl *NamingClass = nullptr; // lookup ignores member operators
-    UnresolvedLookupExpr *Fn
-      = UnresolvedLookupExpr::Create(Context, NamingClass,
-                                     NestedNameSpecifierLoc(), OpNameInfo,
-                                     /*ADL*/ true, IsOverloaded(Fns),
-                                     Fns.begin(), Fns.end());
-    return new (Context)
-        CXXOperatorCallExpr(Context, Op, Fn, ArgsArray, Context.DependentTy,
-                            VK_RValue, OpLoc, FPOptions());
+    UnresolvedLookupExpr *Fn = UnresolvedLookupExpr::Create(
+        Context, NamingClass, NestedNameSpecifierLoc(), OpNameInfo,
+        /*ADL*/ true, IsOverloaded(Fns), Fns.begin(), Fns.end());
+    return CXXOperatorCallExpr::Create(Context, Op, Fn, ArgsArray,
+                                       Context.DependentTy, VK_RValue, OpLoc,
+                                       FPOptions());
   }
 
   // Build an empty overload set.
@@ -12278,9 +12313,9 @@ Sema::CreateOverloadedUnaryOp(SourceLocation OpLoc, UnaryOperatorKind Opc,
       ResultTy = ResultTy.getNonLValueExprType(Context);
 
       Args[0] = Input;
-      CallExpr *TheCall = new (Context)
-          CXXOperatorCallExpr(Context, Op, FnExpr.get(), ArgsArray, ResultTy,
-                              VK, OpLoc, FPOptions(), Best->IsADLCandidate);
+      CallExpr *TheCall = CXXOperatorCallExpr::Create(
+          Context, Op, FnExpr.get(), ArgsArray, ResultTy, VK, OpLoc,
+          FPOptions(), Best->IsADLCandidate);
 
       if (CheckCallReturnType(FnDecl->getReturnType(), OpLoc, TheCall, FnDecl))
         return ExprError();
@@ -12390,14 +12425,12 @@ Sema::CreateOverloadedBinOp(SourceLocation OpLoc,
     CXXRecordDecl *NamingClass = nullptr; // lookup ignores member operators
     // TODO: provide better source location info in DNLoc component.
     DeclarationNameInfo OpNameInfo(OpName, OpLoc);
-    UnresolvedLookupExpr *Fn
-      = UnresolvedLookupExpr::Create(Context, NamingClass,
-                                     NestedNameSpecifierLoc(), OpNameInfo,
-                                     /*ADL*/PerformADL, IsOverloaded(Fns),
-                                     Fns.begin(), Fns.end());
-    return new (Context)
-        CXXOperatorCallExpr(Context, Op, Fn, Args, Context.DependentTy,
-                            VK_RValue, OpLoc, FPFeatures);
+    UnresolvedLookupExpr *Fn = UnresolvedLookupExpr::Create(
+        Context, NamingClass, NestedNameSpecifierLoc(), OpNameInfo,
+        /*ADL*/ PerformADL, IsOverloaded(Fns), Fns.begin(), Fns.end());
+    return CXXOperatorCallExpr::Create(Context, Op, Fn, Args,
+                                       Context.DependentTy, VK_RValue, OpLoc,
+                                       FPFeatures);
   }
 
   // Always do placeholder-like conversions on the RHS.
@@ -12510,9 +12543,9 @@ Sema::CreateOverloadedBinOp(SourceLocation OpLoc,
         ExprValueKind VK = Expr::getValueKindForType(ResultTy);
         ResultTy = ResultTy.getNonLValueExprType(Context);
 
-        CXXOperatorCallExpr *TheCall = new (Context)
-            CXXOperatorCallExpr(Context, Op, FnExpr.get(), Args, ResultTy, VK,
-                                OpLoc, FPFeatures, Best->IsADLCandidate);
+        CXXOperatorCallExpr *TheCall = CXXOperatorCallExpr::Create(
+            Context, Op, FnExpr.get(), Args, ResultTy, VK, OpLoc, FPFeatures,
+            Best->IsADLCandidate);
 
         if (CheckCallReturnType(FnDecl->getReturnType(), OpLoc, TheCall,
                                 FnDecl))
@@ -12658,9 +12691,9 @@ Sema::CreateOverloadedArraySubscriptExpr(SourceLocation LLoc,
                                      UnresolvedSetIterator());
     // Can't add any actual overloads yet
 
-    return new (Context)
-        CXXOperatorCallExpr(Context, OO_Subscript, Fn, Args,
-                            Context.DependentTy, VK_RValue, RLoc, FPOptions());
+    return CXXOperatorCallExpr::Create(Context, OO_Subscript, Fn, Args,
+                                       Context.DependentTy, VK_RValue, RLoc,
+                                       FPOptions());
   }
 
   // Handle placeholders on both operands.
@@ -12734,10 +12767,8 @@ Sema::CreateOverloadedArraySubscriptExpr(SourceLocation LLoc,
         ResultTy = ResultTy.getNonLValueExprType(Context);
 
         CXXOperatorCallExpr *TheCall =
-          new (Context) CXXOperatorCallExpr(Context, OO_Subscript,
-                                            FnExpr.get(), Args,
-                                            ResultTy, VK, RLoc,
-                                            FPOptions());
+            CXXOperatorCallExpr::Create(Context, OO_Subscript, FnExpr.get(),
+                                        Args, ResultTy, VK, RLoc, FPOptions());
 
         if (CheckCallReturnType(FnDecl->getReturnType(), LLoc, TheCall, FnDecl))
           return ExprError();
@@ -12857,10 +12888,9 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
         << (qualsString.find(' ') == std::string::npos ? 1 : 2);
     }
 
-    CXXMemberCallExpr *call
-      = new (Context) CXXMemberCallExpr(Context, MemExprE, Args,
-                                        resultType, valueKind, RParenLoc,
-                                        proto->getNumParams());
+    CXXMemberCallExpr *call =
+        CXXMemberCallExpr::Create(Context, MemExprE, Args, resultType,
+                                  valueKind, RParenLoc, proto->getNumParams());
 
     if (CheckCallReturnType(proto->getReturnType(), op->getRHS()->getBeginLoc(),
                             call, nullptr))
@@ -12876,8 +12906,8 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   }
 
   if (isa<CXXPseudoDestructorExpr>(NakedMemExpr))
-    return new (Context)
-        CallExpr(Context, MemExprE, Args, Context.VoidTy, VK_RValue, RParenLoc);
+    return CallExpr::Create(Context, MemExprE, Args, Context.VoidTy, VK_RValue,
+                            RParenLoc);
 
   UnbridgedCastsSet UnbridgedCasts;
   if (checkArgPlaceholdersForOverload(*this, Args, UnbridgedCasts))
@@ -13012,9 +13042,8 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   assert(Method && "Member call to something that isn't a method?");
   const auto *Proto = Method->getType()->getAs<FunctionProtoType>();
   CXXMemberCallExpr *TheCall =
-    new (Context) CXXMemberCallExpr(Context, MemExprE, Args,
-                                    ResultType, VK, RParenLoc,
-                                    Proto->getNumParams());
+      CXXMemberCallExpr::Create(Context, MemExprE, Args, ResultType, VK,
+                                RParenLoc, Proto->getNumParams());
 
   // Check for a valid return type.
   if (CheckCallReturnType(Method->getReturnType(), MemExpr->getMemberLoc(),
@@ -13353,9 +13382,9 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
   ExprValueKind VK = Expr::getValueKindForType(ResultTy);
   ResultTy = ResultTy.getNonLValueExprType(Context);
 
-  CXXOperatorCallExpr *TheCall = new (Context)
-      CXXOperatorCallExpr(Context, OO_Call, NewFn.get(), MethodArgs, ResultTy,
-                          VK, RParenLoc, FPOptions());
+  CXXOperatorCallExpr *TheCall =
+      CXXOperatorCallExpr::Create(Context, OO_Call, NewFn.get(), MethodArgs,
+                                  ResultTy, VK, RParenLoc, FPOptions());
 
   if (CheckCallReturnType(Method->getReturnType(), LParenLoc, TheCall, Method))
     return true;
@@ -13471,9 +13500,8 @@ Sema::BuildOverloadedArrowExpr(Scope *S, Expr *Base, SourceLocation OpLoc,
   QualType ResultTy = Method->getReturnType();
   ExprValueKind VK = Expr::getValueKindForType(ResultTy);
   ResultTy = ResultTy.getNonLValueExprType(Context);
-  CXXOperatorCallExpr *TheCall =
-    new (Context) CXXOperatorCallExpr(Context, OO_Arrow, FnExpr.get(),
-                                      Base, ResultTy, VK, OpLoc, FPOptions());
+  CXXOperatorCallExpr *TheCall = CXXOperatorCallExpr::Create(
+      Context, OO_Arrow, FnExpr.get(), Base, ResultTy, VK, OpLoc, FPOptions());
 
   if (CheckCallReturnType(Method->getReturnType(), OpLoc, TheCall, Method))
     return ExprError();
@@ -13545,10 +13573,9 @@ ExprResult Sema::BuildLiteralOperatorCall(LookupResult &R,
   ExprValueKind VK = Expr::getValueKindForType(ResultTy);
   ResultTy = ResultTy.getNonLValueExprType(Context);
 
-  UserDefinedLiteral *UDL =
-    new (Context) UserDefinedLiteral(Context, Fn.get(),
-                                     llvm::makeArrayRef(ConvArgs, Args.size()),
-                                     ResultTy, VK, LitEndLoc, UDSuffixLoc);
+  UserDefinedLiteral *UDL = UserDefinedLiteral::Create(
+      Context, Fn.get(), llvm::makeArrayRef(ConvArgs, Args.size()), ResultTy,
+      VK, LitEndLoc, UDSuffixLoc);
 
   if (CheckCallReturnType(FD->getReturnType(), UDSuffixLoc, UDL, FD))
     return ExprError();

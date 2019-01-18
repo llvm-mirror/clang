@@ -2180,7 +2180,7 @@ public:
   /// that for the call operator of a lambda closure type, this returns the
   /// desugared 'this' type (a pointer to the closure type), not the captured
   /// 'this' type.
-  QualType getThisType(ASTContext &C) const;
+  QualType getThisType() const;
 
   static QualType getThisType(const FunctionProtoType *FPT,
                               const CXXRecordDecl *Decl);
@@ -3918,6 +3918,7 @@ class MSPropertyDecl : public DeclaratorDecl {
       : DeclaratorDecl(MSProperty, DC, L, N, T, TInfo, StartL),
         GetterId(Getter), SetterId(Setter) {}
 
+  void anchor() override;
 public:
   friend class ASTDeclReader;
 

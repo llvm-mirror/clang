@@ -530,19 +530,22 @@ public:
   }
 
   NestedNameSpecifierLoc getTemplateQualifierLoc() const {
-    assert(Argument.getKind() == TemplateArgument::Template ||
-           Argument.getKind() == TemplateArgument::TemplateExpansion);
+    if (Argument.getKind() != TemplateArgument::Template &&
+        Argument.getKind() != TemplateArgument::TemplateExpansion)
+      return NestedNameSpecifierLoc();
     return LocInfo.getTemplateQualifierLoc();
   }
 
   SourceLocation getTemplateNameLoc() const {
-    assert(Argument.getKind() == TemplateArgument::Template ||
-           Argument.getKind() == TemplateArgument::TemplateExpansion);
+    if (Argument.getKind() != TemplateArgument::Template &&
+        Argument.getKind() != TemplateArgument::TemplateExpansion)
+      return SourceLocation();
     return LocInfo.getTemplateNameLoc();
   }
 
   SourceLocation getTemplateEllipsisLoc() const {
-    assert(Argument.getKind() == TemplateArgument::TemplateExpansion);
+    if (Argument.getKind() != TemplateArgument::TemplateExpansion)
+      return SourceLocation();
     return LocInfo.getTemplateEllipsisLoc();
   }
 };
@@ -617,13 +620,17 @@ public:
   /// The number of template arguments in TemplateArgs.
   unsigned NumTemplateArgs;
 
+  SourceLocation getLAngleLoc() const { return LAngleLoc; }
+  SourceLocation getRAngleLoc() const { return RAngleLoc; }
+
   /// Retrieve the template arguments
   const TemplateArgumentLoc *getTemplateArgs() const {
     return getTrailingObjects<TemplateArgumentLoc>();
   }
+  unsigned getNumTemplateArgs() const { return NumTemplateArgs; }
 
   llvm::ArrayRef<TemplateArgumentLoc> arguments() const {
-    return llvm::makeArrayRef(getTemplateArgs(), NumTemplateArgs);
+    return llvm::makeArrayRef(getTemplateArgs(), getNumTemplateArgs());
   }
 
   const TemplateArgumentLoc &operator[](unsigned I) const {

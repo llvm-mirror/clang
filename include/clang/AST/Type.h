@@ -980,9 +980,7 @@ public:
 
   void print(raw_ostream &OS, const PrintingPolicy &Policy,
              const Twine &PlaceHolder = Twine(),
-             unsigned Indentation = 0) const {
-    print(split(), OS, Policy, PlaceHolder, Indentation);
-  }
+             unsigned Indentation = 0) const;
 
   static void print(SplitQualType split, raw_ostream &OS,
                     const PrintingPolicy &policy, const Twine &PlaceHolder,
@@ -996,9 +994,7 @@ public:
                     unsigned Indentation = 0);
 
   void getAsStringInternal(std::string &Str,
-                           const PrintingPolicy &Policy) const {
-    return getAsStringInternal(split(), Str, Policy);
-  }
+                           const PrintingPolicy &Policy) const;
 
   static void getAsStringInternal(SplitQualType split, std::string &out,
                                   const PrintingPolicy &policy) {
@@ -6703,6 +6699,24 @@ inline const Type *Type::getPointeeOrArrayElementType() const {
   else if (type->isArrayType())
     return type->getBaseElementTypeUnsafe();
   return type;
+}
+
+/// Insertion operator for diagnostics. This allows sending Qualifiers into a
+/// diagnostic with <<.
+inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
+                                           Qualifiers Q) {
+  DB.AddTaggedVal(Q.getAsOpaqueValue(),
+                  DiagnosticsEngine::ArgumentKind::ak_qual);
+  return DB;
+}
+
+/// Insertion operator for partial diagnostics. This allows sending Qualifiers
+/// into a diagnostic with <<.
+inline const PartialDiagnostic &operator<<(const PartialDiagnostic &PD,
+                                           Qualifiers Q) {
+  PD.AddTaggedVal(Q.getAsOpaqueValue(),
+                  DiagnosticsEngine::ArgumentKind::ak_qual);
+  return PD;
 }
 
 /// Insertion operator for diagnostics.  This allows sending QualType's into a

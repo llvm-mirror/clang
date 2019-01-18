@@ -12,6 +12,7 @@ endif()
 add_clang_library(clangDriver
   Action.cpp
   Compilation.cpp
+  DarwinSDKInfo.cpp
   Distro.cpp
   Driver.cpp
   DriverOptions.cpp
@@ -52,6 +53,7 @@ add_clang_library(clangDriver
   ToolChains/MipsLinux.cpp
   ToolChains/MinGW.cpp
   ToolChains/Minix.cpp
+  ToolChains/MSP430.cpp
   ToolChains/MSVC.cpp
   ToolChains/Myriad.cpp
   ToolChains/NaCl.cpp

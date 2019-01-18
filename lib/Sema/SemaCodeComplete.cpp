@@ -3447,6 +3447,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
     case ObjCPropertyImplDecl::Synthesize:
       return CXCursor_ObjCSynthesizeDecl;
     }
+    llvm_unreachable("Unexpected Kind!");
 
   case Decl::Import:
     return CXCursor_ModuleImportDecl;
@@ -3737,11 +3738,9 @@ void Sema::CodeCompleteOrdinaryName(Scope *S,
 
   // If we are in a C++ non-static member function, check the qualifiers on
   // the member function to filter/prioritize the results list.
-  if (CXXMethodDecl *CurMethod = dyn_cast<CXXMethodDecl>(CurContext)) {
-    if (CurMethod->isInstance()) {
-      Results.setObjectTypeQualifiers(CurMethod->getTypeQualifiers());
-    }
-  }
+  auto ThisType = getCurrentThisType();
+  if (!ThisType.isNull())
+    Results.setObjectTypeQualifiers(ThisType->getPointeeType().getQualifiers());
 
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
   LookupVisibleDecls(S, LookupOrdinaryName, Consumer,

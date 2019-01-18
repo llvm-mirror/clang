@@ -448,12 +448,24 @@ SanitizerMask NetBSD::getSupportedSanitizers() const {
     Res |= SanitizerKind::Vptr;
   }
   if (IsX86_64) {
+    Res |= SanitizerKind::DataFlow;
     Res |= SanitizerKind::Efficiency;
     Res |= SanitizerKind::Fuzzer;
     Res |= SanitizerKind::FuzzerNoLink;
+    Res |= SanitizerKind::HWAddress;
     Res |= SanitizerKind::KernelAddress;
+    Res |= SanitizerKind::KernelHWAddress;
+    Res |= SanitizerKind::KernelMemory;
     Res |= SanitizerKind::Memory;
     Res |= SanitizerKind::Thread;
   }
   return Res;
+}
+
+void NetBSD::addClangTargetOptions(const ArgList &,
+                                   ArgStringList &CC1Args,
+                                   Action::OffloadKind) const {
+  const SanitizerArgs &SanArgs = getSanitizerArgs();
+  if (SanArgs.hasAnySanitizer())
+    CC1Args.push_back("-D_REENTRANT");
 }

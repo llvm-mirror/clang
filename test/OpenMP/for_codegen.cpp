@@ -38,7 +38,6 @@ void loop_with_counter_collapse() {
   // LIFETIME: call void @llvm.lifetime.end
   // LIFETIME: call void @llvm.lifetime.end
   // LIFETIME: call void @llvm.lifetime.end
-  // LIFETIME: call void @llvm.lifetime.end
   #pragma omp for collapse(2)
   for (int i = 0; i < 4; i++) {
     for (int j = i; j < 4; j++) {
@@ -73,7 +72,7 @@ void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
-// CHECK-NOT: !llvm.mem.parallel_loop_access
+// CHECK-NOT: !llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -114,7 +113,7 @@ void static_not_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
-// CHECK-NOT: !llvm.mem.parallel_loop_access
+// CHECK-NOT: !llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -163,7 +162,7 @@ void static_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
-// CHECK-NOT: !llvm.mem.parallel_loop_access
+// CHECK-NOT: !llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i32 [[IV1_2]], 1
@@ -215,7 +214,7 @@ void dynamic1(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -256,7 +255,7 @@ void guided7(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -301,7 +300,7 @@ void test_auto(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
-// CHECK-NOT: !llvm.mem.parallel_loop_access
+// CHECK-NOT: !llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i64 [[IV1_2]], 1
@@ -343,7 +342,7 @@ void runtime(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
-// CHECK-NOT: !llvm.mem.parallel_loop_access
+// CHECK-NOT: !llvm.access.group
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1

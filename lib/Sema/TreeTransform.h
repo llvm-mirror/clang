@@ -328,7 +328,7 @@ public:
   /// other mechanism.
   ///
   /// \returns the transformed statement.
-  StmtResult TransformStmt(Stmt *S);
+  StmtResult TransformStmt(Stmt *S, bool DiscardedValue = false);
 
   /// Transform the given statement.
   ///
@@ -1796,14 +1796,16 @@ public:
   /// By default, performs semantic analysis to build the new OpenMP clause.
   /// Subclasses may override this routine to provide different behavior.
   OMPClause *
-  RebuildOMPMapClause(OpenMPMapClauseKind MapTypeModifier,
+  RebuildOMPMapClause(ArrayRef<OpenMPMapModifierKind> MapTypeModifiers,
+                      ArrayRef<SourceLocation> MapTypeModifiersLoc,
                       OpenMPMapClauseKind MapType, bool IsMapTypeImplicit,
                       SourceLocation MapLoc, SourceLocation ColonLoc,
                       ArrayRef<Expr *> VarList, SourceLocation StartLoc,
                       SourceLocation LParenLoc, SourceLocation EndLoc) {
-    return getSema().ActOnOpenMPMapClause(MapTypeModifier, MapType,
-                                          IsMapTypeImplicit, MapLoc, ColonLoc,
-                                          VarList, StartLoc, LParenLoc, EndLoc);
+    return getSema().ActOnOpenMPMapClause(MapTypeModifiers, MapTypeModifiersLoc,
+                                          MapType, IsMapTypeImplicit, MapLoc,
+                                          ColonLoc, VarList, StartLoc,
+                                          LParenLoc, EndLoc);
   }
 
   /// Build a new OpenMP 'num_teams' clause.
@@ -3128,15 +3130,15 @@ public:
 
     // Build a reference to the __builtin_shufflevector builtin
     FunctionDecl *Builtin = cast<FunctionDecl>(Lookup.front());
-    Expr *Callee = new (SemaRef.Context) DeclRefExpr(Builtin, false,
-                                                  SemaRef.Context.BuiltinFnTy,
-                                                  VK_RValue, BuiltinLoc);
+    Expr *Callee = new (SemaRef.Context)
+        DeclRefExpr(SemaRef.Context, Builtin, false,
+                    SemaRef.Context.BuiltinFnTy, VK_RValue, BuiltinLoc);
     QualType CalleePtrTy = SemaRef.Context.getPointerType(Builtin->getType());
     Callee = SemaRef.ImpCastExprToType(Callee, CalleePtrTy,
                                        CK_BuiltinFnToFnPtr).get();
 
     // Build the CallExpr
-    ExprResult TheCall = new (SemaRef.Context) CallExpr(
+    ExprResult TheCall = CallExpr::Create(
         SemaRef.Context, Callee, SubExprs, Builtin->getCallResultType(),
         Expr::getValueKindForType(Builtin->getReturnType()), RParenLoc);
 
@@ -3267,8 +3269,8 @@ private:
                                       bool DeducibleTSTContext);
 };
 
-template<typename Derived>
-StmtResult TreeTransform<Derived>::TransformStmt(Stmt *S) {
+template <typename Derived>
+StmtResult TreeTransform<Derived>::TransformStmt(Stmt *S, bool DiscardedValue) {
   if (!S)
     return S;
 
@@ -3292,7 +3294,7 @@ StmtResult TreeTransform<Derived>::TransformStmt(Stmt *S) {
       if (E.isInvalid())
         return StmtError();
 
-      return getSema().ActOnExprStmt(E);
+      return getSema().ActOnExprStmt(E, DiscardedValue);
     }
   }
 
@@ -4713,7 +4715,8 @@ TreeTransform<Derived>::TransformVariableArrayType(TypeLocBuilder &TLB,
   }
   if (SizeResult.isInvalid())
     return QualType();
-  SizeResult = SemaRef.ActOnFinishFullExpr(SizeResult.get());
+  SizeResult =
+      SemaRef.ActOnFinishFullExpr(SizeResult.get(), /*DiscardedValue*/ false);
   if (SizeResult.isInvalid())
     return QualType();
 
@@ -6518,7 +6521,9 @@ TreeTransform<Derived>::TransformCompoundStmt(CompoundStmt *S,
   bool SubStmtChanged = false;
   SmallVector<Stmt*, 8> Statements;
   for (auto *B : S->body()) {
-    StmtResult Result = getDerived().TransformStmt(B);
+    StmtResult Result =
+        getDerived().TransformStmt(B, !IsStmtExpr || B != S->body_back());
+
     if (Result.isInvalid()) {
       // Immediately fail if this was a DeclStmt, since it's very
       // likely that this will cause problems for future statements.
@@ -8803,9 +8808,9 @@ OMPClause *TreeTransform<Derived>::TransformOMPMapClause(OMPMapClause *C) {
     Vars.push_back(EVar.get());
   }
   return getDerived().RebuildOMPMapClause(
-      C->getMapTypeModifier(), C->getMapType(), C->isImplicitMapType(),
-      C->getMapLoc(), C->getColonLoc(), Vars, C->getBeginLoc(),
-      C->getLParenLoc(), C->getEndLoc());
+      C->getMapTypeModifiers(), C->getMapTypeModifiersLoc(), C->getMapType(),
+      C->isImplicitMapType(), C->getMapLoc(), C->getColonLoc(), Vars,
+      C->getBeginLoc(), C->getLParenLoc(), C->getEndLoc());
 }
 
 template <typename Derived>

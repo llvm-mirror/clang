@@ -93,6 +93,17 @@ static unsigned getFunctionOrMethodNumParams(const Decl *D) {
   return cast<ObjCMethodDecl>(D)->param_size();
 }
 
+static const ParmVarDecl *getFunctionOrMethodParam(const Decl *D,
+                                                   unsigned Idx) {
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    return FD->getParamDecl(Idx);
+  if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+    return MD->getParamDecl(Idx);
+  if (const auto *BD = dyn_cast<BlockDecl>(D))
+    return BD->getParamDecl(Idx);
+  return nullptr;
+}
+
 static QualType getFunctionOrMethodParamType(const Decl *D, unsigned Idx) {
   if (const FunctionType *FnTy = D->getFunctionType())
     return cast<FunctionProtoType>(FnTy)->getParamType(Idx);
@@ -103,12 +114,8 @@ static QualType getFunctionOrMethodParamType(const Decl *D, unsigned Idx) {
 }
 
 static SourceRange getFunctionOrMethodParamRange(const Decl *D, unsigned Idx) {
-  if (const auto *FD = dyn_cast<FunctionDecl>(D))
-    return FD->getParamDecl(Idx)->getSourceRange();
-  if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
-    return MD->parameters()[Idx]->getSourceRange();
-  if (const auto *BD = dyn_cast<BlockDecl>(D))
-    return BD->getParamDecl(Idx)->getSourceRange();
+  if (auto *PVD = getFunctionOrMethodParam(D, Idx))
+    return PVD->getSourceRange();
   return SourceRange();
 }
 
@@ -418,23 +425,33 @@ appendDiagnostics(const Sema::SemaDiagnosticBuilder &Bldr, T &&ExtraArg,
                            std::forward<DiagnosticArgs>(ExtraArgs)...);
 }
 
-/// Add an attribute {@code AttrType} to declaration {@code D},
-/// provided the given {@code Check} function returns {@code true}
-/// on type of {@code D}.
-/// If check does not pass, emit diagnostic {@code DiagID},
-/// passing in all parameters specified in {@code ExtraArgs}.
+/// Add an attribute {@code AttrType} to declaration {@code D}, provided that
+/// {@code PassesCheck} is true.
+/// Otherwise, emit diagnostic {@code DiagID}, passing in all parameters
+/// specified in {@code ExtraArgs}.
 template <typename AttrType, typename... DiagnosticArgs>
 static void
-handleSimpleAttributeWithCheck(Sema &S, ValueDecl *D, SourceRange SR,
+handleSimpleAttributeOrDiagnose(Sema &S, Decl *D, SourceRange SR,
                                unsigned SpellingIndex,
-                               llvm::function_ref<bool(QualType)> Check,
-                               unsigned DiagID, DiagnosticArgs... ExtraArgs) {
-  if (!Check(D->getType())) {
+                               bool PassesCheck,
+                               unsigned DiagID, DiagnosticArgs&&... ExtraArgs) {
+  if (!PassesCheck) {
     Sema::SemaDiagnosticBuilder DB = S.Diag(D->getBeginLoc(), DiagID);
     appendDiagnostics(DB, std::forward<DiagnosticArgs>(ExtraArgs)...);
     return;
   }
   handleSimpleAttribute<AttrType>(S, D, SR, SpellingIndex);
+}
+
+template <typename AttrType, typename... DiagnosticArgs>
+static void
+handleSimpleAttributeOrDiagnose(Sema &S, Decl *D, const ParsedAttr &AL,
+                               bool PassesCheck,
+                               unsigned DiagID,
+                               DiagnosticArgs&&... ExtraArgs) {
+  return handleSimpleAttributeOrDiagnose<AttrType>(
+      S, D, AL.getRange(), AL.getAttributeSpellingListIndex(), PassesCheck,
+      DiagID, std::forward<DiagnosticArgs>(ExtraArgs)...);
 }
 
 template <typename AttrType>
@@ -1144,8 +1161,7 @@ static void handleConsumableAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
 
 static bool checkForConsumableClass(Sema &S, const CXXMethodDecl *MD,
                                     const ParsedAttr &AL) {
-  ASTContext &CurrContext = S.getASTContext();
-  QualType ThisType = MD->getThisType(CurrContext)->getPointeeType();
+  QualType ThisType = MD->getThisType()->getPointeeType();
 
   if (const CXXRecordDecl *RD = ThisType->getAsCXXRecordDecl()) {
     if (!RD->hasAttr<ConsumableAttr>()) {
@@ -1258,7 +1274,7 @@ static void handleReturnTypestateAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   //
   //} else if (const CXXConstructorDecl *Constructor =
   //             dyn_cast<CXXConstructorDecl>(D)) {
-  //  ReturnType = Constructor->getThisType(S.getASTContext())->getPointeeType();
+  //  ReturnType = Constructor->getThisType()->getPointeeType();
   //
   //} else {
   //
@@ -1891,7 +1907,16 @@ static void handleAliasAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
     }
   }
 
-  // FIXME: check if target symbol exists in current file
+  // Mark target used to prevent unneeded-internal-declaration warnings.
+  if (!S.LangOpts.CPlusPlus) {
+    // FIXME: demangle Str for C++, as the attribute refers to the mangled
+    // linkage name, not the pre-mangled identifier.
+    const DeclarationNameInfo target(&S.Context.Idents.get(Str), AL.getLoc());
+    LookupResult LR(S, target, Sema::LookupOrdinaryName);
+    if (S.LookupQualifiedName(LR, S.getCurLexicalContext()))
+      for (NamedDecl *ND : LR)
+        ND->markUsed(S.Context);
+  }
 
   D->addAttr(::new (S.Context) AliasAttr(AL.getRange(), S.Context, Str,
                                          AL.getAttributeSpellingListIndex()));
@@ -4766,7 +4791,10 @@ static bool isValidSubjectOfCFAttribute(QualType QT) {
 }
 
 static bool isValidSubjectOfOSAttribute(QualType QT) {
-  return QT->isDependentType() || QT->isPointerType();
+  if (QT->isDependentType())
+    return true;
+  QualType PT = QT->getPointeeType();
+  return !PT.isNull() && PT->getAsCXXRecordDecl() != nullptr;
 }
 
 void Sema::AddXConsumedAttr(Decl *D, SourceRange SR, unsigned SpellingIndex,
@@ -4775,14 +4803,14 @@ void Sema::AddXConsumedAttr(Decl *D, SourceRange SR, unsigned SpellingIndex,
   ValueDecl *VD = cast<ValueDecl>(D);
   switch (K) {
   case RetainOwnershipKind::OS:
-    handleSimpleAttributeWithCheck<OSConsumedAttr>(
-        *this, VD, SR, SpellingIndex, &isValidSubjectOfOSAttribute,
+    handleSimpleAttributeOrDiagnose<OSConsumedAttr>(
+        *this, VD, SR, SpellingIndex, isValidSubjectOfOSAttribute(VD->getType()),
         diag::warn_ns_attribute_wrong_parameter_type,
         /*ExtraArgs=*/SR, "os_consumed", /*pointers*/ 1);
     return;
   case RetainOwnershipKind::NS:
-    handleSimpleAttributeWithCheck<NSConsumedAttr>(
-        *this, VD, SR, SpellingIndex, &isValidSubjectOfNSAttribute,
+    handleSimpleAttributeOrDiagnose<NSConsumedAttr>(
+        *this, VD, SR, SpellingIndex, isValidSubjectOfNSAttribute(VD->getType()),
 
         // These attributes are normally just advisory, but in ARC, ns_consumed
         // is significant.  Allow non-dependent code to contain inappropriate
@@ -4794,9 +4822,9 @@ void Sema::AddXConsumedAttr(Decl *D, SourceRange SR, unsigned SpellingIndex,
         /*ExtraArgs=*/SR, "ns_consumed", /*objc pointers*/ 0);
     return;
   case RetainOwnershipKind::CF:
-    handleSimpleAttributeWithCheck<CFConsumedAttr>(
+    handleSimpleAttributeOrDiagnose<CFConsumedAttr>(
         *this, VD, SR, SpellingIndex,
-        &isValidSubjectOfCFAttribute,
+        isValidSubjectOfCFAttribute(VD->getType()),
         diag::warn_ns_attribute_wrong_parameter_type,
         /*ExtraArgs=*/SR, "cf_consumed", /*pointers*/1);
     return;
@@ -4807,10 +4835,21 @@ static Sema::RetainOwnershipKind
 parsedAttrToRetainOwnershipKind(const ParsedAttr &AL) {
   switch (AL.getKind()) {
   case ParsedAttr::AT_CFConsumed:
+  case ParsedAttr::AT_CFReturnsRetained:
+  case ParsedAttr::AT_CFReturnsNotRetained:
     return Sema::RetainOwnershipKind::CF;
+  case ParsedAttr::AT_OSConsumesThis:
   case ParsedAttr::AT_OSConsumed:
+  case ParsedAttr::AT_OSReturnsRetained:
+  case ParsedAttr::AT_OSReturnsNotRetained:
+  case ParsedAttr::AT_OSReturnsRetainedOnZero:
+  case ParsedAttr::AT_OSReturnsRetainedOnNonZero:
     return Sema::RetainOwnershipKind::OS;
+  case ParsedAttr::AT_NSConsumesSelf:
   case ParsedAttr::AT_NSConsumed:
+  case ParsedAttr::AT_NSReturnsRetained:
+  case ParsedAttr::AT_NSReturnsNotRetained:
+  case ParsedAttr::AT_NSReturnsAutoreleased:
     return Sema::RetainOwnershipKind::NS;
   default:
     llvm_unreachable("Wrong argument supplied");
@@ -4826,9 +4865,20 @@ bool Sema::checkNSReturnsRetainedReturnType(SourceLocation Loc, QualType QT) {
   return true;
 }
 
+/// \return whether the parameter is a pointer to OSObject pointer.
+static bool isValidOSObjectOutParameter(const Decl *D) {
+  const auto *PVD = dyn_cast<ParmVarDecl>(D);
+  if (!PVD)
+    return false;
+  QualType QT = PVD->getType();
+  QualType PT = QT->getPointeeType();
+  return !PT.isNull() && isValidSubjectOfOSAttribute(PT);
+}
+
 static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
                                         const ParsedAttr &AL) {
   QualType ReturnType;
+  Sema::RetainOwnershipKind K = parsedAttrToRetainOwnershipKind(AL);
 
   if (const auto *MD = dyn_cast<ObjCMethodDecl>(D)) {
     ReturnType = MD->getReturnType();
@@ -4842,10 +4892,13 @@ static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
   } else if (const auto *Param = dyn_cast<ParmVarDecl>(D)) {
     // Attributes on parameters are used for out-parameters,
     // passed as pointers-to-pointers.
+    unsigned DiagID = K == Sema::RetainOwnershipKind::CF
+            ? /*pointer-to-CF-pointer*/2
+            : /*pointer-to-OSObject-pointer*/3;
     ReturnType = Param->getType()->getPointeeType();
     if (ReturnType.isNull()) {
       S.Diag(D->getBeginLoc(), diag::warn_ns_attribute_wrong_parameter_type)
-          << AL << /*pointer-to-CF-pointer*/ 2 << AL.getRange();
+          << AL << DiagID << AL.getRange();
       return;
     }
   } else if (AL.isUsedAsTypeAttr()) {
@@ -4857,11 +4910,11 @@ static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
     case ParsedAttr::AT_NSReturnsRetained:
     case ParsedAttr::AT_NSReturnsAutoreleased:
     case ParsedAttr::AT_NSReturnsNotRetained:
-    case ParsedAttr::AT_OSReturnsRetained:
-    case ParsedAttr::AT_OSReturnsNotRetained:
       ExpectedDeclKind = ExpectedFunctionOrMethod;
       break;
 
+    case ParsedAttr::AT_OSReturnsRetained:
+    case ParsedAttr::AT_OSReturnsNotRetained:
     case ParsedAttr::AT_CFReturnsRetained:
     case ParsedAttr::AT_CFReturnsNotRetained:
       ExpectedDeclKind = ExpectedFunctionMethodOrParameter;
@@ -4874,6 +4927,7 @@ static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
 
   bool TypeOK;
   bool Cf;
+  unsigned ParmDiagID = 2; // Pointer-to-CF-pointer
   switch (AL.getKind()) {
   default: llvm_unreachable("invalid ownership attribute");
   case ParsedAttr::AT_NSReturnsRetained:
@@ -4897,6 +4951,7 @@ static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
   case ParsedAttr::AT_OSReturnsNotRetained:
     TypeOK = isValidSubjectOfOSAttribute(ReturnType);
     Cf = true;
+    ParmDiagID = 3; // Pointer-to-OSObject-pointer
     break;
   }
 
@@ -4906,7 +4961,7 @@ static void handleXReturnsXRetainedAttr(Sema &S, Decl *D,
 
     if (isa<ParmVarDecl>(D)) {
       S.Diag(D->getBeginLoc(), diag::warn_ns_attribute_wrong_parameter_type)
-          << AL << /*pointer-to-CF*/ 2 << AL.getRange();
+          << AL << ParmDiagID << AL.getRange();
     } else {
       // Needs to be kept in sync with warn_ns_attribute_wrong_return_type.
       enum : unsigned {
@@ -5695,11 +5750,16 @@ static void handleLayoutVersion(Sema &S, Decl *D, const ParsedAttr &AL) {
     return;
 
   // TODO: Investigate what happens with the next major version of MSVC.
-  if (Version != LangOptions::MSVC2015) {
+  if (Version != LangOptions::MSVC2015 / 100) {
     S.Diag(AL.getLoc(), diag::err_attribute_argument_out_of_bounds)
         << AL << Version << VersionExpr->getSourceRange();
     return;
   }
+
+  // The attribute expects a "major" version number like 19, but new versions of
+  // MSVC have moved to updating the "minor", or less significant numbers, so we
+  // have to multiply by 100 now.
+  Version *= 100;
 
   D->addAttr(::new (S.Context)
                  LayoutVersionAttr(AL.getRange(), S.Context, Version,
@@ -6080,6 +6140,87 @@ static void handleDestroyAttr(Sema &S, Decl *D, const ParsedAttr &A) {
     handleSimpleAttributeWithExclusions<NoDestroyAttr, AlwaysDestroyAttr>(S, D, A);
 }
 
+static void handleUninitializedAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  assert(cast<VarDecl>(D)->getStorageDuration() == SD_Automatic &&
+         "uninitialized is only valid on automatic duration variables");
+  unsigned Index = AL.getAttributeSpellingListIndex();
+  D->addAttr(::new (S.Context)
+                 UninitializedAttr(AL.getLoc(), S.Context, Index));
+}
+
+static bool tryMakeVariablePseudoStrong(Sema &S, VarDecl *VD,
+                                        bool DiagnoseFailure) {
+  QualType Ty = VD->getType();
+  if (!Ty->isObjCRetainableType()) {
+    if (DiagnoseFailure) {
+      S.Diag(VD->getBeginLoc(), diag::warn_ignored_objc_externally_retained)
+          << 0;
+    }
+    return false;
+  }
+
+  Qualifiers::ObjCLifetime LifetimeQual = Ty.getQualifiers().getObjCLifetime();
+
+  // Sema::inferObjCARCLifetime must run after processing decl attributes
+  // (because __block lowers to an attribute), so if the lifetime hasn't been
+  // explicitly specified, infer it locally now.
+  if (LifetimeQual == Qualifiers::OCL_None)
+    LifetimeQual = Ty->getObjCARCImplicitLifetime();
+
+  // The attributes only really makes sense for __strong variables; ignore any
+  // attempts to annotate a parameter with any other lifetime qualifier.
+  if (LifetimeQual != Qualifiers::OCL_Strong) {
+    if (DiagnoseFailure) {
+      S.Diag(VD->getBeginLoc(), diag::warn_ignored_objc_externally_retained)
+          << 1;
+    }
+    return false;
+  }
+
+  // Tampering with the type of a VarDecl here is a bit of a hack, but we need
+  // to ensure that the variable is 'const' so that we can error on
+  // modification, which can otherwise over-release.
+  VD->setType(Ty.withConst());
+  VD->setARCPseudoStrong(true);
+  return true;
+}
+
+static void handleObjCExternallyRetainedAttr(Sema &S, Decl *D,
+                                             const ParsedAttr &AL) {
+  if (auto *VD = dyn_cast<VarDecl>(D)) {
+    assert(!isa<ParmVarDecl>(VD) && "should be diagnosed automatically");
+    if (!VD->hasLocalStorage()) {
+      S.Diag(D->getBeginLoc(), diag::warn_ignored_objc_externally_retained)
+          << 0;
+      return;
+    }
+
+    if (!tryMakeVariablePseudoStrong(S, VD, /*DiagnoseFailure=*/true))
+      return;
+
+    handleSimpleAttribute<ObjCExternallyRetainedAttr>(S, D, AL);
+    return;
+  }
+
+  // If D is a function-like declaration (method, block, or function), then we
+  // make every parameter psuedo-strong.
+  for (unsigned I = 0, E = getFunctionOrMethodNumParams(D); I != E; ++I) {
+    auto *PVD = const_cast<ParmVarDecl *>(getFunctionOrMethodParam(D, I));
+    QualType Ty = PVD->getType();
+
+    // If a user wrote a parameter with __strong explicitly, then assume they
+    // want "real" strong semantics for that parameter. This works because if
+    // the parameter was written with __strong, then the strong qualifier will
+    // be non-local.
+    if (Ty.getLocalUnqualifiedType().getQualifiers().getObjCLifetime() ==
+        Qualifiers::OCL_Strong)
+      continue;
+
+    tryMakeVariablePseudoStrong(S, PVD, /*DiagnoseFailure=*/false);
+  }
+  handleSimpleAttribute<ObjCExternallyRetainedAttr>(S, D, AL);
+}
+
 //===----------------------------------------------------------------------===//
 // Top Level Sema Entry Points
 //===----------------------------------------------------------------------===//
@@ -6103,9 +6244,10 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   // though they were unknown attributes.
   if (AL.getKind() == ParsedAttr::UnknownAttribute ||
       !AL.existsInTarget(S.Context.getTargetInfo())) {
-    S.Diag(AL.getLoc(), AL.isDeclspecAttribute()
-                            ? diag::warn_unhandled_ms_attribute_ignored
-                            : diag::warn_unknown_attribute_ignored)
+    S.Diag(AL.getLoc(),
+           AL.isDeclspecAttribute()
+               ? (unsigned)diag::warn_unhandled_ms_attribute_ignored
+               : (unsigned)diag::warn_unknown_attribute_ignored)
         << AL;
     return;
   }
@@ -6410,6 +6552,18 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case ParsedAttr::AT_OSConsumesThis:
     handleSimpleAttribute<OSConsumesThisAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_OSReturnsRetainedOnZero:
+    handleSimpleAttributeOrDiagnose<OSReturnsRetainedOnZeroAttr>(
+        S, D, AL, isValidOSObjectOutParameter(D),
+        diag::warn_ns_attribute_wrong_parameter_type,
+        /*Extra Args=*/AL, /*pointer-to-OSObject-pointer*/ 3, AL.getRange());
+    break;
+  case ParsedAttr::AT_OSReturnsRetainedOnNonZero:
+    handleSimpleAttributeOrDiagnose<OSReturnsRetainedOnNonZeroAttr>(
+        S, D, AL, isValidOSObjectOutParameter(D),
+        diag::warn_ns_attribute_wrong_parameter_type,
+        /*Extra Args=*/AL, /*pointer-to-OSObject-poointer*/ 3, AL.getRange());
     break;
   case ParsedAttr::AT_NSReturnsAutoreleased:
   case ParsedAttr::AT_NSReturnsNotRetained:
@@ -6769,6 +6923,14 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case ParsedAttr::AT_AlwaysDestroy:
   case ParsedAttr::AT_NoDestroy:
     handleDestroyAttr(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_Uninitialized:
+    handleUninitializedAttr(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_ObjCExternallyRetained:
+    handleObjCExternallyRetainedAttr(S, D, AL);
     break;
   }
 }
@@ -7167,9 +7329,10 @@ ShouldDiagnoseAvailabilityOfDecl(Sema &S, const NamedDecl *D,
 /// whether we should emit a diagnostic for \c K and \c DeclVersion in
 /// the context of \c Ctx. For example, we should emit an unavailable diagnostic
 /// in a deprecated context, but not the other way around.
-static bool ShouldDiagnoseAvailabilityInContext(Sema &S, AvailabilityResult K,
-                                                VersionTuple DeclVersion,
-                                                Decl *Ctx) {
+static bool
+ShouldDiagnoseAvailabilityInContext(Sema &S, AvailabilityResult K,
+                                    VersionTuple DeclVersion, Decl *Ctx,
+                                    const NamedDecl *OffendingDecl) {
   assert(K != AR_Available && "Expected an unavailable declaration here!");
 
   // Checks if we should emit the availability diagnostic in the context of C.
@@ -7178,9 +7341,22 @@ static bool ShouldDiagnoseAvailabilityInContext(Sema &S, AvailabilityResult K,
       if (const AvailabilityAttr *AA = getAttrForPlatform(S.Context, C))
         if (AA->getIntroduced() >= DeclVersion)
           return true;
-    } else if (K == AR_Deprecated)
+    } else if (K == AR_Deprecated) {
       if (C->isDeprecated())
         return true;
+    } else if (K == AR_Unavailable) {
+      // It is perfectly fine to refer to an 'unavailable' Objective-C method
+      // when it's actually defined and is referenced from within the
+      // @implementation itself. In this context, we interpret unavailable as a
+      // form of access control.
+      if (const auto *MD = dyn_cast<ObjCMethodDecl>(OffendingDecl)) {
+        if (const auto *Impl = dyn_cast<ObjCImplDecl>(C)) {
+          if (MD->getClassInterface() == Impl->getClassInterface() &&
+              MD->isDefined())
+            return true;
+        }
+      }
+    }
 
     if (C->isUnavailable())
       return true;
@@ -7369,7 +7545,8 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
   if (const AvailabilityAttr *AA = getAttrForPlatform(S.Context, OffendingDecl))
     DeclVersion = AA->getIntroduced();
 
-  if (!ShouldDiagnoseAvailabilityInContext(S, K, DeclVersion, Ctx))
+  if (!ShouldDiagnoseAvailabilityInContext(S, K, DeclVersion, Ctx,
+                                           OffendingDecl))
     return;
 
   SourceLocation Loc = Locs.front();
@@ -7407,14 +7584,16 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
     unsigned Warning = UseNewWarning ? diag::warn_unguarded_availability_new
                                      : diag::warn_unguarded_availability;
 
-    S.Diag(Loc, Warning)
-        << OffendingDecl
-        << AvailabilityAttr::getPrettyPlatformName(
-               S.getASTContext().getTargetInfo().getPlatformName())
-        << Introduced.getAsString();
+    std::string PlatformName = AvailabilityAttr::getPrettyPlatformName(
+        S.getASTContext().getTargetInfo().getPlatformName());
 
-    S.Diag(OffendingDecl->getLocation(), diag::note_availability_specified_here)
-        << OffendingDecl << /* partial */ 3;
+    S.Diag(Loc, Warning) << OffendingDecl << PlatformName
+                         << Introduced.getAsString();
+
+    S.Diag(OffendingDecl->getLocation(),
+           diag::note_partial_availability_specified_here)
+        << OffendingDecl << PlatformName << Introduced.getAsString()
+        << S.Context.getTargetInfo().getPlatformMinVersion().getAsString();
 
     if (const auto *Enclosing = findEnclosingDeclToAnnotate(Ctx)) {
       if (const auto *TD = dyn_cast<TagDecl>(Enclosing))
@@ -7853,7 +8032,8 @@ void DiagnoseUnguardedAvailability::DiagnoseDeclAvailability(
 
     // If the context of this function is less available than D, we should not
     // emit a diagnostic.
-    if (!ShouldDiagnoseAvailabilityInContext(SemaRef, Result, Introduced, Ctx))
+    if (!ShouldDiagnoseAvailabilityInContext(SemaRef, Result, Introduced, Ctx,
+                                             OffendingDecl))
       return;
 
     // We would like to emit the diagnostic even if -Wunguarded-availability is
@@ -7867,15 +8047,18 @@ void DiagnoseUnguardedAvailability::DiagnoseDeclAvailability(
             ? diag::warn_unguarded_availability_new
             : diag::warn_unguarded_availability;
 
+    std::string PlatformName = AvailabilityAttr::getPrettyPlatformName(
+        SemaRef.getASTContext().getTargetInfo().getPlatformName());
+
     SemaRef.Diag(Range.getBegin(), DiagKind)
-        << Range << D
-        << AvailabilityAttr::getPrettyPlatformName(
-               SemaRef.getASTContext().getTargetInfo().getPlatformName())
-        << Introduced.getAsString();
+        << Range << D << PlatformName << Introduced.getAsString();
 
     SemaRef.Diag(OffendingDecl->getLocation(),
-                 diag::note_availability_specified_here)
-        << OffendingDecl << /* partial */ 3;
+                 diag::note_partial_availability_specified_here)
+        << OffendingDecl << PlatformName << Introduced.getAsString()
+        << SemaRef.Context.getTargetInfo()
+               .getPlatformMinVersion()
+               .getAsString();
 
     auto FixitDiag =
         SemaRef.Diag(Range.getBegin(), diag::note_unguarded_available_silence)

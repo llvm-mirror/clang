@@ -1100,6 +1100,13 @@ def err_pragma_attribute_unknown_subject_sub_rule : Error<
   "sub-rules: %3}2">;
 def err_pragma_attribute_duplicate_subject : Error<
   "duplicate attribute subject matcher '%0'">;
+def err_pragma_attribute_expected_period : Error<
+  "expected '.' after pragma attribute namespace %0">;
+def err_pragma_attribute_namespace_on_attribute : Error<
+  "namespace can only apply to 'push' or 'pop' directives">;
+def note_pragma_attribute_namespace_on_attribute : Note<
+  "omit the namespace to add attributes to the most-recently"
+  " pushed attribute group">;
 
 def err_opencl_unroll_hint_on_non_loop : Error<
   "OpenCL only supports 'opencl_unroll_hint' attribute on for, while, and do statements">;
@@ -1157,9 +1164,11 @@ def err_omp_decl_in_declare_simd : Error<
 def err_omp_unknown_map_type : Error<
   "incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'">;
 def err_omp_unknown_map_type_modifier : Error<
-  "incorrect map type modifier, expected 'always'">;
+  "incorrect map type modifier, expected 'always' or 'close'">;
 def err_omp_map_type_missing : Error<
   "missing map type">;
+def err_omp_map_type_modifier_missing : Error<
+  "missing map type modifier">;
 def err_omp_declare_simd_inbranch_notinbranch : Error<
   "unexpected '%0' clause, '%1' is specified already">;
 def err_expected_end_declare_target : Error<
@@ -1175,7 +1184,8 @@ def err_pragma_loop_missing_argument : Error<
   "'enable'%select{|, 'full'}1%select{|, 'assume_safety'}2 or 'disable'}0">;
 def err_pragma_loop_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
-  "vectorize_width, interleave, interleave_count, unroll, unroll_count, or distribute">;
+  "vectorize_width, interleave, interleave_count, unroll, unroll_count, "
+  "pipeline, pipeline_initiation_interval, or distribute">;
 
 def err_pragma_fp_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected contract">;
@@ -1188,6 +1198,8 @@ def err_pragma_fp_scope : Error<
 
 def err_pragma_invalid_keyword : Error<
   "invalid argument; expected 'enable'%select{|, 'full'}0%select{|, 'assume_safety'}1 or 'disable'">;
+def err_pragma_pipeline_invalid_keyword : Error<
+    "invalid argument; expected 'disable'">;
 
 // Pragma unroll support.
 def warn_pragma_unroll_cuda_value_in_parens : Warning<

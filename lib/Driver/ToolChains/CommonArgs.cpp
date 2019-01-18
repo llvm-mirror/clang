@@ -220,21 +220,6 @@ static std::string getR600TargetGPU(const ArgList &Args) {
   return "";
 }
 
-static std::string getNios2TargetCPU(const ArgList &Args) {
-  Arg *A = Args.getLastArg(options::OPT_mcpu_EQ);
-  if (!A)
-    A = Args.getLastArg(options::OPT_march_EQ);
-
-  if (!A)
-    return "";
-
-  const char *name = A->getValue();
-  return llvm::StringSwitch<const char *>(name)
-      .Case("r1", "nios2r1")
-      .Case("r2", "nios2r2")
-      .Default(name);
-}
-
 static std::string getLanaiTargetCPU(const ArgList &Args) {
   if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
     return A->getValue();
@@ -271,7 +256,7 @@ std::string tools::getCPUName(const ArgList &Args, const llvm::Triple &T,
 
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
-    return aarch64::getAArch64TargetCPU(Args, A);
+    return aarch64::getAArch64TargetCPU(Args, T, A);
 
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
@@ -286,10 +271,6 @@ std::string tools::getCPUName(const ArgList &Args, const llvm::Triple &T,
     if (const Arg *A = Args.getLastArg(options::OPT_mmcu_EQ))
       return A->getValue();
     return "";
-
-  case llvm::Triple::nios2: {
-    return getNios2TargetCPU(Args);
-  }
 
   case llvm::Triple::mips:
   case llvm::Triple::mipsel:
@@ -603,19 +584,19 @@ void tools::linkSanitizerRuntimeDeps(const ToolChain &TC,
   if (TC.getTriple().getOS() != llvm::Triple::RTEMS &&
       !TC.getTriple().isAndroid()) {
     CmdArgs.push_back("-lpthread");
-    if (TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+    if (!TC.getTriple().isOSOpenBSD())
       CmdArgs.push_back("-lrt");
   }
   CmdArgs.push_back("-lm");
   // There's no libdl on all OSes.
-  if (TC.getTriple().getOS() != llvm::Triple::FreeBSD &&
-      TC.getTriple().getOS() != llvm::Triple::NetBSD &&
-      TC.getTriple().getOS() != llvm::Triple::OpenBSD &&
-      TC.getTriple().getOS() != llvm::Triple::RTEMS)
+  if (!TC.getTriple().isOSFreeBSD() &&
+      !TC.getTriple().isOSNetBSD() &&
+      !TC.getTriple().isOSOpenBSD() &&
+       TC.getTriple().getOS() != llvm::Triple::RTEMS)
     CmdArgs.push_back("-ldl");
   // Required for backtrace on some OSes
-  if (TC.getTriple().getOS() == llvm::Triple::NetBSD ||
-      TC.getTriple().getOS() == llvm::Triple::FreeBSD)
+  if (TC.getTriple().isOSFreeBSD() ||
+      TC.getTriple().isOSNetBSD())
     CmdArgs.push_back("-lexecinfo");
 }
 
@@ -790,13 +771,13 @@ bool tools::addXRayRuntime(const ToolChain&TC, const ArgList &Args, ArgStringLis
 void tools::linkXRayRuntimeDeps(const ToolChain &TC, ArgStringList &CmdArgs) {
   CmdArgs.push_back("--no-as-needed");
   CmdArgs.push_back("-lpthread");
-  if (TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+  if (!TC.getTriple().isOSOpenBSD())
     CmdArgs.push_back("-lrt");
   CmdArgs.push_back("-lm");
 
-  if (TC.getTriple().getOS() != llvm::Triple::FreeBSD &&
-      TC.getTriple().getOS() != llvm::Triple::NetBSD &&
-      TC.getTriple().getOS() != llvm::Triple::OpenBSD)
+  if (!TC.getTriple().isOSFreeBSD() &&
+      !TC.getTriple().isOSNetBSD() &&
+      !TC.getTriple().isOSOpenBSD())
     CmdArgs.push_back("-ldl");
 }
 
@@ -933,7 +914,7 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
   }
 
   // OpenBSD-specific defaults for PIE
-  if (Triple.getOS() == llvm::Triple::OpenBSD) {
+  if (Triple.isOSOpenBSD()) {
     switch (ToolChain.getArch()) {
     case llvm::Triple::arm:
     case llvm::Triple::aarch64:
@@ -1159,11 +1140,8 @@ static void AddLibgcc(const llvm::Triple &Triple, const Driver &D,
   bool StaticLibgcc = Args.hasArg(options::OPT_static_libgcc) ||
                       Args.hasArg(options::OPT_static);
 
-  // The driver ignores -shared-libgcc and therefore treats such cases as
-  // unspecified.  Breaking out the two variables as below makes the current
-  // behavior explicit.
-  bool UnspecifiedLibgcc = !StaticLibgcc;
-  bool SharedLibgcc = !StaticLibgcc;
+  bool SharedLibgcc = Args.hasArg(options::OPT_shared_libgcc);
+  bool UnspecifiedLibgcc = !StaticLibgcc && !SharedLibgcc;
 
   // Gcc adds libgcc arguments in various ways:
   //
@@ -1180,7 +1158,7 @@ static void AddLibgcc(const llvm::Triple &Triple, const Driver &D,
   if (LibGccFirst)
     CmdArgs.push_back("-lgcc");
 
-  bool AsNeeded = D.CCCIsCC() && !StaticLibgcc && !isAndroid && !isCygMing;
+  bool AsNeeded = D.CCCIsCC() && UnspecifiedLibgcc && !isAndroid && !isCygMing;
   if (AsNeeded)
     CmdArgs.push_back("--as-needed");
 

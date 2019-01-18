@@ -1,3 +1,4 @@
+from __future__ import print_function
 try:
     from http.server import HTTPServer, SimpleHTTPRequestHandler
 except ImportError:
@@ -5,9 +6,19 @@ except ImportError:
     from SimpleHTTPServer import SimpleHTTPRequestHandler
 import os
 import sys
-import urllib, urlparse
+try:
+    from urlparse import urlparse
+    from urllib import unquote
+except ImportError:
+    from urllib.parse import urlparse, unquote
+
 import posixpath
-import StringIO
+
+if sys.version_info.major >= 3:
+    from io import StringIO, BytesIO
+else:
+    from io import BytesIO, BytesIO as StringIO
+
 import re
 import shutil
 import threading
@@ -16,7 +27,10 @@ import socket
 import itertools
 
 import Reporter
-import ConfigParser
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
 
 ###
 # Various patterns matched or replaced by server.
@@ -99,20 +113,20 @@ class ReporterThread(threading.Thread):
         result = None
         try:
             if self.server.options.debug:
-                print >>sys.stderr, "%s: SERVER: submitting bug."%(sys.argv[0],)
+                print("%s: SERVER: submitting bug."%(sys.argv[0],), file=sys.stderr)
             self.status = self.reporter.fileReport(self.report, self.parameters)
             self.success = True
             time.sleep(3)
             if self.server.options.debug:
-                print >>sys.stderr, "%s: SERVER: submission complete."%(sys.argv[0],)
+                print("%s: SERVER: submission complete."%(sys.argv[0],), file=sys.stderr)
         except Reporter.ReportFailure as e:
             self.status = e.value
         except Exception as e:
-            s = StringIO.StringIO()
+            s = StringIO()
             import traceback
-            print >>s,'<b>Unhandled Exception</b><br><pre>'
-            traceback.print_exc(e,file=s)
-            print >>s,'</pre>'
+            print('<b>Unhandled Exception</b><br><pre>', file=s)
+            traceback.print_exc(file=s)
+            print('</pre>', file=s)
             self.status = s.getvalue()
 
 class ScanViewServer(HTTPServer):
@@ -126,7 +140,7 @@ class ScanViewServer(HTTPServer):
         self.load_config()
 
     def load_config(self):
-        self.config = ConfigParser.RawConfigParser()
+        self.config = configparser.RawConfigParser()
 
         # Add defaults
         self.config.add_section('ScanView')
@@ -158,16 +172,16 @@ class ScanViewServer(HTTPServer):
     def halt(self):
         self.halted = True
         if self.options.debug:
-            print >>sys.stderr, "%s: SERVER: halting." % (sys.argv[0],)
+            print("%s: SERVER: halting." % (sys.argv[0],), file=sys.stderr)
 
     def serve_forever(self):
         while not self.halted:
             if self.options.debug > 1:
-                print >>sys.stderr, "%s: SERVER: waiting..." % (sys.argv[0],)
+                print("%s: SERVER: waiting..." % (sys.argv[0],), file=sys.stderr)
             try:
                 self.handle_request()
             except OSError as e:
-                print 'OSError',e.errno
+                print('OSError',e.errno)
 
     def finish_request(self, request, client_address):
         if self.options.autoReload:
@@ -180,7 +194,7 @@ class ScanViewServer(HTTPServer):
         info = sys.exc_info()
         if info and isinstance(info[1], socket.error):
             if self.options.debug > 1:
-                print >>sys.stderr, "%s: SERVER: ignored socket error." % (sys.argv[0],)
+                print("%s: SERVER: ignored socket error." % (sys.argv[0],), file=sys.stderr)
             return
         HTTPServer.handle_error(self, request, client_address)
 
@@ -188,14 +202,14 @@ class ScanViewServer(HTTPServer):
 def parse_query(qs, fields=None):
     if fields is None:
         fields = {}
-    for chunk in filter(None, qs.split('&')):
+    for chunk in (_f for _f in qs.split('&') if _f):
         if '=' not in chunk:
             name = chunk
             value = ''
         else:
             name, value = chunk.split('=', 1)
-        name = urllib.unquote(name.replace('+', ' '))
-        value = urllib.unquote(value.replace('+', ' '))
+        name = unquote(name.replace('+', ' '))
+        value = unquote(value.replace('+', ' '))
         item = fields.get(name)
         if item is None:
             fields[name] = [value]
@@ -266,9 +280,9 @@ class ScanViewRequestHandler(SimpleHTTPRequestHandler):
 
     def handle_exception(self, exc):
         import traceback
-        s = StringIO.StringIO()
-        print >>s, "INTERNAL ERROR\n"
-        traceback.print_exc(exc, s)
+        s = StringIO()
+        print("INTERNAL ERROR\n", file=s)
+        traceback.print_exc(file=s)
         f = self.send_string(s.getvalue(), 'text/plain')
         if f:
             self.copyfile(f, self.wfile)
@@ -413,8 +427,8 @@ Submit</h3>
 
         import startfile
         if self.server.options.debug:
-            print >>sys.stderr, '%s: SERVER: opening "%s"'%(sys.argv[0],
-                                                            file)
+            print('%s: SERVER: opening "%s"'%(sys.argv[0],
+                                                            file), file=sys.stderr)
 
         status = startfile.open(file)
         if status:
@@ -650,9 +664,9 @@ File Bug</h3>
             fields = {}
         self.fields = fields
 
-        o = urlparse.urlparse(self.path)
+        o = urlparse(self.path)
         self.fields = parse_query(o.query, fields)
-        path = posixpath.normpath(urllib.unquote(o.path))
+        path = posixpath.normpath(unquote(o.path))
 
         # Split the components and strip the root prefix.
         components = path.split('/')[1:]
@@ -693,8 +707,8 @@ File Bug</h3>
         path = posixpath.join(self.server.root, relpath)
 
         if self.server.options.debug > 1:
-            print >>sys.stderr, '%s: SERVER: sending path "%s"'%(sys.argv[0],
-                                                                 path)
+            print('%s: SERVER: sending path "%s"'%(sys.argv[0],
+                                                                 path), file=sys.stderr)
         return self.send_path(path)
 
     def send_404(self):
@@ -730,15 +744,16 @@ File Bug</h3>
         return f
 
     def send_string(self, s, ctype='text/html', headers=True, mtime=None):
+        encoded_s = s.encode()
         if headers:
             self.send_response(200)
             self.send_header("Content-type", ctype)
-            self.send_header("Content-Length", str(len(s)))
+            self.send_header("Content-Length", str(len(encoded_s)))
             if mtime is None:
                 mtime = self.dynamic_mtime
             self.send_header("Last-Modified", self.date_time_string(mtime))
             self.end_headers()
-        return StringIO.StringIO(s)
+        return BytesIO(encoded_s)
 
     def send_patched_file(self, path, ctype):
         # Allow a very limited set of variables. This is pretty gross.

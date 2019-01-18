@@ -6,7 +6,6 @@
 import collections
 import os
 import re
-import urllib2
 
 CLANG_DIR = os.path.join(os.path.dirname(__file__), '../..')
 FORMAT_STYLE_FILE = os.path.join(CLANG_DIR, 'include/clang/Format/Format.h')
@@ -180,9 +179,9 @@ def read_options(header):
                            'std::vector<std::string>',
                            'std::vector<IncludeCategory>',
                            'std::vector<RawStringFormat>']:
-      if enums.has_key(option.type):
+      if option.type in enums:
         option.enum = enums[option.type]
-      elif nested_structs.has_key(option.type):
+      elif option.type in nested_structs:
         option.nested_struct = nested_structs[option.type]
       else:
         raise Exception('Unknown type: %s' % option.type)

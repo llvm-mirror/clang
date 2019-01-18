@@ -65,6 +65,29 @@ public:
   SrcMgr::CharacteristicKind FileType;
 };
 
+class CondDirectiveCallbacks : public PPCallbacks {
+public:
+  struct Result {
+    SourceRange ConditionRange;
+    ConditionValueKind ConditionValue;
+
+    Result(SourceRange R, ConditionValueKind K)
+        : ConditionRange(R), ConditionValue(K) {}
+  };
+
+  std::vector<Result> Results;
+
+  void If(SourceLocation Loc, SourceRange ConditionRange,
+          ConditionValueKind ConditionValue) override {
+    Results.emplace_back(ConditionRange, ConditionValue);
+  }
+
+  void Elif(SourceLocation Loc, SourceRange ConditionRange,
+            ConditionValueKind ConditionValue, SourceLocation IfLoc) override {
+    Results.emplace_back(ConditionRange, ConditionValue);
+  }
+};
+
 // Stub to collect data from PragmaOpenCLExtension callbacks.
 class PragmaOpenCLExtensionCallbacks : public PPCallbacks {
 public:
@@ -137,6 +160,15 @@ protected:
     return StringRef(B, E - B);
   }
 
+  StringRef GetSourceStringToEnd(CharSourceRange Range) {
+    const char *B = SourceMgr.getCharacterData(Range.getBegin());
+    const char *E = SourceMgr.getCharacterData(Range.getEnd());
+
+    return StringRef(
+        B,
+        E - B + Lexer::MeasureTokenLength(Range.getEnd(), SourceMgr, LangOpts));
+  }
+
   // Run lexer over SourceText and collect FilenameRange from
   // the InclusionDirective callback.
   CharSourceRange InclusionDirectiveFilenameRange(const char *SourceText,
@@ -197,6 +229,36 @@ protected:
 
     // Callbacks have been executed at this point -- return filename range.
     return Callbacks;
+  }
+
+  std::vector<CondDirectiveCallbacks::Result>
+  DirectiveExprRange(StringRef SourceText) {
+    TrivialModuleLoader ModLoader;
+    MemoryBufferCache PCMCache;
+    std::unique_ptr<llvm::MemoryBuffer> Buf =
+        llvm::MemoryBuffer::getMemBuffer(SourceText);
+    SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
+    HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
+                            Diags, LangOpts, Target.get());
+    Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
+                    SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    /*IILookup =*/nullptr,
+                    /*OwnsHeaderSearch =*/false);
+    PP.Initialize(*Target);
+    auto *Callbacks = new CondDirectiveCallbacks;
+    PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
+
+    // Lex source text.
+    PP.EnterMainSourceFile();
+
+    while (true) {
+      Token Tok;
+      PP.Lex(Tok);
+      if (Tok.is(tok::eof))
+        break;
+    }
+
+    return Callbacks->Results;
   }
 
   PragmaOpenCLExtensionCallbacks::CallbackParameters
@@ -368,4 +430,17 @@ TEST_F(PPCallbacksTest, OpenCLExtensionPragmaDisabled) {
   ASSERT_EQ(ExpectedState, Parameters.State);
 }
 
-} // anonoymous namespace
+TEST_F(PPCallbacksTest, DirectiveExprRanges) {
+  const auto &Results8 =
+      DirectiveExprRange("#define FLOOFY 0\n#if __FILE__ > FLOOFY\n#endif\n");
+  EXPECT_EQ(Results8.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results8[0].ConditionRange, false)),
+      " __FILE__ > FLOOFY\n#");
+  EXPECT_EQ(
+      Lexer::getSourceText(CharSourceRange(Results8[0].ConditionRange, false),
+                           SourceMgr, LangOpts),
+      " __FILE__ > FLOOFY\n");
+}
+
+} // namespace

@@ -1692,6 +1692,8 @@ static void addLinkOptionsPostorder(CodeGenModule &CGM, Module *Mod,
   // Add linker options to link against the libraries/frameworks
   // described by this module.
   llvm::LLVMContext &Context = CGM.getLLVMContext();
+  bool IsELF = CGM.getTarget().getTriple().isOSBinFormatELF();
+  bool IsPS4 = CGM.getTarget().getTriple().isPS4();
 
   // For modules that use export_as for linking, use that module
   // name instead.
@@ -1711,11 +1713,19 @@ static void addLinkOptionsPostorder(CodeGenModule &CGM, Module *Mod,
     }
 
     // Link against a library.
-    llvm::SmallString<24> Opt;
-    CGM.getTargetCodeGenInfo().getDependentLibraryOption(
-      Mod->LinkLibraries[I-1].Library, Opt);
-    auto *OptString = llvm::MDString::get(Context, Opt);
-    Metadata.push_back(llvm::MDNode::get(Context, OptString));
+    if (IsELF && !IsPS4) {
+      llvm::Metadata *Args[2] = {
+          llvm::MDString::get(Context, "lib"),
+          llvm::MDString::get(Context, Mod->LinkLibraries[I - 1].Library),
+      };
+      Metadata.push_back(llvm::MDNode::get(Context, Args));
+    } else {
+      llvm::SmallString<24> Opt;
+      CGM.getTargetCodeGenInfo().getDependentLibraryOption(
+          Mod->LinkLibraries[I - 1].Library, Opt);
+      auto *OptString = llvm::MDString::get(Context, Opt);
+      Metadata.push_back(llvm::MDNode::get(Context, OptString));
+    }
   }
 }
 
@@ -1746,16 +1756,14 @@ void CodeGenModule::EmitModuleLinkOptions() {
     bool AnyChildren = false;
 
     // Visit the submodules of this module.
-    for (clang::Module::submodule_iterator Sub = Mod->submodule_begin(),
-                                        SubEnd = Mod->submodule_end();
-         Sub != SubEnd; ++Sub) {
+    for (const auto &SM : Mod->submodules()) {
       // Skip explicit children; they need to be explicitly imported to be
       // linked against.
-      if ((*Sub)->IsExplicit)
+      if (SM->IsExplicit)
         continue;
 
-      if (Visited.insert(*Sub).second) {
-        Stack.push_back(*Sub);
+      if (Visited.insert(SM).second) {
+        Stack.push_back(SM);
         AnyChildren = true;
       }
     }
@@ -2188,15 +2196,7 @@ void CodeGenModule::EmitGlobal(GlobalDecl GD) {
   } else {
     const auto *VD = cast<VarDecl>(Global);
     assert(VD->isFileVarDecl() && "Cannot emit local var decl as global.");
-    // We need to emit device-side global CUDA variables even if a
-    // variable does not have a definition -- we still need to define
-    // host-side shadow for it.
-    bool MustEmitForCuda = LangOpts.CUDA && !LangOpts.CUDAIsDevice &&
-                           !VD->hasDefinition() &&
-                           (VD->hasAttr<CUDAConstantAttr>() ||
-                            VD->hasAttr<CUDADeviceAttr>());
-    if (!MustEmitForCuda &&
-        VD->isThisDeclarationADefinition() != VarDecl::Definition &&
+    if (VD->isThisDeclarationADefinition() != VarDecl::Definition &&
         !Context.isMSStaticDataMemberInlineDefinition(VD)) {
       if (LangOpts.OpenMP) {
         // Emit declaration of the must-be-emitted declare target variable.
@@ -3616,7 +3616,10 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
           Flags |= CGCUDARuntime::ExternDeviceVar;
         if (D->hasAttr<CUDAConstantAttr>())
           Flags |= CGCUDARuntime::ConstantDeviceVar;
-        getCUDARuntime().registerDeviceVar(*GV, Flags);
+        // Extern global variables will be registered in the TU where they are
+        // defined.
+        if (!D->hasExternalStorage())
+          getCUDARuntime().registerDeviceVar(*GV, Flags);
       } else if (D->hasAttr<CUDASharedAttr>())
         // __shared__ variables are odd. Shadows do get created, but
         // they are not registered with the CUDA runtime, so they
@@ -3758,6 +3761,15 @@ static bool isVarDeclStrongDefinition(const ASTContext &Context,
       }
     }
   }
+
+  // Microsoft's link.exe doesn't support alignments greater than 32 for common
+  // symbols, so symbols with greater alignment requirements cannot be common.
+  // Other COFF linkers (ld.bfd and LLD) support arbitrary power-of-two
+  // alignments for common symbols via the aligncomm directive, so this
+  // restriction only applies to MSVC environments.
+  if (Context.getTargetInfo().getTriple().isKnownWindowsMSVCEnvironment() &&
+      Context.getTypeAlignIfKnown(D->getType()) > 32)
+    return true;
 
   return false;
 }

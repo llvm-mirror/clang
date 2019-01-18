@@ -21,16 +21,18 @@ Example usage for git/svn users:
   svn diff --diff-cmd=diff -x-U0 | clang-format-diff.py -i
 
 """
+from __future__ import absolute_import, division, print_function
 
 import argparse
 import difflib
 import re
 import subprocess
 import sys
-try:
-  from StringIO import StringIO
-except ImportError:
-   from io import StringIO
+
+if sys.version_info.major >= 3:
+    from io import StringIO
+else:
+    from io import BytesIO as StringIO
 
 
 def main():

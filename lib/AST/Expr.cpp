@@ -341,16 +341,31 @@ void DeclRefExpr::computeDependence(const ASTContext &Ctx) {
     ExprBits.ContainsUnexpandedParameterPack = true;
 }
 
+DeclRefExpr::DeclRefExpr(const ASTContext &Ctx, ValueDecl *D,
+                         bool RefersToEnclosingVariableOrCapture, QualType T,
+                         ExprValueKind VK, SourceLocation L,
+                         const DeclarationNameLoc &LocInfo)
+    : Expr(DeclRefExprClass, T, VK, OK_Ordinary, false, false, false, false),
+      D(D), DNLoc(LocInfo) {
+  DeclRefExprBits.HasQualifier = false;
+  DeclRefExprBits.HasTemplateKWAndArgsInfo = false;
+  DeclRefExprBits.HasFoundDecl = false;
+  DeclRefExprBits.HadMultipleCandidates = false;
+  DeclRefExprBits.RefersToEnclosingVariableOrCapture =
+      RefersToEnclosingVariableOrCapture;
+  DeclRefExprBits.Loc = L;
+  computeDependence(Ctx);
+}
+
 DeclRefExpr::DeclRefExpr(const ASTContext &Ctx,
                          NestedNameSpecifierLoc QualifierLoc,
-                         SourceLocation TemplateKWLoc,
-                         ValueDecl *D, bool RefersToEnclosingVariableOrCapture,
-                         const DeclarationNameInfo &NameInfo,
-                         NamedDecl *FoundD,
+                         SourceLocation TemplateKWLoc, ValueDecl *D,
+                         bool RefersToEnclosingVariableOrCapture,
+                         const DeclarationNameInfo &NameInfo, NamedDecl *FoundD,
                          const TemplateArgumentListInfo *TemplateArgs,
                          QualType T, ExprValueKind VK)
-  : Expr(DeclRefExprClass, T, VK, OK_Ordinary, false, false, false, false),
-    D(D), DNLoc(NameInfo.getInfo()) {
+    : Expr(DeclRefExprClass, T, VK, OK_Ordinary, false, false, false, false),
+      D(D), DNLoc(NameInfo.getInfo()) {
   DeclRefExprBits.Loc = NameInfo.getLoc();
   DeclRefExprBits.HasQualifier = QualifierLoc ? 1 : 0;
   if (QualifierLoc) {
@@ -1219,57 +1234,99 @@ OverloadedOperatorKind UnaryOperator::getOverloadedOperator(Opcode Opc) {
 // Postfix Operators.
 //===----------------------------------------------------------------------===//
 
-CallExpr::CallExpr(const ASTContext &C, StmtClass SC, Expr *fn,
-                   ArrayRef<Expr *> preargs, ArrayRef<Expr *> args, QualType t,
-                   ExprValueKind VK, SourceLocation rparenloc,
-                   unsigned MinNumArgs, ADLCallKind UsesADL)
-    : Expr(SC, t, VK, OK_Ordinary, fn->isTypeDependent(),
-           fn->isValueDependent(), fn->isInstantiationDependent(),
-           fn->containsUnexpandedParameterPack()),
-      RParenLoc(rparenloc) {
+CallExpr::CallExpr(StmtClass SC, Expr *Fn, ArrayRef<Expr *> PreArgs,
+                   ArrayRef<Expr *> Args, QualType Ty, ExprValueKind VK,
+                   SourceLocation RParenLoc, unsigned MinNumArgs,
+                   ADLCallKind UsesADL)
+    : Expr(SC, Ty, VK, OK_Ordinary, Fn->isTypeDependent(),
+           Fn->isValueDependent(), Fn->isInstantiationDependent(),
+           Fn->containsUnexpandedParameterPack()),
+      RParenLoc(RParenLoc) {
+  NumArgs = std::max<unsigned>(Args.size(), MinNumArgs);
+  unsigned NumPreArgs = PreArgs.size();
+  CallExprBits.NumPreArgs = NumPreArgs;
+  assert((NumPreArgs == getNumPreArgs()) && "NumPreArgs overflow!");
+
+  unsigned OffsetToTrailingObjects = offsetToTrailingObjects(SC);
+  CallExprBits.OffsetToTrailingObjects = OffsetToTrailingObjects;
+  assert((CallExprBits.OffsetToTrailingObjects == OffsetToTrailingObjects) &&
+         "OffsetToTrailingObjects overflow!");
+
   CallExprBits.UsesADL = static_cast<bool>(UsesADL);
 
-  NumArgs = std::max<unsigned>(args.size(), MinNumArgs);
-  unsigned NumPreArgs = preargs.size();
-  CallExprBits.NumPreArgs = NumPreArgs;
-
-  SubExprs = new (C) Stmt *[NumArgs + PREARGS_START + NumPreArgs];
-  SubExprs[FN] = fn;
-  for (unsigned i = 0; i != NumPreArgs; ++i) {
-    updateDependenciesFromArg(preargs[i]);
-    SubExprs[i+PREARGS_START] = preargs[i];
+  setCallee(Fn);
+  for (unsigned I = 0; I != NumPreArgs; ++I) {
+    updateDependenciesFromArg(PreArgs[I]);
+    setPreArg(I, PreArgs[I]);
   }
-  for (unsigned i = 0; i != args.size(); ++i) {
-    updateDependenciesFromArg(args[i]);
-    SubExprs[i+PREARGS_START+NumPreArgs] = args[i];
+  for (unsigned I = 0; I != Args.size(); ++I) {
+    updateDependenciesFromArg(Args[I]);
+    setArg(I, Args[I]);
   }
-  for (unsigned i = args.size(); i != NumArgs; ++i) {
-    SubExprs[i + PREARGS_START + NumPreArgs] = nullptr;
+  for (unsigned I = Args.size(); I != NumArgs; ++I) {
+    setArg(I, nullptr);
   }
 }
 
-CallExpr::CallExpr(const ASTContext &C, StmtClass SC, Expr *fn,
-                   ArrayRef<Expr *> args, QualType t, ExprValueKind VK,
-                   SourceLocation rparenloc, unsigned MinNumArgs,
-                   ADLCallKind UsesADL)
-    : CallExpr(C, SC, fn, ArrayRef<Expr *>(), args, t, VK, rparenloc,
-               MinNumArgs, UsesADL) {}
-
-CallExpr::CallExpr(const ASTContext &C, Expr *fn, ArrayRef<Expr *> args,
-                   QualType t, ExprValueKind VK, SourceLocation rparenloc,
-                   unsigned MinNumArgs, ADLCallKind UsesADL)
-    : CallExpr(C, CallExprClass, fn, ArrayRef<Expr *>(), args, t, VK, rparenloc,
-               MinNumArgs, UsesADL) {}
-
-CallExpr::CallExpr(const ASTContext &C, StmtClass SC, unsigned NumPreArgs,
-                   unsigned NumArgs, EmptyShell Empty)
+CallExpr::CallExpr(StmtClass SC, unsigned NumPreArgs, unsigned NumArgs,
+                   EmptyShell Empty)
     : Expr(SC, Empty), NumArgs(NumArgs) {
   CallExprBits.NumPreArgs = NumPreArgs;
-  SubExprs = new (C) Stmt *[NumArgs + PREARGS_START + NumPreArgs];
+  assert((NumPreArgs == getNumPreArgs()) && "NumPreArgs overflow!");
+
+  unsigned OffsetToTrailingObjects = offsetToTrailingObjects(SC);
+  CallExprBits.OffsetToTrailingObjects = OffsetToTrailingObjects;
+  assert((CallExprBits.OffsetToTrailingObjects == OffsetToTrailingObjects) &&
+         "OffsetToTrailingObjects overflow!");
 }
 
-CallExpr::CallExpr(const ASTContext &C, unsigned NumArgs, EmptyShell Empty)
-    : CallExpr(C, CallExprClass, /*NumPreArgs=*/0, NumArgs, Empty) {}
+CallExpr *CallExpr::Create(const ASTContext &Ctx, Expr *Fn,
+                           ArrayRef<Expr *> Args, QualType Ty, ExprValueKind VK,
+                           SourceLocation RParenLoc, unsigned MinNumArgs,
+                           ADLCallKind UsesADL) {
+  unsigned NumArgs = std::max<unsigned>(Args.size(), MinNumArgs);
+  unsigned SizeOfTrailingObjects =
+      CallExpr::sizeOfTrailingObjects(/*NumPreArgs=*/0, NumArgs);
+  void *Mem =
+      Ctx.Allocate(sizeof(CallExpr) + SizeOfTrailingObjects, alignof(CallExpr));
+  return new (Mem) CallExpr(CallExprClass, Fn, /*PreArgs=*/{}, Args, Ty, VK,
+                            RParenLoc, MinNumArgs, UsesADL);
+}
+
+CallExpr *CallExpr::CreateTemporary(void *Mem, Expr *Fn, QualType Ty,
+                                    ExprValueKind VK, SourceLocation RParenLoc,
+                                    ADLCallKind UsesADL) {
+  assert(!(reinterpret_cast<uintptr_t>(Mem) % alignof(CallExpr)) &&
+         "Misaligned memory in CallExpr::CreateTemporary!");
+  return new (Mem) CallExpr(CallExprClass, Fn, /*PreArgs=*/{}, /*Args=*/{}, Ty,
+                            VK, RParenLoc, /*MinNumArgs=*/0, UsesADL);
+}
+
+CallExpr *CallExpr::CreateEmpty(const ASTContext &Ctx, unsigned NumArgs,
+                                EmptyShell Empty) {
+  unsigned SizeOfTrailingObjects =
+      CallExpr::sizeOfTrailingObjects(/*NumPreArgs=*/0, NumArgs);
+  void *Mem =
+      Ctx.Allocate(sizeof(CallExpr) + SizeOfTrailingObjects, alignof(CallExpr));
+  return new (Mem) CallExpr(CallExprClass, /*NumPreArgs=*/0, NumArgs, Empty);
+}
+
+unsigned CallExpr::offsetToTrailingObjects(StmtClass SC) {
+  switch (SC) {
+  case CallExprClass:
+    return sizeof(CallExpr);
+  case CXXOperatorCallExprClass:
+    return sizeof(CXXOperatorCallExpr);
+  case CXXMemberCallExprClass:
+    return sizeof(CXXMemberCallExpr);
+  case UserDefinedLiteralClass:
+    return sizeof(UserDefinedLiteral);
+  case CUDAKernelCallExprClass:
+    return sizeof(CUDAKernelCallExpr);
+  default:
+    llvm_unreachable("unexpected class deriving from CallExpr!");
+  }
+}
 
 void CallExpr::updateDependenciesFromArg(Expr *Arg) {
   if (Arg->isTypeDependent())
@@ -1280,14 +1337,6 @@ void CallExpr::updateDependenciesFromArg(Expr *Arg) {
     ExprBits.InstantiationDependent = true;
   if (Arg->containsUnexpandedParameterPack())
     ExprBits.ContainsUnexpandedParameterPack = true;
-}
-
-FunctionDecl *CallExpr::getDirectCallee() {
-  return dyn_cast_or_null<FunctionDecl>(getCalleeDecl());
-}
-
-Decl *CallExpr::getCalleeDecl() {
-  return getCallee()->getReferencedDeclOfCallee();
 }
 
 Decl *Expr::getReferencedDeclOfCallee() {
@@ -1361,6 +1410,19 @@ QualType CallExpr::getCallReturnType(const ASTContext &Ctx) const {
 
   const FunctionType *FnType = CalleeType->castAs<FunctionType>();
   return FnType->getReturnType();
+}
+
+const Attr *CallExpr::getUnusedResultAttr(const ASTContext &Ctx) const {
+  // If the return type is a struct, union, or enum that is marked nodiscard,
+  // then return the return type attribute.
+  if (const TagDecl *TD = getCallReturnType(Ctx)->getAsTagDecl())
+    if (const auto *A = TD->getAttr<WarnUnusedResultAttr>())
+      return A;
+
+  // Otherwise, see if the callee is marked nodiscard and return that attribute
+  // instead.
+  const Decl *D = getCalleeDecl();
+  return D ? D->getAttr<WarnUnusedResultAttr>() : nullptr;
 }
 
 SourceLocation CallExpr::getBeginLoc() const {
@@ -1615,10 +1677,10 @@ bool CastExpr::CastConsistency() const {
     auto Ty = getType();
     auto SETy = getSubExpr()->getType();
     assert(getValueKindForType(Ty) == Expr::getValueKindForType(SETy));
-    if (!isGLValue())
+    if (isRValue()) {
       Ty = Ty->getPointeeType();
-    if (!isGLValue())
       SETy = SETy->getPointeeType();
+    }
     assert(!Ty.isNull() && !SETy.isNull() &&
            Ty.getAddressSpace() != SETy.getAddressSpace());
     goto CheckNoBasePath;
@@ -1746,21 +1808,6 @@ NamedDecl *CastExpr::getConversionFunction() const {
   return nullptr;
 }
 
-CastExpr::BasePathSizeTy *CastExpr::BasePathSize() {
-  assert(!path_empty());
-  switch (getStmtClass()) {
-#define ABSTRACT_STMT(x)
-#define CASTEXPR(Type, Base)                                                   \
-  case Stmt::Type##Class:                                                      \
-    return static_cast<Type *>(this)                                           \
-        ->getTrailingObjects<CastExpr::BasePathSizeTy>();
-#define STMT(Type, Base)
-#include "clang/AST/StmtNodes.inc"
-  default:
-    llvm_unreachable("non-cast expressions not possible here");
-  }
-}
-
 CXXBaseSpecifier **CastExpr::path_buffer() {
   switch (getStmtClass()) {
 #define ABSTRACT_STMT(x)
@@ -1799,9 +1846,7 @@ ImplicitCastExpr *ImplicitCastExpr::Create(const ASTContext &C, QualType T,
                                            const CXXCastPath *BasePath,
                                            ExprValueKind VK) {
   unsigned PathSize = (BasePath ? BasePath->size() : 0);
-  void *Buffer =
-      C.Allocate(totalSizeToAlloc<CastExpr::BasePathSizeTy, CXXBaseSpecifier *>(
-          PathSize ? 1 : 0, PathSize));
+  void *Buffer = C.Allocate(totalSizeToAlloc<CXXBaseSpecifier *>(PathSize));
   ImplicitCastExpr *E =
     new (Buffer) ImplicitCastExpr(T, Kind, Operand, PathSize, VK);
   if (PathSize)
@@ -1812,9 +1857,7 @@ ImplicitCastExpr *ImplicitCastExpr::Create(const ASTContext &C, QualType T,
 
 ImplicitCastExpr *ImplicitCastExpr::CreateEmpty(const ASTContext &C,
                                                 unsigned PathSize) {
-  void *Buffer =
-      C.Allocate(totalSizeToAlloc<CastExpr::BasePathSizeTy, CXXBaseSpecifier *>(
-          PathSize ? 1 : 0, PathSize));
+  void *Buffer = C.Allocate(totalSizeToAlloc<CXXBaseSpecifier *>(PathSize));
   return new (Buffer) ImplicitCastExpr(EmptyShell(), PathSize);
 }
 
@@ -1825,9 +1868,7 @@ CStyleCastExpr *CStyleCastExpr::Create(const ASTContext &C, QualType T,
                                        TypeSourceInfo *WrittenTy,
                                        SourceLocation L, SourceLocation R) {
   unsigned PathSize = (BasePath ? BasePath->size() : 0);
-  void *Buffer =
-      C.Allocate(totalSizeToAlloc<CastExpr::BasePathSizeTy, CXXBaseSpecifier *>(
-          PathSize ? 1 : 0, PathSize));
+  void *Buffer = C.Allocate(totalSizeToAlloc<CXXBaseSpecifier *>(PathSize));
   CStyleCastExpr *E =
     new (Buffer) CStyleCastExpr(T, VK, K, Op, PathSize, WrittenTy, L, R);
   if (PathSize)
@@ -1838,9 +1879,7 @@ CStyleCastExpr *CStyleCastExpr::Create(const ASTContext &C, QualType T,
 
 CStyleCastExpr *CStyleCastExpr::CreateEmpty(const ASTContext &C,
                                             unsigned PathSize) {
-  void *Buffer =
-      C.Allocate(totalSizeToAlloc<CastExpr::BasePathSizeTy, CXXBaseSpecifier *>(
-          PathSize ? 1 : 0, PathSize));
+  void *Buffer = C.Allocate(totalSizeToAlloc<CXXBaseSpecifier *>(PathSize));
   return new (Buffer) CStyleCastExpr(EmptyShell(), PathSize);
 }
 
@@ -2274,16 +2313,12 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
     // If this is a direct call, get the callee.
     const CallExpr *CE = cast<CallExpr>(this);
     if (const Decl *FD = CE->getCalleeDecl()) {
-      const FunctionDecl *Func = dyn_cast<FunctionDecl>(FD);
-      bool HasWarnUnusedResultAttr = Func ? Func->hasUnusedResultAttr()
-                                          : FD->hasAttr<WarnUnusedResultAttr>();
-
       // If the callee has attribute pure, const, or warn_unused_result, warn
       // about it. void foo() { strlen("bar"); } should warn.
       //
       // Note: If new cases are added here, DiagnoseUnusedExprResult should be
       // updated to match for QoI.
-      if (HasWarnUnusedResultAttr ||
+      if (CE->hasUnusedResultAttr(Ctx) ||
           FD->hasAttr<PureAttr>() || FD->hasAttr<ConstAttr>()) {
         WarnE = this;
         Loc = CE->getCallee()->getBeginLoc();
@@ -2547,6 +2582,10 @@ Expr* Expr::IgnoreParens() {
         continue;
       }
     }
+    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(E)) {
+      E = CE->getSubExpr();
+      continue;
+    }
     return E;
   }
 }
@@ -2667,10 +2706,6 @@ Expr *Expr::IgnoreParenImpCasts() {
     if (SubstNonTypeTemplateParmExpr *NTTP
                                   = dyn_cast<SubstNonTypeTemplateParmExpr>(E)) {
       E = NTTP->getReplacement();
-      continue;
-    }
-    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(E)) {
-      E = CE->getSubExpr();
       continue;
     }
     return E;

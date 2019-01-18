@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Analysis/AnalysisDeclContext.h"
 #include "clang/Basic/TargetInfo.h"
@@ -29,10 +29,10 @@ static bool isArc4RandomAvailable(const ASTContext &Ctx) {
   const llvm::Triple &T = Ctx.getTargetInfo().getTriple();
   return T.getVendor() == llvm::Triple::Apple ||
          T.getOS() == llvm::Triple::CloudABI ||
-         T.getOS() == llvm::Triple::FreeBSD ||
-         T.getOS() == llvm::Triple::NetBSD ||
-         T.getOS() == llvm::Triple::OpenBSD ||
-         T.getOS() == llvm::Triple::DragonFly;
+         T.isOSFreeBSD() ||
+         T.isOSNetBSD() ||
+         T.isOSOpenBSD() ||
+         T.isOSDragonFly();
 }
 
 namespace {
@@ -651,14 +651,14 @@ void WalkAST::checkCall_strcpy(const CallExpr *CE, const FunctionDecl *FD) {
 
   const auto *Target = CE->getArg(0)->IgnoreImpCasts(),
              *Source = CE->getArg(1)->IgnoreImpCasts();
-  if (const auto *DeclRef = dyn_cast<DeclRefExpr>(Target))
-    if (const auto *Array = dyn_cast<ConstantArrayType>(DeclRef->getType())) {
-      uint64_t ArraySize = BR.getContext().getTypeSize(Array) / 8;
-      if (const auto *String = dyn_cast<StringLiteral>(Source)) {
-        if (ArraySize >= String->getLength() + 1)
-          return;
-      }
+
+  if (const auto *Array = dyn_cast<ConstantArrayType>(Target->getType())) {
+    uint64_t ArraySize = BR.getContext().getTypeSize(Array) / 8;
+    if (const auto *String = dyn_cast<StringLiteral>(Source)) {
+      if (ArraySize >= String->getLength() + 1)
+        return;
     }
+  }
 
   // Issue a warning.
   PathDiagnosticLocation CELoc =

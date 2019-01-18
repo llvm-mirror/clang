@@ -627,7 +627,7 @@ Sema::ActOnDependentIdExpression(const CXXScopeSpec &SS,
 
   if (!MightBeCxx11UnevalField && !isAddressOfOperand && !IsEnum &&
       isa<CXXMethodDecl>(DC) && cast<CXXMethodDecl>(DC)->isInstance()) {
-    QualType ThisType = cast<CXXMethodDecl>(DC)->getThisType(Context);
+    QualType ThisType = cast<CXXMethodDecl>(DC)->getThisType();
 
     // Since the 'this' expression is synthesized, we don't need to
     // perform the double-lookup check.
@@ -1255,9 +1255,10 @@ Sema::ActOnTemplateParameterList(unsigned Depth,
       RAngleLoc, RequiresClause);
 }
 
-static void SetNestedNameSpecifier(TagDecl *T, const CXXScopeSpec &SS) {
+static void SetNestedNameSpecifier(Sema &S, TagDecl *T,
+                                   const CXXScopeSpec &SS) {
   if (SS.isSet())
-    T->setQualifierInfo(SS.getWithLocInContext(T->getASTContext()));
+    T->setQualifierInfo(SS.getWithLocInContext(S.Context));
 }
 
 DeclResult Sema::CheckClassTemplate(
@@ -1554,7 +1555,7 @@ DeclResult Sema::CheckClassTemplate(
                           PrevClassTemplate && ShouldAddRedecl ?
                             PrevClassTemplate->getTemplatedDecl() : nullptr,
                           /*DelayTypeCreation=*/true);
-  SetNestedNameSpecifier(NewClass, SS);
+  SetNestedNameSpecifier(*this, NewClass, SS);
   if (NumOuterTemplateParamLists > 0)
     NewClass->setTemplateParameterListsInfo(
         Context, llvm::makeArrayRef(OuterTemplateParamLists,
@@ -3122,8 +3123,10 @@ Sema::findFailedBooleanCondition(Expr *Cond) {
   std::string Description;
   {
     llvm::raw_string_ostream Out(Description);
-    FailedBooleanConditionPrinterHelper Helper(getPrintingPolicy());
-    FailedCond->printPretty(Out, &Helper, getPrintingPolicy());
+    PrintingPolicy Policy = getPrintingPolicy();
+    Policy.PrintCanonicalTypes = true;
+    FailedBooleanConditionPrinterHelper Helper(Policy);
+    FailedCond->printPretty(Out, &Helper, Policy, 0, "\n", nullptr);
   }
   return { FailedCond, Description };
 }
@@ -7648,7 +7651,7 @@ DeclResult Sema::ActOnClassTemplateSpecialization(
                                                        TemplateArgs,
                                                        CanonType,
                                                        PrevPartial);
-    SetNestedNameSpecifier(Partial, SS);
+    SetNestedNameSpecifier(*this, Partial, SS);
     if (TemplateParameterLists.size() > 1 && SS.isSet()) {
       Partial->setTemplateParameterListsInfo(
           Context, TemplateParameterLists.drop_back(1));
@@ -7674,7 +7677,7 @@ DeclResult Sema::ActOnClassTemplateSpecialization(
                                                 ClassTemplate,
                                                 Converted,
                                                 PrevDecl);
-    SetNestedNameSpecifier(Specialization, SS);
+    SetNestedNameSpecifier(*this, Specialization, SS);
     if (TemplateParameterLists.size() > 0) {
       Specialization->setTemplateParameterListsInfo(Context,
                                                     TemplateParameterLists);
@@ -7963,6 +7966,7 @@ Sema::CheckSpecializationInstantiationRedecl(SourceLocation NewLoc,
       HasNoEffect = true;
       return false;
     }
+    llvm_unreachable("Unexpected TemplateSpecializationKind!");
 
   case TSK_ExplicitInstantiationDefinition:
     switch (PrevTSK) {
@@ -8100,9 +8104,13 @@ Sema::CheckDependentFunctionTemplateSpecialization(FunctionDecl *FD,
 ///
 /// \param Previous the set of declarations that may be specialized by
 /// this function specialization.
+///
+/// \param QualifiedFriend whether this is a lookup for a qualified friend
+/// declaration with no explicit template argument list that might be
+/// befriending a function template specialization.
 bool Sema::CheckFunctionTemplateSpecialization(
     FunctionDecl *FD, TemplateArgumentListInfo *ExplicitTemplateArgs,
-    LookupResult &Previous) {
+    LookupResult &Previous, bool QualifiedFriend) {
   // The set of function template specializations that could match this
   // explicit function template specialization.
   UnresolvedSet<8> Candidates;
@@ -8189,10 +8197,25 @@ bool Sema::CheckFunctionTemplateSpecialization(
     }
   }
 
+  // For a qualified friend declaration (with no explicit marker to indicate
+  // that a template specialization was intended), note all (template and
+  // non-template) candidates.
+  if (QualifiedFriend && Candidates.empty()) {
+    Diag(FD->getLocation(), diag::err_qualified_friend_no_match)
+        << FD->getDeclName() << FDLookupContext;
+    // FIXME: We should form a single candidate list and diagnose all
+    // candidates at once, to get proper sorting and limiting.
+    for (auto *OldND : Previous) {
+      if (auto *OldFD = dyn_cast<FunctionDecl>(OldND->getUnderlyingDecl()))
+        NoteOverloadCandidate(OldND, OldFD, FD->getType(), false);
+    }
+    FailedCandidates.NoteCandidates(*this, FD->getLocation());
+    return true;
+  }
+
   // Find the most specialized function template.
   UnresolvedSetIterator Result = getMostSpecialized(
-      Candidates.begin(), Candidates.end(), FailedCandidates,
-      FD->getLocation(),
+      Candidates.begin(), Candidates.end(), FailedCandidates, FD->getLocation(),
       PDiag(diag::err_function_template_spec_no_match) << FD->getDeclName(),
       PDiag(diag::err_function_template_spec_ambiguous)
           << FD->getDeclName() << (ExplicitTemplateArgs != nullptr),
@@ -8773,7 +8796,7 @@ DeclResult Sema::ActOnExplicitInstantiation(
                                                 ClassTemplate,
                                                 Converted,
                                                 PrevDecl);
-    SetNestedNameSpecifier(Specialization, SS);
+    SetNestedNameSpecifier(*this, Specialization, SS);
 
     if (!HasNoEffect && !PrevDecl) {
       // Insert the new specialization.
