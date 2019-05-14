@@ -1,9 +1,8 @@
 //===- ASTImporter.h - Importing ASTs from other Contexts -------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -33,6 +32,7 @@
 namespace clang {
 
 class ASTContext;
+class Attr;
 class ASTImporterLookupTable;
 class CXXBaseSpecifier;
 class CXXCtorInitializer;
@@ -43,8 +43,8 @@ class FileManager;
 class NamedDecl;
 class Stmt;
 class TagDecl;
+class TranslationUnitDecl;
 class TypeSourceInfo;
-class Attr;
 
   class ImportError : public llvm::ErrorInfo<ImportError> {
   public:
@@ -116,6 +116,10 @@ class Attr;
     /// context to the corresponding declarations in the "to" context.
     llvm::DenseMap<Decl *, Decl *> ImportedDecls;
 
+    /// Mapping from the already-imported declarations in the "to"
+    /// context to the corresponding declarations in the "from" context.
+    llvm::DenseMap<Decl *, Decl *> ImportedFromDecls;
+
     /// Mapping from the already-imported statements in the "from"
     /// context to the corresponding statements in the "to" context.
     llvm::DenseMap<Stmt *, Stmt *> ImportedStmts;
@@ -137,6 +141,12 @@ class Attr;
     FoundDeclsTy findDeclsInToCtx(DeclContext *DC, DeclarationName Name);
 
     void AddToLookupTable(Decl *ToD);
+
+  protected:
+    /// Can be overwritten by subclasses to implement their own import logic.
+    /// The overwritten method should call this method if it didn't import the
+    /// decl on its own.
+    virtual Expected<Decl *> ImportImpl(Decl *From);
 
   public:
 
@@ -173,15 +183,10 @@ class Attr;
     /// \return Error information (success or error).
     template <typename ImportT>
     LLVM_NODISCARD llvm::Error importInto(ImportT &To, const ImportT &From) {
-      To = Import(From);
-      if (From && !To)
-          return llvm::make_error<ImportError>();
-      return llvm::Error::success();
-      // FIXME: this should be the final code
-      //auto ToOrErr = Import(From);
-      //if (ToOrErr)
-      //  To = *ToOrErr;
-      //return ToOrErr.takeError();
+      auto ToOrErr = Import_New(From);
+      if (ToOrErr)
+        To = *ToOrErr;
+      return ToOrErr.takeError();
     }
 
     /// Import the given type from the "from" context into the "to"
@@ -216,7 +221,7 @@ class Attr;
     /// \returns The equivalent declaration in the "to" context, or the import
     /// error.
     llvm::Expected<Decl *> Import_New(Decl *FromD);
-    llvm::Expected<Decl *> Import_New(const Decl *FromD) {
+    llvm::Expected<const Decl *> Import_New(const Decl *FromD) {
       return Import_New(const_cast<Decl *>(FromD));
     }
     // FIXME: Remove this version.
@@ -227,8 +232,12 @@ class Attr;
 
     /// Return the copy of the given declaration in the "to" context if
     /// it has already been imported from the "from" context.  Otherwise return
-    /// NULL.
+    /// nullptr.
     Decl *GetAlreadyImportedOrNull(const Decl *FromD) const;
+
+    /// Return the translation unit from where the declaration was
+    /// imported. If it does not exist nullptr is returned.
+    TranslationUnitDecl *GetFromTU(Decl *ToD);
 
     /// Import the given declaration context from the "from"
     /// AST context into the "to" AST context.
@@ -329,9 +338,9 @@ class Attr;
     ///
     /// \returns The equivalent file ID in the source manager of the "to"
     /// context, or the import error.
-    llvm::Expected<FileID> Import_New(FileID);
+    llvm::Expected<FileID> Import_New(FileID, bool IsBuiltin = false);
     // FIXME: Remove this version.
-    FileID Import(FileID);
+    FileID Import(FileID, bool IsBuiltin = false);
 
     /// Import the given C++ constructor initializer from the "from"
     /// context into the "to" context.
@@ -422,7 +431,9 @@ class Attr;
 
     /// Subclasses can override this function to observe all of the \c From ->
     /// \c To declaration mappings as they are imported.
-    virtual Decl *Imported(Decl *From, Decl *To) { return To; }
+    virtual void Imported(Decl *From, Decl *To) {}
+
+    void RegisterImportedDecl(Decl *FromD, Decl *ToD);
 
     /// Store and assign the imported declaration to its counterpart.
     Decl *MapImported(Decl *From, Decl *To);

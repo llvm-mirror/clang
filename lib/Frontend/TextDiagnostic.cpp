@@ -1,9 +1,8 @@
 //===--- TextDiagnostic.cpp - Text Diagnostic Pretty-Printing -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -334,8 +333,7 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
 
   // No special characters are allowed in CaretLine.
   assert(CaretLine.end() ==
-         std::find_if(CaretLine.begin(), CaretLine.end(),
-                      [](char c) { return c < ' ' || '~' < c; }));
+         llvm::find_if(CaretLine, [](char c) { return c < ' ' || '~' < c; }));
 
   // Find the slice that we need to display the full caret line
   // correctly.
@@ -793,8 +791,6 @@ void TextDiagnostic::emitDiagnosticLoc(FullSourceLoc Loc, PresumedLoc PLoc,
       const FileEntry *FE = Loc.getFileEntry();
       if (FE && FE->isValid()) {
         emitFilename(FE->getName(), Loc.getManager());
-        if (FE->isInPCH())
-          OS << " (in PCH)";
         OS << ": ";
       }
     }
@@ -838,7 +834,7 @@ void TextDiagnostic::emitDiagnosticLoc(FullSourceLoc Loc, PresumedLoc PLoc,
     if (LangOpts.MSCompatibilityVersion &&
         !LangOpts.isCompatibleWithMSVC(LangOptions::MSVC2015))
       OS << ' ';
-    OS << ": ";
+    OS << ':';
     break;
   }
 

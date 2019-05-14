@@ -1,9 +1,8 @@
 //===- HTMLDiagnostics.cpp - HTML Diagnostics for Paths -------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -274,7 +273,7 @@ std::string HTMLDiagnostics::GenerateHTML(const PathDiagnostic& D, Rewriter &R,
   std::vector<FileID> FileIDs;
   for (auto I : path) {
     FileID FID = I->getLocation().asLocation().getExpansionLoc().getFileID();
-    if (std::find(FileIDs.begin(), FileIDs.end(), FID) != FileIDs.end())
+    if (llvm::is_contained(FileIDs, FID))
       continue;
 
     FileIDs.push_back(FID);

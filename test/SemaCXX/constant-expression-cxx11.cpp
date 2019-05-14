@@ -2146,7 +2146,7 @@ namespace InheritedCtor {
   struct B : A { int n; using A::A; }; // expected-note {{here}}
   constexpr B b(0); // expected-error {{constant expression}} expected-note {{derived class}}
 
-  struct C : A { using A::A; struct { union { int n, m = 0; }; union { int a = 0; }; int k = 0; }; struct {}; union {}; }; // expected-warning 4{{extension}}
+  struct C : A { using A::A; struct { union { int n, m = 0; }; union { int a = 0; }; int k = 0; }; struct {}; union {}; }; // expected-warning 6{{}}
   constexpr C c(0);
 
   struct D : A {
@@ -2219,4 +2219,12 @@ namespace PointerArithmeticOverflow {
   constexpr int *p = (&n + 1) + (unsigned __int128)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element 3402}}
   constexpr int *q = (&n + 1) - (unsigned __int128)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element -3402}}
   constexpr int *r = &(&n + 1)[(unsigned __int128)-1]; // expected-error {{constant expression}} expected-note {{cannot refer to element 3402}}
+}
+
+namespace PR40430 {
+  struct S {
+    char c[10] = "asdf";
+    constexpr char foo() const { return c[3]; }
+  };
+  static_assert(S().foo() == 'f', "");
 }

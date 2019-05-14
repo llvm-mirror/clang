@@ -1,9 +1,8 @@
 //===------- SemaTemplate.cpp - Semantic Analysis for C++ Templates -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 //
 //  This file implements semantic analysis for C++ templates.
@@ -67,17 +66,20 @@ static Expr *clang::formAssociatedConstraints(TemplateParameterList *Params,
 
 /// Determine whether the declaration found is acceptable as the name
 /// of a template and, if so, return that template declaration. Otherwise,
-/// returns NULL.
-static NamedDecl *isAcceptableTemplateName(ASTContext &Context,
-                                           NamedDecl *Orig,
-                                           bool AllowFunctionTemplates) {
-  NamedDecl *D = Orig->getUnderlyingDecl();
+/// returns null.
+///
+/// Note that this may return an UnresolvedUsingValueDecl if AllowDependent
+/// is true. In all other cases it will return a TemplateDecl (or null).
+NamedDecl *Sema::getAsTemplateNameDecl(NamedDecl *D,
+                                       bool AllowFunctionTemplates,
+                                       bool AllowDependent) {
+  D = D->getUnderlyingDecl();
 
   if (isa<TemplateDecl>(D)) {
     if (!AllowFunctionTemplates && isa<FunctionTemplateDecl>(D))
       return nullptr;
 
-    return Orig;
+    return D;
   }
 
   if (CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(D)) {
@@ -108,54 +110,29 @@ static NamedDecl *isAcceptableTemplateName(ASTContext &Context,
   // 'using Dependent::foo;' can resolve to a template name.
   // 'using typename Dependent::foo;' cannot (not even if 'foo' is an
   // injected-class-name).
-  if (isa<UnresolvedUsingValueDecl>(D))
+  if (AllowDependent && isa<UnresolvedUsingValueDecl>(D))
     return D;
 
   return nullptr;
 }
 
 void Sema::FilterAcceptableTemplateNames(LookupResult &R,
-                                         bool AllowFunctionTemplates) {
-  // The set of class templates we've already seen.
-  llvm::SmallPtrSet<ClassTemplateDecl *, 8> ClassTemplates;
+                                         bool AllowFunctionTemplates,
+                                         bool AllowDependent) {
   LookupResult::Filter filter = R.makeFilter();
   while (filter.hasNext()) {
     NamedDecl *Orig = filter.next();
-    NamedDecl *Repl = isAcceptableTemplateName(Context, Orig,
-                                               AllowFunctionTemplates);
-    if (!Repl)
+    if (!getAsTemplateNameDecl(Orig, AllowFunctionTemplates, AllowDependent))
       filter.erase();
-    else if (Repl != Orig) {
-
-      // C++ [temp.local]p3:
-      //   A lookup that finds an injected-class-name (10.2) can result in an
-      //   ambiguity in certain cases (for example, if it is found in more than
-      //   one base class). If all of the injected-class-names that are found
-      //   refer to specializations of the same class template, and if the name
-      //   is used as a template-name, the reference refers to the class
-      //   template itself and not a specialization thereof, and is not
-      //   ambiguous.
-      if (ClassTemplateDecl *ClassTmpl = dyn_cast<ClassTemplateDecl>(Repl))
-        if (!ClassTemplates.insert(ClassTmpl).second) {
-          filter.erase();
-          continue;
-        }
-
-      // FIXME: we promote access to public here as a workaround to
-      // the fact that LookupResult doesn't let us remember that we
-      // found this template through a particular injected class name,
-      // which means we end up doing nasty things to the invariants.
-      // Pretending that access is public is *much* safer.
-      filter.replace(Repl, AS_public);
-    }
   }
   filter.done();
 }
 
 bool Sema::hasAnyAcceptableTemplateNames(LookupResult &R,
-                                         bool AllowFunctionTemplates) {
+                                         bool AllowFunctionTemplates,
+                                         bool AllowDependent) {
   for (LookupResult::iterator I = R.begin(), IEnd = R.end(); I != IEnd; ++I)
-    if (isAcceptableTemplateName(Context, *I, AllowFunctionTemplates))
+    if (getAsTemplateNameDecl(*I, AllowFunctionTemplates, AllowDependent))
       return true;
 
   return false;
@@ -199,20 +176,45 @@ TemplateNameKind Sema::isTemplateName(Scope *S,
                          MemberOfUnknownSpecialization))
     return TNK_Non_template;
   if (R.empty()) return TNK_Non_template;
-  if (R.isAmbiguous()) {
-    // Suppress diagnostics;  we'll redo this lookup later.
-    R.suppressDiagnostics();
 
-    // FIXME: we might have ambiguous templates, in which case we
-    // should at least parse them properly!
-    return TNK_Non_template;
+  NamedDecl *D = nullptr;
+  if (R.isAmbiguous()) {
+    // If we got an ambiguity involving a non-function template, treat this
+    // as a template name, and pick an arbitrary template for error recovery.
+    bool AnyFunctionTemplates = false;
+    for (NamedDecl *FoundD : R) {
+      if (NamedDecl *FoundTemplate = getAsTemplateNameDecl(FoundD)) {
+        if (isa<FunctionTemplateDecl>(FoundTemplate))
+          AnyFunctionTemplates = true;
+        else {
+          D = FoundTemplate;
+          break;
+        }
+      }
+    }
+
+    // If we didn't find any templates at all, this isn't a template name.
+    // Leave the ambiguity for a later lookup to diagnose.
+    if (!D && !AnyFunctionTemplates) {
+      R.suppressDiagnostics();
+      return TNK_Non_template;
+    }
+
+    // If the only templates were function templates, filter out the rest.
+    // We'll diagnose the ambiguity later.
+    if (!D)
+      FilterAcceptableTemplateNames(R);
   }
+
+  // At this point, we have either picked a single template name declaration D
+  // or we have a non-empty set of results R containing either one template name
+  // declaration or a set of function templates.
 
   TemplateName Template;
   TemplateNameKind TemplateKind;
 
   unsigned ResultCount = R.end() - R.begin();
-  if (ResultCount > 1) {
+  if (!D && ResultCount > 1) {
     // We assume that we'll preserve the qualifier from a function
     // template name in other ways.
     Template = Context.getOverloadedTemplateName(R.begin(), R.end());
@@ -220,12 +222,19 @@ TemplateNameKind Sema::isTemplateName(Scope *S,
 
     // We'll do this lookup again later.
     R.suppressDiagnostics();
-  } else if (isa<UnresolvedUsingValueDecl>((*R.begin())->getUnderlyingDecl())) {
-    // We don't yet know whether this is a template-name or not.
-    MemberOfUnknownSpecialization = true;
-    return TNK_Non_template;
   } else {
-    TemplateDecl *TD = cast<TemplateDecl>((*R.begin())->getUnderlyingDecl());
+    if (!D) {
+      D = getAsTemplateNameDecl(*R.begin());
+      assert(D && "unambiguous result is not a template name");
+    }
+
+    if (isa<UnresolvedUsingValueDecl>(D)) {
+      // We don't yet know whether this is a template-name or not.
+      MemberOfUnknownSpecialization = true;
+      return TNK_Non_template;
+    }
+
+    TemplateDecl *TD = cast<TemplateDecl>(D);
 
     if (SS.isSet() && !SS.isInvalid()) {
       NestedNameSpecifier *Qualifier = SS.getScopeRep();
@@ -317,6 +326,8 @@ bool Sema::LookupTemplateName(LookupResult &Found,
                               bool EnteringContext,
                               bool &MemberOfUnknownSpecialization,
                               SourceLocation TemplateKWLoc) {
+  Found.setTemplateNameLookup(true);
+
   // Determine where to perform name lookup
   MemberOfUnknownSpecialization = false;
   DeclContext *LookupCtx = nullptr;
@@ -391,24 +402,29 @@ bool Sema::LookupTemplateName(LookupResult &Found,
     IsDependent |= Found.wasNotFoundInCurrentInstantiation();
   }
 
+  if (Found.isAmbiguous())
+    return false;
+
   if (Found.empty() && !IsDependent) {
     // If we did not find any names, attempt to correct any typos.
     DeclarationName Name = Found.getLookupName();
     Found.clear();
     // Simple filter callback that, for keywords, only accepts the C++ *_cast
-    auto FilterCCC = llvm::make_unique<CorrectionCandidateCallback>();
-    FilterCCC->WantTypeSpecifiers = false;
-    FilterCCC->WantExpressionKeywords = false;
-    FilterCCC->WantRemainingKeywords = false;
-    FilterCCC->WantCXXNamedCasts = true;
-    if (TypoCorrection Corrected = CorrectTypo(
-            Found.getLookupNameInfo(), Found.getLookupKind(), S, &SS,
-            std::move(FilterCCC), CTK_ErrorRecovery, LookupCtx)) {
+    DefaultFilterCCC FilterCCC{};
+    FilterCCC.WantTypeSpecifiers = false;
+    FilterCCC.WantExpressionKeywords = false;
+    FilterCCC.WantRemainingKeywords = false;
+    FilterCCC.WantCXXNamedCasts = true;
+    if (TypoCorrection Corrected =
+            CorrectTypo(Found.getLookupNameInfo(), Found.getLookupKind(), S,
+                        &SS, FilterCCC, CTK_ErrorRecovery, LookupCtx)) {
       Found.setLookupName(Corrected.getCorrection());
       if (auto *ND = Corrected.getFoundDecl())
         Found.addDecl(ND);
       FilterAcceptableTemplateNames(Found);
-      if (!Found.empty()) {
+      if (Found.isAmbiguous()) {
+        Found.clear();
+      } else if (!Found.empty()) {
         if (LookupCtx) {
           std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
           bool DroppedSpecifier = Corrected.WillReplaceSpecifier() &&
@@ -458,14 +474,19 @@ bool Sema::LookupTemplateName(LookupResult &Found,
     // Note: C++11 does not perform this second lookup.
     LookupResult FoundOuter(*this, Found.getLookupName(), Found.getNameLoc(),
                             LookupOrdinaryName);
+    FoundOuter.setTemplateNameLookup(true);
     LookupName(FoundOuter, S);
+    // FIXME: We silently accept an ambiguous lookup here, in violation of
+    // [basic.lookup]/1.
     FilterAcceptableTemplateNames(FoundOuter, /*AllowFunctionTemplates=*/false);
 
+    NamedDecl *OuterTemplate;
     if (FoundOuter.empty()) {
       //   - if the name is not found, the name found in the class of the
       //     object expression is used, otherwise
-    } else if (!FoundOuter.getAsSingle<ClassTemplateDecl>() ||
-               FoundOuter.isAmbiguous()) {
+    } else if (FoundOuter.isAmbiguous() || !FoundOuter.isSingleResult() ||
+               !(OuterTemplate =
+                     getAsTemplateNameDecl(FoundOuter.getFoundDecl()))) {
       //   - if the name is found in the context of the entire
       //     postfix-expression and does not name a class template, the name
       //     found in the class of the object expression is used, otherwise
@@ -475,8 +496,8 @@ bool Sema::LookupTemplateName(LookupResult &Found,
       //     entity as the one found in the class of the object expression,
       //     otherwise the program is ill-formed.
       if (!Found.isSingleResult() ||
-          Found.getFoundDecl()->getCanonicalDecl()
-            != FoundOuter.getFoundDecl()->getCanonicalDecl()) {
+          getAsTemplateNameDecl(Found.getFoundDecl())->getCanonicalDecl() !=
+              OuterTemplate->getCanonicalDecl()) {
         Diag(Found.getNameLoc(),
              diag::ext_nested_name_member_ref_lookup_ambiguous)
           << Found.getLookupName()
@@ -546,7 +567,8 @@ void Sema::diagnoseExprIntendedAsTemplateName(Scope *S, ExprResult TemplateName,
 
   // Try to correct the name by looking for templates and C++ named casts.
   struct TemplateCandidateFilter : CorrectionCandidateCallback {
-    TemplateCandidateFilter() {
+    Sema &S;
+    TemplateCandidateFilter(Sema &S) : S(S) {
       WantTypeSpecifiers = false;
       WantExpressionKeywords = false;
       WantRemainingKeywords = false;
@@ -554,20 +576,22 @@ void Sema::diagnoseExprIntendedAsTemplateName(Scope *S, ExprResult TemplateName,
     };
     bool ValidateCandidate(const TypoCorrection &Candidate) override {
       if (auto *ND = Candidate.getCorrectionDecl())
-        return isAcceptableTemplateName(ND->getASTContext(), ND, true);
+        return S.getAsTemplateNameDecl(ND);
       return Candidate.isKeyword();
+    }
+
+    std::unique_ptr<CorrectionCandidateCallback> clone() override {
+      return llvm::make_unique<TemplateCandidateFilter>(*this);
     }
   };
 
   DeclarationName Name = NameInfo.getName();
-  if (TypoCorrection Corrected =
-          CorrectTypo(NameInfo, LookupKind, S, &SS,
-                      llvm::make_unique<TemplateCandidateFilter>(),
-                      CTK_ErrorRecovery, LookupCtx)) {
+  TemplateCandidateFilter CCC(*this);
+  if (TypoCorrection Corrected = CorrectTypo(NameInfo, LookupKind, S, &SS, CCC,
+                                             CTK_ErrorRecovery, LookupCtx)) {
     auto *ND = Corrected.getFoundDecl();
     if (ND)
-      ND = isAcceptableTemplateName(Context, ND,
-                                    /*AllowFunctionTemplates*/ true);
+      ND = getAsTemplateNameDecl(ND);
     if (ND || Corrected.isKeyword()) {
       if (LookupCtx) {
         std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
@@ -3903,13 +3927,6 @@ DeclResult Sema::ActOnVarTemplateSpecialization(
     Specialization->setAccess(VarTemplate->getAccess());
   }
 
-  // Link instantiations of static data members back to the template from
-  // which they were instantiated.
-  if (Specialization->isStaticDataMember())
-    Specialization->setInstantiationOfStaticDataMember(
-        VarTemplate->getTemplatedDecl(),
-        Specialization->getSpecializationKind());
-
   return Specialization;
 }
 
@@ -4263,7 +4280,7 @@ TemplateNameKind Sema::ActOnDependentTemplateName(Scope *S,
                      LookupOrdinaryName);
       bool MOUS;
       if (!LookupTemplateName(R, S, SS, ObjectType.get(), EnteringContext,
-                              MOUS, TemplateKWLoc))
+                              MOUS, TemplateKWLoc) && !R.isAmbiguous())
         Diag(Name.getBeginLoc(), diag::err_no_member)
             << DNI.getName() << LookupCtx << SS.getRange();
       return TNK_Non_template;
@@ -6309,7 +6326,7 @@ ExprResult Sema::CheckTemplateArgument(NonTypeTemplateParmDecl *Param,
       // -- a predefined __func__ variable
       if (auto *E = Value.getLValueBase().dyn_cast<const Expr*>()) {
         if (isa<CXXUuidofExpr>(E)) {
-          Converted = TemplateArgument(ArgResult.get());
+          Converted = TemplateArgument(ArgResult.get()->IgnoreImpCasts());
           break;
         }
         Diag(Arg->getBeginLoc(), diag::err_template_arg_not_decl_ref)
@@ -6342,6 +6359,7 @@ ExprResult Sema::CheckTemplateArgument(NonTypeTemplateParmDecl *Param,
     }
     case APValue::AddrLabelDiff:
       return Diag(StartLoc, diag::err_non_type_template_arg_addr_label_diff);
+    case APValue::FixedPoint:
     case APValue::Float:
     case APValue::ComplexInt:
     case APValue::ComplexFloat:
@@ -8594,6 +8612,29 @@ static bool CheckExplicitInstantiationScope(Sema &S, NamedDecl *D,
   return false;
 }
 
+/// Common checks for whether an explicit instantiation of \p D is valid.
+static bool CheckExplicitInstantiation(Sema &S, NamedDecl *D,
+                                       SourceLocation InstLoc,
+                                       bool WasQualifiedName,
+                                       TemplateSpecializationKind TSK) {
+  // C++ [temp.explicit]p13:
+  //   An explicit instantiation declaration shall not name a specialization of
+  //   a template with internal linkage.
+  if (TSK == TSK_ExplicitInstantiationDeclaration &&
+      D->getFormalLinkage() == InternalLinkage) {
+    S.Diag(InstLoc, diag::err_explicit_instantiation_internal_linkage) << D;
+    return true;
+  }
+
+  // C++11 [temp.explicit]p3: [DR 275]
+  //   An explicit instantiation shall appear in an enclosing namespace of its
+  //   template.
+  if (CheckExplicitInstantiationScope(S, D, InstLoc, WasQualifiedName))
+    return true;
+
+  return false;
+}
+
 /// Determine whether the given scope specifier has a template-id in it.
 static bool ScopeSpecifierHasTemplateId(const CXXScopeSpec &SS) {
   if (!SS.isSet())
@@ -8684,8 +8725,10 @@ DeclResult Sema::ActOnExplicitInstantiation(
                                        ? TSK_ExplicitInstantiationDefinition
                                        : TSK_ExplicitInstantiationDeclaration;
 
-  if (TSK == TSK_ExplicitInstantiationDeclaration) {
-    // Check for dllexport class template instantiation declarations.
+  if (TSK == TSK_ExplicitInstantiationDeclaration &&
+      !Context.getTargetInfo().getTriple().isWindowsGNUEnvironment()) {
+    // Check for dllexport class template instantiation declarations,
+    // except for MinGW mode.
     for (const ParsedAttr &AL : Attr) {
       if (AL.getKind() == ParsedAttr::AT_DLLExport) {
         Diag(ExternLoc,
@@ -8745,13 +8788,21 @@ DeclResult Sema::ActOnExplicitInstantiation(
   TemplateSpecializationKind PrevDecl_TSK
     = PrevDecl ? PrevDecl->getTemplateSpecializationKind() : TSK_Undeclared;
 
-  // C++0x [temp.explicit]p2:
-  //   [...] An explicit instantiation shall appear in an enclosing
-  //   namespace of its template. [...]
-  //
-  // This is C++ DR 275.
-  if (CheckExplicitInstantiationScope(*this, ClassTemplate, TemplateNameLoc,
-                                      SS.isSet()))
+  if (TSK == TSK_ExplicitInstantiationDefinition && PrevDecl != nullptr &&
+      Context.getTargetInfo().getTriple().isWindowsGNUEnvironment()) {
+    // Check for dllexport class template instantiation definitions in MinGW
+    // mode, if a previous declaration of the instantiation was seen.
+    for (const ParsedAttr &AL : Attr) {
+      if (AL.getKind() == ParsedAttr::AT_DLLExport) {
+        Diag(AL.getLoc(),
+             diag::warn_attribute_dllexport_explicit_instantiation_def);
+        break;
+      }
+    }
+  }
+
+  if (CheckExplicitInstantiation(*this, ClassTemplate, TemplateNameLoc,
+                                 SS.isSet(), TSK))
     return true;
 
   ClassTemplateSpecializationDecl *Specialization = nullptr;
@@ -8906,6 +8957,14 @@ DeclResult Sema::ActOnExplicitInstantiation(
       dllExportImportClassTemplateSpecialization(*this, Def);
     }
 
+    // In MinGW mode, export the template instantiation if the declaration
+    // was marked dllexport.
+    if (PrevDecl_TSK == TSK_ExplicitInstantiationDeclaration &&
+        Context.getTargetInfo().getTriple().isWindowsGNUEnvironment() &&
+        PrevDecl->hasAttr<DLLExportAttr>()) {
+      dllExportImportClassTemplateSpecialization(*this, Def);
+    }
+
     // Set the template specialization kind. Make sure it is set before
     // instantiating the members which will trigger ASTConsumer callbacks.
     Specialization->setTemplateSpecializationKind(TSK);
@@ -8974,12 +9033,7 @@ Sema::ActOnExplicitInstantiation(Scope *S, SourceLocation ExternLoc,
     = ExternLoc.isInvalid()? TSK_ExplicitInstantiationDefinition
                            : TSK_ExplicitInstantiationDeclaration;
 
-  // C++0x [temp.explicit]p2:
-  //   [...] An explicit instantiation shall appear in an enclosing
-  //   namespace of its template. [...]
-  //
-  // This is C++ DR 275.
-  CheckExplicitInstantiationScope(*this, Record, NameLoc, true);
+  CheckExplicitInstantiation(*this, Record, NameLoc, true, TSK);
 
   // Verify that it is okay to explicitly instantiate here.
   CXXRecordDecl *PrevDecl
@@ -9137,7 +9191,7 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
 
     if (!PrevTemplate) {
       if (!Prev || !Prev->isStaticDataMember()) {
-        // We expect to see a data data member here.
+        // We expect to see a static data member here.
         Diag(D.getIdentifierLoc(), diag::err_explicit_instantiation_not_known)
             << Name;
         for (LookupResult::iterator P = Previous.begin(), PEnd = Previous.end();
@@ -9210,8 +9264,7 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
            diag::ext_explicit_instantiation_without_qualified_id)
         << Prev << D.getCXXScopeSpec().getRange();
 
-    // Check the scope of this explicit instantiation.
-    CheckExplicitInstantiationScope(*this, Prev, D.getIdentifierLoc(), true);
+    CheckExplicitInstantiation(*this, Prev, D.getIdentifierLoc(), true, TSK);
 
     // Verify that it is okay to explicitly instantiate here.
     TemplateSpecializationKind PrevTSK = Prev->getTemplateSpecializationKind();
@@ -9386,6 +9439,20 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
       return (Decl*) nullptr;
   }
 
+  // HACK: libc++ has a bug where it attempts to explicitly instantiate the
+  // functions
+  //     valarray<size_t>::valarray(size_t) and
+  //     valarray<size_t>::~valarray()
+  // that it declared to have internal linkage with the internal_linkage
+  // attribute. Ignore the explicit instantiation declaration in this case.
+  if (Specialization->hasAttr<InternalLinkageAttr>() &&
+      TSK == TSK_ExplicitInstantiationDeclaration) {
+    if (auto *RD = dyn_cast<CXXRecordDecl>(Specialization->getDeclContext()))
+      if (RD->getIdentifier() && RD->getIdentifier()->isStr("valarray") &&
+          RD->isInStdNamespace())
+        return (Decl*) nullptr;
+  }
+
   ProcessDeclAttributeList(S, Specialization, D.getDeclSpec().getAttributes());
 
   // In MSVC mode, dllimported explicit instantiation definitions are treated as
@@ -9419,11 +9486,11 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
          diag::ext_explicit_instantiation_without_qualified_id)
     << Specialization << D.getCXXScopeSpec().getRange();
 
-  CheckExplicitInstantiationScope(*this,
-                   FunTmpl? (NamedDecl *)FunTmpl
-                          : Specialization->getInstantiatedFromMemberFunction(),
-                                  D.getIdentifierLoc(),
-                                  D.getCXXScopeSpec().isSet());
+  CheckExplicitInstantiation(
+      *this,
+      FunTmpl ? (NamedDecl *)FunTmpl
+              : Specialization->getInstantiatedFromMemberFunction(),
+      D.getIdentifierLoc(), D.getCXXScopeSpec().isSet(), TSK);
 
   // FIXME: Create some kind of ExplicitInstantiationDecl here.
   return (Decl*) nullptr;

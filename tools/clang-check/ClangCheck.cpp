@@ -1,9 +1,8 @@
 //===--- tools/clang-check/ClangCheck.cpp - Clang check tool --------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -91,9 +90,6 @@ public:
   }
 
   std::string RewriteFilename(const std::string& filename, int &fd) override {
-    assert(llvm::sys::path::is_absolute(filename) &&
-           "clang-fixit expects absolute paths only.");
-
     // We don't need to do permission checking here since clang will diagnose
     // any I/O errors itself.
 

@@ -30,6 +30,53 @@ void test_block() {
   used(block);
 }
 
+// Using the variable being initialized is typically UB in C, but for blocks we
+// can be nice: they imply extra book-keeping and we can do the auto-init before
+// any of said book-keeping.
+//
+// UNINIT-LABEL:  test_block_self_init(
+// ZERO-LABEL:    test_block_self_init(
+// ZERO:          %block = alloca <{ i8*, i32, i32, i8*, %struct.__block_descriptor*, i8* }>, align 8
+// ZERO:          %captured1 = getelementptr inbounds %struct.__block_byref_captured, %struct.__block_byref_captured* %captured, i32 0, i32 4
+// ZERO-NEXT:     store %struct.XYZ* null, %struct.XYZ** %captured1, align 8
+// ZERO:          %call = call %struct.XYZ* @create(
+// PATTERN-LABEL: test_block_self_init(
+// PATTERN:       %block = alloca <{ i8*, i32, i32, i8*, %struct.__block_descriptor*, i8* }>, align 8
+// PATTERN:       %captured1 = getelementptr inbounds %struct.__block_byref_captured, %struct.__block_byref_captured* %captured, i32 0, i32 4
+// PATTERN-NEXT:  store %struct.XYZ* inttoptr (i64 -6148914691236517206 to %struct.XYZ*), %struct.XYZ** %captured1, align 8
+// PATTERN:       %call = call %struct.XYZ* @create(
+using Block = void (^)();
+typedef struct XYZ {
+  Block block;
+} * xyz_t;
+void test_block_self_init() {
+  extern xyz_t create(Block block);
+  __block xyz_t captured = create(^() {
+    used(captured);
+  });
+}
+
+// Capturing with escape after initialization is also an edge case.
+//
+// UNINIT-LABEL:  test_block_captures_self_after_init(
+// ZERO-LABEL:    test_block_captures_self_after_init(
+// ZERO:          %block = alloca <{ i8*, i32, i32, i8*, %struct.__block_descriptor*, i8* }>, align 8
+// ZERO:          %captured1 = getelementptr inbounds %struct.__block_byref_captured.1, %struct.__block_byref_captured.1* %captured, i32 0, i32 4
+// ZERO-NEXT:     store %struct.XYZ* null, %struct.XYZ** %captured1, align 8
+// ZERO:          %call = call %struct.XYZ* @create(
+// PATTERN-LABEL: test_block_captures_self_after_init(
+// PATTERN:       %block = alloca <{ i8*, i32, i32, i8*, %struct.__block_descriptor*, i8* }>, align 8
+// PATTERN:       %captured1 = getelementptr inbounds %struct.__block_byref_captured.1, %struct.__block_byref_captured.1* %captured, i32 0, i32 4
+// PATTERN-NEXT:  store %struct.XYZ* inttoptr (i64 -6148914691236517206 to %struct.XYZ*), %struct.XYZ** %captured1, align 8
+// PATTERN:       %call = call %struct.XYZ* @create(
+void test_block_captures_self_after_init() {
+  extern xyz_t create(Block block);
+  __block xyz_t captured;
+  captured = create(^() {
+    used(captured);
+  });
+}
+
 // This type of code is currently not handled by zero / pattern initialization.
 // The test will break when that is fixed.
 // UNINIT-LABEL:  test_goto_unreachable_value(
@@ -123,6 +170,34 @@ void test_vla(int size) {
   // Both cases are caught by UBSan.
   int vla[size];
   int *ptr = vla;
+  used(ptr);
+}
+
+// UNINIT-LABEL:  test_alloca(
+// ZERO-LABEL:    test_alloca(
+// ZERO:          %[[SIZE:[a-z0-9]+]] = sext i32 %{{.*}} to i64
+// ZERO-NEXT:     %[[ALLOCA:[a-z0-9]+]] = alloca i8, i64 %[[SIZE]], align [[ALIGN:[0-9]+]]
+// ZERO-NEXT:     call void @llvm.memset{{.*}}(i8* align [[ALIGN]] %[[ALLOCA]], i8 0, i64 %[[SIZE]], i1 false)
+// PATTERN-LABEL: test_alloca(
+// PATTERN:       %[[SIZE:[a-z0-9]+]] = sext i32 %{{.*}} to i64
+// PATTERN-NEXT:  %[[ALLOCA:[a-z0-9]+]] = alloca i8, i64 %[[SIZE]], align [[ALIGN:[0-9]+]]
+// PATTERN-NEXT:  call void @llvm.memset{{.*}}(i8* align [[ALIGN]] %[[ALLOCA]], i8 -86, i64 %[[SIZE]], i1 false)
+void test_alloca(int size) {
+  void *ptr = __builtin_alloca(size);
+  used(ptr);
+}
+
+// UNINIT-LABEL:  test_alloca_with_align(
+// ZERO-LABEL:    test_alloca_with_align(
+// ZERO:          %[[SIZE:[a-z0-9]+]] = sext i32 %{{.*}} to i64
+// ZERO-NEXT:     %[[ALLOCA:[a-z0-9]+]] = alloca i8, i64 %[[SIZE]], align 128
+// ZERO-NEXT:     call void @llvm.memset{{.*}}(i8* align 128 %[[ALLOCA]], i8 0, i64 %[[SIZE]], i1 false)
+// PATTERN-LABEL: test_alloca_with_align(
+// PATTERN:       %[[SIZE:[a-z0-9]+]] = sext i32 %{{.*}} to i64
+// PATTERN-NEXT:  %[[ALLOCA:[a-z0-9]+]] = alloca i8, i64 %[[SIZE]], align 128
+// PATTERN-NEXT:  call void @llvm.memset{{.*}}(i8* align 128 %[[ALLOCA]], i8 -86, i64 %[[SIZE]], i1 false)
+void test_alloca_with_align(int size) {
+  void *ptr = __builtin_alloca_with_align(size, 1024);
   used(ptr);
 }
 

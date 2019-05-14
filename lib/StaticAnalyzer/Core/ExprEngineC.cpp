@@ -1,9 +1,8 @@
 //=-- ExprEngineC.cpp - ExprEngine support for C expressions ----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -416,7 +415,9 @@ void ExprEngine::VisitCast(const CastExpr *CastE, const Expr *Ex,
       case CK_IntToOCLSampler:
       case CK_LValueBitCast:
       case CK_FixedPointCast:
-      case CK_FixedPointToBoolean: {
+      case CK_FixedPointToBoolean:
+      case CK_FixedPointToIntegral:
+      case CK_IntegralToFixedPoint: {
         state =
             handleLValueBitCast(state, Ex, LCtx, T, ExTy, CastE, Bldr, Pred);
         continue;
@@ -626,6 +627,21 @@ void ExprEngine::VisitDeclStmt(const DeclStmt *DS, ExplodedNode *Pred,
 
 void ExprEngine::VisitLogicalExpr(const BinaryOperator* B, ExplodedNode *Pred,
                                   ExplodedNodeSet &Dst) {
+  // This method acts upon CFG elements for logical operators && and ||
+  // and attaches the value (true or false) to them as expressions.
+  // It doesn't produce any state splits.
+  // If we made it that far, we're past the point when we modeled the short
+  // circuit. It means that we should have precise knowledge about whether
+  // we've short-circuited. If we did, we already know the value we need to
+  // bind. If we didn't, the value of the RHS (casted to the boolean type)
+  // is the answer.
+  // Currently this method tries to figure out whether we've short-circuited
+  // by looking at the ExplodedGraph. This method is imperfect because there
+  // could inevitably have been merges that would have resulted in multiple
+  // potential path traversal histories. We bail out when we fail.
+  // Due to this ambiguity, a more reliable solution would have been to
+  // track the short circuit operation history path-sensitively until
+  // we evaluate the respective logical operator.
   assert(B->getOpcode() == BO_LAnd ||
          B->getOpcode() == BO_LOr);
 
@@ -647,10 +663,20 @@ void ExprEngine::VisitLogicalExpr(const BinaryOperator* B, ExplodedNode *Pred,
     ProgramPoint P = N->getLocation();
     assert(P.getAs<PreStmt>()|| P.getAs<PreStmtPurgeDeadSymbols>());
     (void) P;
-    assert(N->pred_size() == 1);
+    if (N->pred_size() != 1) {
+      // We failed to track back where we came from.
+      Bldr.generateNode(B, Pred, state);
+      return;
+    }
     N = *N->pred_begin();
   }
-  assert(N->pred_size() == 1);
+
+  if (N->pred_size() != 1) {
+    // We failed to track back where we came from.
+    Bldr.generateNode(B, Pred, state);
+    return;
+  }
+
   N = *N->pred_begin();
   BlockEdge BE = N->getLocation().castAs<BlockEdge>();
   SVal X;
@@ -703,7 +729,7 @@ void ExprEngine::VisitInitListExpr(const InitListExpr *IE,
   QualType T = getContext().getCanonicalType(IE->getType());
   unsigned NumInitElements = IE->getNumInits();
 
-  if (!IE->isGLValue() &&
+  if (!IE->isGLValue() && !IE->isTransparent() &&
       (T->isArrayType() || T->isRecordType() || T->isVectorType() ||
        T->isAnyComplexType())) {
     llvm::ImmutableList<SVal> vals = getBasicVals().getEmptySValList();

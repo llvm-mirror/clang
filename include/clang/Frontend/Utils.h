@@ -1,9 +1,8 @@
 //===- Utils.h - Misc utilities for the front-end ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -146,18 +145,18 @@ public:
   ~ModuleDependencyCollector() override { writeFileMap(); }
 
   StringRef getDest() { return DestDir; }
-  bool insertSeen(StringRef Filename) { return Seen.insert(Filename).second; }
-  void addFile(StringRef Filename, StringRef FileDst = {});
+  virtual bool insertSeen(StringRef Filename) { return Seen.insert(Filename).second; }
+  virtual void addFile(StringRef Filename, StringRef FileDst = {});
 
-  void addFileMapping(StringRef VPath, StringRef RPath) {
+  virtual void addFileMapping(StringRef VPath, StringRef RPath) {
     VFSWriter.addFileMapping(VPath, RPath);
   }
 
   void attachToPreprocessor(Preprocessor &PP) override;
   void attachToASTReader(ASTReader &R) override;
 
-  void writeFileMap();
-  bool hasErrors() { return HasErrors; }
+  virtual void writeFileMap();
+  virtual bool hasErrors() { return HasErrors; }
 };
 
 /// AttachDependencyGraphGen - Create a dependency graph generator, and attach

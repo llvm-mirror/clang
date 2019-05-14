@@ -1,9 +1,8 @@
 //===- IndexTypeSourceInfo.cpp - Indexing types ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,6 +44,13 @@ public:
     if (!CALL_EXPR)                                                            \
       return false;                                                            \
   } while (0)
+
+  bool VisitTemplateTypeParmTypeLoc(TemplateTypeParmTypeLoc TTPL) {
+    SourceLocation Loc = TTPL.getNameLoc();
+    TemplateTypeParmDecl *TTPD = TTPL.getDecl();
+    return IndexCtx.handleReference(TTPD, Loc, Parent, ParentDC,
+                                    SymbolRoleSet());
+  }
 
   bool VisitTypedefTypeLoc(TypedefTypeLoc TL) {
     SourceLocation Loc = TL.getNameLoc();
@@ -130,10 +136,10 @@ public:
   template<typename TypeLocType>
   bool HandleTemplateSpecializationTypeLoc(TypeLocType TL) {
     if (const auto *T = TL.getTypePtr()) {
-      if (IndexCtx.shouldIndexImplicitInstantiation()) {
-        if (CXXRecordDecl *RD = T->getAsCXXRecordDecl()) {
-          IndexCtx.handleReference(RD, TL.getTemplateNameLoc(),
-                                   Parent, ParentDC, SymbolRoleSet(), Relations);
+      if (CXXRecordDecl *RD = T->getAsCXXRecordDecl()) {
+        if (!RD->isImplicit() || IndexCtx.shouldIndexImplicitInstantiation()) {
+          IndexCtx.handleReference(RD, TL.getTemplateNameLoc(), Parent,
+                                   ParentDC, SymbolRoleSet(), Relations);
           return true;
         }
       }

@@ -1,22 +1,8 @@
 /*===---- __clang_cuda_device_functions.h - CUDA runtime support -----------===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
@@ -24,15 +10,21 @@
 #ifndef __CLANG_CUDA_DEVICE_FUNCTIONS_H__
 #define __CLANG_CUDA_DEVICE_FUNCTIONS_H__
 
+#ifndef _OPENMP
 #if CUDA_VERSION < 9000
 #error This file is intended to be used with CUDA-9+ only.
+#endif
 #endif
 
 // __DEVICE__ is a helper macro with common set of attributes for the wrappers
 // we implement in this file. We need static in order to avoid emitting unused
 // functions and __forceinline__ helps inlining these wrappers at -O1.
 #pragma push_macro("__DEVICE__")
+#ifdef _OPENMP
+#define __DEVICE__ static __attribute__((always_inline))
+#else
 #define __DEVICE__ static __device__ __forceinline__
+#endif
 
 // libdevice provides fast low precision and slow full-recision implementations
 // for some functions. Which one gets selected depends on
@@ -52,8 +44,13 @@ __DEVICE__ unsigned int __brev(unsigned int __a) { return __nv_brev(__a); }
 __DEVICE__ unsigned long long __brevll(unsigned long long __a) {
   return __nv_brevll(__a);
 }
+#if defined(__cplusplus)
 __DEVICE__ void __brkpt() { asm volatile("brkpt;"); }
 __DEVICE__ void __brkpt(int __a) { __brkpt(); }
+#else
+__DEVICE__ void __attribute__((overloadable)) __brkpt(void) { asm volatile("brkpt;"); }
+__DEVICE__ void __attribute__((overloadable)) __brkpt(int __a) { __brkpt(); }
+#endif
 __DEVICE__ unsigned int __byte_perm(unsigned int __a, unsigned int __b,
                                     unsigned int __c) {
   return __nv_byte_perm(__a, __b, __c);
@@ -237,6 +234,9 @@ __DEVICE__ int __ffs(int __a) { return __nv_ffs(__a); }
 __DEVICE__ int __ffsll(long long __a) { return __nv_ffsll(__a); }
 __DEVICE__ int __finite(double __a) { return __nv_isfinited(__a); }
 __DEVICE__ int __finitef(float __a) { return __nv_finitef(__a); }
+#ifdef _MSC_VER
+__DEVICE__ int __finitel(long double __a);
+#endif
 __DEVICE__ int __float2int_rd(float __a) { return __nv_float2int_rd(__a); }
 __DEVICE__ int __float2int_rn(float __a) { return __nv_float2int_rn(__a); }
 __DEVICE__ int __float2int_ru(float __a) { return __nv_float2int_ru(__a); }
@@ -445,8 +445,14 @@ __DEVICE__ float __int_as_float(int __a) { return __nv_int_as_float(__a); }
 __DEVICE__ int __isfinited(double __a) { return __nv_isfinited(__a); }
 __DEVICE__ int __isinf(double __a) { return __nv_isinfd(__a); }
 __DEVICE__ int __isinff(float __a) { return __nv_isinff(__a); }
+#ifdef _MSC_VER
+__DEVICE__ int __isinfl(long double __a);
+#endif
 __DEVICE__ int __isnan(double __a) { return __nv_isnand(__a); }
 __DEVICE__ int __isnanf(float __a) { return __nv_isnanf(__a); }
+#ifdef _MSC_VER
+__DEVICE__ int __isnanl(long double __a);
+#endif
 __DEVICE__ double __ll2double_rd(long long __a) {
   return __nv_ll2double_rd(__a);
 }
@@ -520,8 +526,8 @@ __DEVICE__ unsigned int __sad(int __a, int __b, unsigned int __c) {
 __DEVICE__ float __saturatef(float __a) { return __nv_saturatef(__a); }
 __DEVICE__ int __signbitd(double __a) { return __nv_signbitd(__a); }
 __DEVICE__ int __signbitf(float __a) { return __nv_signbitf(__a); }
-__DEVICE__ void __sincosf(float __a, float *__sptr, float *__cptr) {
-  return __nv_fast_sincosf(__a, __sptr, __cptr);
+__DEVICE__ void __sincosf(float __a, float *__s, float *__c) {
+  return __nv_fast_sincosf(__a, __s, __c);
 }
 __DEVICE__ float __sinf(float __a) { return __nv_fast_sinf(__a); }
 __DEVICE__ int __syncthreads_and(int __a) { return __nvvm_bar0_and(__a); }
@@ -1563,8 +1569,8 @@ __DEVICE__ double j1(double __a) { return __nv_j1(__a); }
 __DEVICE__ float j1f(float __a) { return __nv_j1f(__a); }
 __DEVICE__ double jn(int __n, double __a) { return __nv_jn(__n, __a); }
 __DEVICE__ float jnf(int __n, float __a) { return __nv_jnf(__n, __a); }
-#if defined(__LP64__)
-__DEVICE__ long labs(long __a) { return llabs(__a); };
+#if defined(__LP64__) || defined(_WIN64)
+__DEVICE__ long labs(long __a) { return __nv_llabs(__a); };
 #else
 __DEVICE__ long labs(long __a) { return __nv_abs(__a); };
 #endif
@@ -1597,7 +1603,7 @@ __DEVICE__ float logbf(float __a) { return __nv_logbf(__a); }
 __DEVICE__ float logf(float __a) {
   return __FAST_OR_SLOW(__nv_fast_logf, __nv_logf)(__a);
 }
-#if defined(__LP64__)
+#if defined(__LP64__) || defined(_WIN64)
 __DEVICE__ long lrint(double __a) { return llrint(__a); }
 __DEVICE__ long lrintf(float __a) { return __float2ll_rn(__a); }
 __DEVICE__ long lround(double __a) { return llround(__a); }
@@ -1698,6 +1704,8 @@ __DEVICE__ double rsqrt(double __a) { return __nv_rsqrt(__a); }
 __DEVICE__ float rsqrtf(float __a) { return __nv_rsqrtf(__a); }
 __DEVICE__ double scalbn(double __a, int __b) { return __nv_scalbn(__a, __b); }
 __DEVICE__ float scalbnf(float __a, int __b) { return __nv_scalbnf(__a, __b); }
+// TODO: remove once variant is supported
+#ifndef _OPENMP
 __DEVICE__ double scalbln(double __a, long __b) {
   if (__b > INT_MAX)
     return __a > 0 ? HUGE_VAL : -HUGE_VAL;
@@ -1712,18 +1720,19 @@ __DEVICE__ float scalblnf(float __a, long __b) {
     return __a > 0 ? 0.f : -0.f;
   return scalbnf(__a, (int)__b);
 }
+#endif
 __DEVICE__ double sin(double __a) { return __nv_sin(__a); }
-__DEVICE__ void sincos(double __a, double *__sptr, double *__cptr) {
-  return __nv_sincos(__a, __sptr, __cptr);
+__DEVICE__ void sincos(double __a, double *__s, double *__c) {
+  return __nv_sincos(__a, __s, __c);
 }
-__DEVICE__ void sincosf(float __a, float *__sptr, float *__cptr) {
-  return __FAST_OR_SLOW(__nv_fast_sincosf, __nv_sincosf)(__a, __sptr, __cptr);
+__DEVICE__ void sincosf(float __a, float *__s, float *__c) {
+  return __FAST_OR_SLOW(__nv_fast_sincosf, __nv_sincosf)(__a, __s, __c);
 }
-__DEVICE__ void sincospi(double __a, double *__sptr, double *__cptr) {
-  return __nv_sincospi(__a, __sptr, __cptr);
+__DEVICE__ void sincospi(double __a, double *__s, double *__c) {
+  return __nv_sincospi(__a, __s, __c);
 }
-__DEVICE__ void sincospif(float __a, float *__sptr, float *__cptr) {
-  return __nv_sincospif(__a, __sptr, __cptr);
+__DEVICE__ void sincospif(float __a, float *__s, float *__c) {
+  return __nv_sincospif(__a, __s, __c);
 }
 __DEVICE__ float sinf(float __a) {
   return __FAST_OR_SLOW(__nv_fast_sinf, __nv_sinf)(__a);

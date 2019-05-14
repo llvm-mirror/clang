@@ -471,7 +471,6 @@ void rdar33832412() {
   void* x = IOBSDNameMatching(); // no-warning
 }
 
-
 namespace member_CFRetains {
 class Foo {
 public:
@@ -484,4 +483,67 @@ void bar() {
   foo.CFRetain(foo); // no-warning
   foo.CFRetain(0); // no-warning
 }
+}
+
+namespace cxx_method_escaping {
+
+struct S {
+  static CFArrayRef testGetNoTracking();
+  CFArrayRef testGetNoTrackingMember();
+};
+
+void test_cxx_static_method_escaping() {
+  CFArrayRef arr = S::testGetNoTracking();
+  CFRelease(arr);
+}
+
+void test_cxx_method_escaping(S *s) {
+  CFArrayRef arr = s->testGetNoTrackingMember();
+  CFRelease(arr);
+}
+
+}
+
+namespace yet_another_unexpected_signature_crash {
+
+CFTypeRef CFSomethingSomethingRetain();
+CFTypeRef CFSomethingSomethingAutorelease();
+
+void foo() {
+  CFSomethingSomethingRetain(); // no-crash
+  CFSomethingSomethingAutorelease(); // no-crash
+}
+
+}
+
+namespace reinterpret_casts {
+
+void *foo() {
+  void *p = const_cast<void *>(
+      reinterpret_cast<const void *>(CFArrayCreate(0, 0, 0, 0)));
+  void *q = reinterpret_cast<void *>(
+      reinterpret_cast<char *>(p) + 1);
+  // FIXME: Should warn about a leak here. The function should return at +0,
+  // but it returns at +1 instead.
+  return q;
+}
+
+void *fooCreate() {
+  void *p = const_cast<void *>(
+      reinterpret_cast<const void *>(CFArrayCreate(0, 0, 0, 0)));
+  void *q = reinterpret_cast<void *>(
+      reinterpret_cast<char *>(p) + 1);
+  // The function follows the Create Rule.
+  return q; // no-warning
+}
+
+void *fooBar() CF_RETURNS_RETAINED {
+  void *p = const_cast<void *>(
+      reinterpret_cast<const void *>(CFArrayCreate(0, 0, 0, 0)));
+  void *q = reinterpret_cast<void *>(
+      reinterpret_cast<char *>(p) + 1);
+  // The function follows the Create Rule.
+  return q; // no-warning
+}
+
 }

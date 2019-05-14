@@ -1,9 +1,8 @@
 //===--- RISCV.cpp - RISCV Helpers for Tools --------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -171,7 +170,7 @@ static void getExtensionFeatures(const Driver &D,
     }
 
     // Check if duplicated extension.
-    if (std::find(AllExts.begin(), AllExts.end(), Ext) != AllExts.end()) {
+    if (llvm::is_contained(AllExts, Ext)) {
       std::string Error = "duplicated ";
       Error += Desc;
       D.Diag(diag::err_drv_invalid_riscv_ext_arch_name)
@@ -364,6 +363,18 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const ArgList &Args,
     // Handle all other types of extensions.
     getExtensionFeatures(D, Args, Features, MArch, OtherExts);
   }
+
+  // -mrelax is default, unless -mno-relax is specified.
+  bool Relax = true;
+  if (auto *A = Args.getLastArg(options::OPT_mrelax, options::OPT_mno_relax)) {
+    if (A->getOption().matches(options::OPT_mno_relax)) {
+      Relax = false;
+      Features.push_back("-relax");
+    }
+  }
+
+  if (Relax)
+    Features.push_back("+relax");
 
   // Now add any that the user explicitly requested on the command line,
   // which may override the defaults.

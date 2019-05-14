@@ -1,9 +1,8 @@
 //===------- SemaTemplateVariadic.cpp - C++ Variadic Templates ------------===/
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===/
 //
 //  This file implements semantic analysis for C++0x variadic templates.
@@ -925,11 +924,15 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
 namespace {
 
 // Callback to only accept typo corrections that refer to parameter packs.
-class ParameterPackValidatorCCC : public CorrectionCandidateCallback {
+class ParameterPackValidatorCCC final : public CorrectionCandidateCallback {
  public:
   bool ValidateCandidate(const TypoCorrection &candidate) override {
     NamedDecl *ND = candidate.getCorrectionDecl();
     return ND && ND->isParameterPack();
+  }
+
+  std::unique_ptr<CorrectionCandidateCallback> clone() override {
+    return llvm::make_unique<ParameterPackValidatorCCC>(*this);
   }
 };
 
@@ -966,18 +969,18 @@ ExprResult Sema::ActOnSizeofParameterPackExpr(Scope *S,
     break;
 
   case LookupResult::NotFound:
-  case LookupResult::NotFoundInCurrentInstantiation:
+  case LookupResult::NotFoundInCurrentInstantiation: {
+    ParameterPackValidatorCCC CCC{};
     if (TypoCorrection Corrected =
             CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(), S, nullptr,
-                        llvm::make_unique<ParameterPackValidatorCCC>(),
-                        CTK_ErrorRecovery)) {
+                        CCC, CTK_ErrorRecovery)) {
       diagnoseTypo(Corrected,
                    PDiag(diag::err_sizeof_pack_no_pack_name_suggest) << &Name,
                    PDiag(diag::note_parameter_pack_here));
       ParameterPack = Corrected.getCorrectionDecl();
     }
     break;
-
+  }
   case LookupResult::FoundOverloaded:
   case LookupResult::FoundUnresolvedValue:
     break;

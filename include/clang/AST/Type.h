@@ -1,9 +1,8 @@
 //===- Type.h - C Language Family Type Representation -----------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -94,9 +93,6 @@ namespace llvm {
 
     enum { NumLowBitsAvailable = clang::TypeAlignmentInBits };
   };
-
-  template <>
-  struct isPodLike<clang::QualType> { static const bool value = true; };
 
 } // namespace llvm
 
@@ -319,6 +315,11 @@ public:
   Qualifiers withoutObjCLifetime() const {
     Qualifiers qs = *this;
     qs.removeObjCLifetime();
+    return qs;
+  }
+  Qualifiers withoutAddressSpace() const {
+    Qualifiers qs = *this;
+    qs.removeAddressSpace();
     return qs;
   }
 
@@ -1125,6 +1126,12 @@ public:
   };
 
   /// Check if this is a non-trivial type that would cause a C struct
+  /// transitively containing this type to be non-trivial. This function can be
+  /// used to determine whether a field of this type can be declared inside a C
+  /// union.
+  bool isNonTrivialPrimitiveCType(const ASTContext &Ctx) const;
+
+  /// Check if this is a non-trivial type that would cause a C struct
   /// transitively containing this type to be non-trivial to copy and return the
   /// kind.
   PrimitiveCopyKind isNonTrivialToPrimitiveCopy() const;
@@ -1806,7 +1813,9 @@ public:
   friend class ASTWriter;
 
   Type(const Type &) = delete;
+  Type(Type &&) = delete;
   Type &operator=(const Type &) = delete;
+  Type &operator=(Type &&) = delete;
 
   TypeClass getTypeClass() const { return static_cast<TypeClass>(TypeBits.TC); }
 
@@ -1986,7 +1995,7 @@ public:
   bool isObjCQualifiedClassType() const;        // Class<foo>
   bool isObjCObjectOrInterfaceType() const;
   bool isObjCIdType() const;                    // id
-
+  bool isDecltypeType() const;
   /// Was this type written with the special inert-in-ARC __unsafe_unretained
   /// qualifier?
   ///
@@ -2268,6 +2277,9 @@ public:
   /// Return true if this is a fixed point type according to
   /// ISO/IEC JTC1 SC22 WG14 N1169.
   bool isFixedPointType() const;
+
+  /// Return true if this is a fixed point or integer type.
+  bool isFixedPointOrIntegerType() const;
 
   /// Return true if this is a saturated fixed point type according to
   /// ISO/IEC JTC1 SC22 WG14 N1169. This type can be signed or unsigned.
@@ -3902,7 +3914,7 @@ public:
     EPI.Variadic = isVariadic();
     EPI.HasTrailingReturn = hasTrailingReturn();
     EPI.ExceptionSpec.Type = getExceptionSpecType();
-    EPI.TypeQuals = getTypeQuals();
+    EPI.TypeQuals = getMethodQuals();
     EPI.RefQualifier = getRefQualifier();
     if (EPI.ExceptionSpec.Type == EST_Dynamic) {
       EPI.ExceptionSpec.Exceptions = exceptions();
@@ -4012,7 +4024,7 @@ public:
   /// Whether this function prototype has a trailing return type.
   bool hasTrailingReturn() const { return FunctionTypeBits.HasTrailingReturn; }
 
-  Qualifiers getTypeQuals() const {
+  Qualifiers getMethodQuals() const {
     if (hasExtQualifiers())
       return *getTrailingObjects<Qualifiers>();
     else
@@ -6441,6 +6453,10 @@ inline bool Type::isObjCBuiltinType() const {
   return isObjCIdType() || isObjCClassType() || isObjCSelType();
 }
 
+inline bool Type::isDecltypeType() const {
+  return isa<DecltypeType>(this);
+}
+
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
   inline bool Type::is##Id##Type() const { \
     return isSpecificBuiltinType(BuiltinType::Id); \
@@ -6594,6 +6610,10 @@ inline bool Type::isFixedPointType() const {
            BT->getKind() <= BuiltinType::SatULongFract;
   }
   return false;
+}
+
+inline bool Type::isFixedPointOrIntegerType() const {
+  return isFixedPointType() || isIntegerType();
 }
 
 inline bool Type::isSaturatedFixedPointType() const {
@@ -6841,6 +6861,8 @@ QualType DecayedType::getPointeeType() const {
 
 // Get the decimal string representation of a fixed point type, represented
 // as a scaled integer.
+// TODO: At some point, we should change the arguments to instead just accept an
+// APFixedPoint instead of APSInt and scale.
 void FixedPointValueToString(SmallVectorImpl<char> &Str, llvm::APSInt Val,
                              unsigned Scale);
 

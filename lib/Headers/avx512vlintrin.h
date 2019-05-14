@@ -1,22 +1,8 @@
 /*===---- avx512vlintrin.h - AVX512VL intrinsics ---------------------------===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
@@ -5513,7 +5499,7 @@ static __inline __m128i __DEFAULT_FN_ATTRS128
 _mm_loadu_epi64 (void const *__P)
 {
   struct __loadu_epi64 {
-    __m128i __v;
+    __m128i_u __v;
   } __attribute__((__packed__, __may_alias__));
   return ((struct __loadu_epi64*)__P)->__v;
 }
@@ -5539,7 +5525,7 @@ static __inline __m256i __DEFAULT_FN_ATTRS256
 _mm256_loadu_epi64 (void const *__P)
 {
   struct __loadu_epi64 {
-    __m256i __v;
+    __m256i_u __v;
   } __attribute__((__packed__, __may_alias__));
   return ((struct __loadu_epi64*)__P)->__v;
 }
@@ -5565,7 +5551,7 @@ static __inline __m128i __DEFAULT_FN_ATTRS128
 _mm_loadu_epi32 (void const *__P)
 {
   struct __loadu_epi32 {
-    __m128i __v;
+    __m128i_u __v;
   } __attribute__((__packed__, __may_alias__));
   return ((struct __loadu_epi32*)__P)->__v;
 }
@@ -5591,7 +5577,7 @@ static __inline __m256i __DEFAULT_FN_ATTRS256
 _mm256_loadu_epi32 (void const *__P)
 {
   struct __loadu_epi32 {
-    __m256i __v;
+    __m256i_u __v;
   } __attribute__((__packed__, __may_alias__));
   return ((struct __loadu_epi32*)__P)->__v;
 }
@@ -5717,7 +5703,7 @@ static __inline void __DEFAULT_FN_ATTRS128
 _mm_storeu_epi64 (void *__P, __m128i __A)
 {
   struct __storeu_epi64 {
-    __m128i __v;
+    __m128i_u __v;
   } __attribute__((__packed__, __may_alias__));
   ((struct __storeu_epi64*)__P)->__v = __A;
 }
@@ -5734,7 +5720,7 @@ static __inline void __DEFAULT_FN_ATTRS256
 _mm256_storeu_epi64 (void *__P, __m256i __A)
 {
   struct __storeu_epi64 {
-    __m256i __v;
+    __m256i_u __v;
   } __attribute__((__packed__, __may_alias__));
   ((struct __storeu_epi64*)__P)->__v = __A;
 }
@@ -5751,7 +5737,7 @@ static __inline void __DEFAULT_FN_ATTRS128
 _mm_storeu_epi32 (void *__P, __m128i __A)
 {
   struct __storeu_epi32 {
-    __m128i __v;
+    __m128i_u __v;
   } __attribute__((__packed__, __may_alias__));
   ((struct __storeu_epi32*)__P)->__v = __A;
 }
@@ -5768,7 +5754,7 @@ static __inline void __DEFAULT_FN_ATTRS256
 _mm256_storeu_epi32 (void *__P, __m256i __A)
 {
   struct __storeu_epi32 {
-    __m256i __v;
+    __m256i_u __v;
   } __attribute__((__packed__, __may_alias__));
   ((struct __storeu_epi32*)__P)->__v = __A;
 }

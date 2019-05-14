@@ -1,9 +1,8 @@
 //===- ASTMatchersInternal.h - Structural query framework -------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -1548,8 +1547,7 @@ inline bool ValueEqualsMatcher<FloatingLiteral, llvm::APFloat>::matchesNode(
 /// given matchers, if SourceT can be dynamically casted into TargetT.
 ///
 /// For example:
-///   const VariadicDynCastAllOfMatcher<
-///       Decl, CXXRecordDecl> record;
+///   const VariadicDynCastAllOfMatcher<Decl, CXXRecordDecl> record;
 /// Creates a functor record(...) that creates a Matcher<Decl> given
 /// a variable number of arguments of type Matcher<CXXRecordDecl>.
 /// The returned matcher matches if the given Decl can by dynamically

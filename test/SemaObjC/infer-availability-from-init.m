@@ -47,12 +47,25 @@ void usenotmyobject() {
 }
 
 @interface FromSelf : NSObject
--(instancetype)init __attribute__((unavailable)); // expected-note {{'init' has been explicitly marked unavailable here}}
+-(instancetype)init __attribute__((unavailable));
 +(FromSelf*)another_one;
 @end
 
 @implementation FromSelf
 +(FromSelf*)another_one {
-  [self new]; // expected-error{{'new' is unavailable}}
+  [self new];
+}
+@end
+
+@interface NoInit : NSObject
+-(instancetype)init __attribute__((unavailable)); // expected-note {{'init' has been explicitly marked unavailable here}}
+@end
+
+@interface NoInitSub : NoInit @end
+
+@implementation NoInitSub
+-(void)meth:(Class)c {
+  [c new]; // No error; unknown interface.
+  [NoInitSub new]; // expected-error {{'new' is unavailable}}
 }
 @end

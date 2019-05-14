@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -triple=i386-pc-win32 -std=c++98 | FileCheck %s
 // RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -triple=x86_64-pc-win32 -std=c++98| FileCheck -check-prefix X64 %s
+// RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -triple=aarch64-pc-win32 -std=c++98 -DARM | FileCheck -check-prefixes=X64,ARM %s
 
 int a;
 // CHECK-DAG: @"?a@@3HA"
@@ -456,6 +457,8 @@ int bar(int *const i __attribute__((pass_object_size(1)))) { return 0; }
 int qux(int *const i __attribute__((pass_object_size(1))), int *const j __attribute__((pass_object_size(0)))) { return 0; }
 // CHECK-DAG: define dso_local i32 @"?zot@PassObjectSize@@YAHQAHW4__pass_object_size1@__clang@@01@Z"
 int zot(int *const i __attribute__((pass_object_size(1))), int *const j __attribute__((pass_object_size(1)))) { return 0; }
+// CHECK-DAG: define dso_local i32 @"?silly_word@PassObjectSize@@YAHQAHW4__pass_dynamic_object_size1@__clang@@@Z"
+int silly_word(int *const i __attribute__((pass_dynamic_object_size(1)))) { return 0; }
 }
 
 namespace Atomic {
@@ -466,10 +469,12 @@ namespace Complex {
 // CHECK-DAG: define dso_local void @"?f@Complex@@YAXU?$_Complex@H@__clang@@@Z"(
 void f(_Complex int) {}
 }
+#ifdef ARM
 namespace Float16 {
-// CHECK-DAG: define dso_local void @"?f@Float16@@YAXU_Float16@__clang@@@Z"(
+// ARM-DAG: define dso_local void @"?f@Float16@@YAXU_Float16@__clang@@@Z"(
 void f(_Float16) {}
 }
+#endif // ARM
 
 namespace PR26029 {
 template <class>

@@ -1,9 +1,8 @@
 //===--- ParseTentative.cpp - Ambiguity Resolution Parsing ----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -1148,7 +1147,7 @@ bool Parser::isTentativelyDeclared(IdentifierInfo *II) {
 }
 
 namespace {
-class TentativeParseCCC : public CorrectionCandidateCallback {
+class TentativeParseCCC final : public CorrectionCandidateCallback {
 public:
   TentativeParseCCC(const Token &Next) {
     WantRemainingKeywords = false;
@@ -1165,6 +1164,10 @@ public:
       return false;
 
     return CorrectionCandidateCallback::ValidateCandidate(Candidate);
+  }
+
+  std::unique_ptr<CorrectionCandidateCallback> clone() override {
+    return llvm::make_unique<TentativeParseCCC>(*this);
   }
 };
 }
@@ -1294,8 +1297,8 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
       // a parse error one way or another. In that case, tell the caller that
       // this is ambiguous. Typo-correct to type and expression keywords and
       // to types and identifiers, in order to try to recover from errors.
-      switch (TryAnnotateName(false /* no nested name specifier */,
-                              llvm::make_unique<TentativeParseCCC>(Next))) {
+      TentativeParseCCC CCC(Next);
+      switch (TryAnnotateName(false /* no nested name specifier */, &CCC)) {
       case ANK_Error:
         return TPResult::Error;
       case ANK_TentativeDecl:
@@ -1411,11 +1414,22 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
     // cv-qualifier
   case tok::kw_const:
   case tok::kw_volatile:
+    return TPResult::True;
+
+    // OpenCL address space qualifiers
+  case tok::kw_private:
+    if (!getLangOpts().OpenCL)
+      return TPResult::False;
+    LLVM_FALLTHROUGH;
   case tok::kw___private:
   case tok::kw___local:
   case tok::kw___global:
   case tok::kw___constant:
   case tok::kw___generic:
+    // OpenCL access qualifiers
+  case tok::kw___read_only:
+  case tok::kw___write_only:
+  case tok::kw___read_write:
 
     // GNU
   case tok::kw_restrict:
@@ -1494,6 +1508,17 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
             // expression.
             *HasMissingTypename = true;
             return TPResult::Ambiguous;
+          } else {
+            // In MS mode, if HasMissingTypename is not provided, and the tokens
+            // are or the form *) or &) *> or &> &&>, this can't be an expression.
+            // The typename must be missing.
+            if (getLangOpts().MSVCCompat) {
+              if (((Tok.is(tok::amp) || Tok.is(tok::star)) &&
+                   (NextToken().is(tok::r_paren) ||
+                    NextToken().is(tok::greater))) ||
+                  (Tok.is(tok::ampamp) && NextToken().is(tok::greater)))
+                return TPResult::True;
+            }
           }
         } else {
           // Try to resolve the name. If it doesn't exist, assume it was
@@ -1601,6 +1626,8 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
   case tok::kw___float128:
   case tok::kw_void:
   case tok::annot_decltype:
+#define GENERIC_IMAGE_TYPE(ImgType, Id) case tok::kw_##ImgType##_t:
+#include "clang/Basic/OpenCLImageTypes.def"
     if (NextToken().is(tok::l_paren))
       return TPResult::Ambiguous;
 
@@ -1694,6 +1721,8 @@ bool Parser::isCXXDeclarationSpecifierAType() {
   case tok::kw_void:
   case tok::kw___unknown_anytype:
   case tok::kw___auto_type:
+#define GENERIC_IMAGE_TYPE(ImgType, Id) case tok::kw_##ImgType##_t:
+#include "clang/Basic/OpenCLImageTypes.def"
     return true;
 
   case tok::kw_auto:

@@ -1,9 +1,8 @@
 //===- PathDiagnostic.cpp - Path-Specific Diagnostic Handling -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -572,6 +571,8 @@ static SourceLocation getValidSourceLocation(const Stmt* S,
     } while (!L.isValid());
   }
 
+  // FIXME: Ironically, this assert actually fails in some cases.
+  //assert(L.isValid());
   return L;
 }
 
@@ -672,7 +673,15 @@ PathDiagnosticLocation::createConditionalColonLoc(
 PathDiagnosticLocation
 PathDiagnosticLocation::createMemberLoc(const MemberExpr *ME,
                                         const SourceManager &SM) {
-  return PathDiagnosticLocation(ME->getMemberLoc(), SM, SingleLocK);
+
+  assert(ME->getMemberLoc().isValid() || ME->getBeginLoc().isValid());
+
+  // In some cases, getMemberLoc isn't valid -- in this case we'll return with
+  // some other related valid SourceLocation.
+  if (ME->getMemberLoc().isValid())
+    return PathDiagnosticLocation(ME->getMemberLoc(), SM, SingleLocK);
+
+  return PathDiagnosticLocation(ME->getBeginLoc(), SM, SingleLocK);
 }
 
 PathDiagnosticLocation
@@ -735,6 +744,12 @@ PathDiagnosticLocation::create(const ProgramPoint& P,
     return getLocationForCaller(CEE->getCalleeContext(),
                                 CEE->getLocationContext(),
                                 SMng);
+  } else if (auto CEB = P.getAs<CallExitBegin>()) {
+    if (const ReturnStmt *RS = CEB->getReturnStmt())
+      return PathDiagnosticLocation::createBegin(RS, SMng,
+                                                 CEB->getLocationContext());
+    return PathDiagnosticLocation(
+        CEB->getLocationContext()->getDecl()->getSourceRange().getEnd(), SMng);
   } else if (Optional<BlockEntrance> BE = P.getAs<BlockEntrance>()) {
     CFGElement BlockFront = BE->getBlock()->front();
     if (auto StmtElt = BlockFront.getAs<CFGStmt>()) {

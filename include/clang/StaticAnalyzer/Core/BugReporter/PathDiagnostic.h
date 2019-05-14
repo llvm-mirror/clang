@@ -1,9 +1,8 @@
 //===- PathDiagnostic.h - Path-Specific Diagnostic Handling -----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -314,6 +313,8 @@ public:
 
   bool hasRange() const { return K == StmtK || K == RangeK || K == DeclK; }
 
+  bool hasValidLocation() const { return asLocation().isValid(); }
+
   void invalidate() {
     *this = PathDiagnosticLocation();
   }
@@ -469,7 +470,7 @@ public:
                           PathDiagnosticPiece::Kind k,
                           bool addPosRange = true)
       : PathDiagnosticPiece(s, k), Pos(pos) {
-    assert(Pos.isValid() && Pos.asLocation().isValid() &&
+    assert(Pos.isValid() && Pos.hasValidLocation() &&
            "PathDiagnosticSpotPiece's must have a valid location.");
     if (addPosRange && Pos.hasRange()) addRange(Pos.asRange());
   }

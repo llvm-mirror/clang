@@ -1,9 +1,8 @@
 //===- unittests/Basic/FileMangerTest.cpp ------------ FileManger tests ---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +26,7 @@ class FakeStatCache : public FileSystemStatCache {
 private:
   // Maps a file/directory path to its desired stat result.  Anything
   // not in this map is considered to not exist in the file system.
-  llvm::StringMap<FileData, llvm::BumpPtrAllocator> StatCalls;
+  llvm::StringMap<llvm::vfs::Status, llvm::BumpPtrAllocator> StatCalls;
 
   void InjectFileOrDirectory(const char *Path, ino_t INode, bool IsFile) {
 #ifndef _WIN32
@@ -36,15 +35,14 @@ private:
     Path = NormalizedPath.c_str();
 #endif
 
-    FileData Data;
-    Data.Name = Path;
-    Data.Size = 0;
-    Data.ModTime = 0;
-    Data.UniqueID = llvm::sys::fs::UniqueID(1, INode);
-    Data.IsDirectory = !IsFile;
-    Data.IsNamedPipe = false;
-    Data.InPCH = false;
-    StatCalls[Path] = Data;
+    auto fileType = IsFile ?
+      llvm::sys::fs::file_type::regular_file :
+      llvm::sys::fs::file_type::directory_file;
+    llvm::vfs::Status Status(Path, llvm::sys::fs::UniqueID(1, INode),
+                             /*MTime*/{}, /*User*/0, /*Group*/0,
+                             /*Size*/0, fileType,
+                             llvm::sys::fs::perms::all_all);
+    StatCalls[Path] = Status;
   }
 
 public:
@@ -59,9 +57,10 @@ public:
   }
 
   // Implement FileSystemStatCache::getStat().
-  LookupResult getStat(StringRef Path, FileData &Data, bool isFile,
-                       std::unique_ptr<llvm::vfs::File> *F,
-                       llvm::vfs::FileSystem &FS) override {
+  std::error_code getStat(StringRef Path, llvm::vfs::Status &Status,
+                          bool isFile,
+                          std::unique_ptr<llvm::vfs::File> *F,
+                          llvm::vfs::FileSystem &FS) override {
 #ifndef _WIN32
     SmallString<128> NormalizedPath(Path);
     llvm::sys::path::native(NormalizedPath);
@@ -69,11 +68,11 @@ public:
 #endif
 
     if (StatCalls.count(Path) != 0) {
-      Data = StatCalls[Path];
-      return CacheExists;
+      Status = StatCalls[Path];
+      return std::error_code();
     }
 
-    return CacheMissing;  // This means the file/directory doesn't exist.
+    return std::make_error_code(std::errc::no_such_file_or_directory);
   }
 };
 
@@ -222,33 +221,6 @@ TEST_F(FileManagerTest, getFileReturnsNULLForNonexistentFile) {
   EXPECT_EQ(nullptr, file);
 }
 
-// When calling getFile(OpenFile=false); getFile(OpenFile=true) the file is
-// opened for the second call.
-TEST_F(FileManagerTest, getFileDefersOpen) {
-  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> FS(
-      new llvm::vfs::InMemoryFileSystem());
-  FS->addFile("/tmp/test", 0, llvm::MemoryBuffer::getMemBufferCopy("test"));
-  FS->addFile("/tmp/testv", 0, llvm::MemoryBuffer::getMemBufferCopy("testv"));
-  FileManager manager(options, FS);
-
-  const FileEntry *file = manager.getFile("/tmp/test", /*OpenFile=*/false);
-  ASSERT_TRUE(file != nullptr);
-  ASSERT_TRUE(file->isValid());
-  // "real path name" reveals whether the file was actually opened.
-  EXPECT_FALSE(file->isOpenForTests());
-
-  file = manager.getFile("/tmp/test", /*OpenFile=*/true);
-  ASSERT_TRUE(file != nullptr);
-  ASSERT_TRUE(file->isValid());
-  EXPECT_TRUE(file->isOpenForTests());
-
-  // However we should never try to open a file previously opened as virtual.
-  ASSERT_TRUE(manager.getVirtualFile("/tmp/testv", 5, 0));
-  ASSERT_TRUE(manager.getFile("/tmp/testv", /*OpenFile=*/false));
-  file = manager.getFile("/tmp/testv", /*OpenFile=*/true);
-  EXPECT_FALSE(file->isOpenForTests());
-}
-
 // The following tests apply to Unix-like system only.
 
 #ifndef _WIN32
@@ -366,6 +338,39 @@ TEST_F(FileManagerTest, getVirtualFileFillsRealPathName) {
 
   // Check for real path.
   const FileEntry *file = Manager.getVirtualFile("/tmp/test", 123, 1);
+  ASSERT_TRUE(file != nullptr);
+  ASSERT_TRUE(file->isValid());
+  SmallString<64> ExpectedResult = CustomWorkingDir;
+
+  llvm::sys::path::append(ExpectedResult, "tmp", "test");
+  EXPECT_EQ(file->tryGetRealPathName(), ExpectedResult);
+}
+
+TEST_F(FileManagerTest, getFileDontOpenRealPath) {
+  SmallString<64> CustomWorkingDir;
+#ifdef _WIN32
+  CustomWorkingDir = "C:/";
+#else
+  CustomWorkingDir = "/";
+#endif
+
+  auto FS = IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem>(
+      new llvm::vfs::InMemoryFileSystem);
+  // setCurrentworkingdirectory must finish without error.
+  ASSERT_TRUE(!FS->setCurrentWorkingDirectory(CustomWorkingDir));
+
+  FileSystemOptions Opts;
+  FileManager Manager(Opts, FS);
+
+  // Inject fake files into the file system.
+  auto statCache = llvm::make_unique<FakeStatCache>();
+  statCache->InjectDirectory("/tmp", 42);
+  statCache->InjectFile("/tmp/test", 43);
+
+  Manager.setStatCache(std::move(statCache));
+
+  // Check for real path.
+  const FileEntry *file = Manager.getFile("/tmp/test", /*OpenFile=*/false);
   ASSERT_TRUE(file != nullptr);
   ASSERT_TRUE(file->isValid());
   SmallString<64> ExpectedResult = CustomWorkingDir;

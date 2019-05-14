@@ -1,9 +1,8 @@
 //===- Stmt.h - Classes for representing statements -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -92,12 +91,20 @@ protected:
   //===--- Statement bitfields classes ---===//
 
   class StmtBitfields {
+    friend class ASTStmtReader;
+    friend class ASTStmtWriter;
     friend class Stmt;
 
     /// The statement class.
     unsigned sClass : 8;
+
+    /// This bit is set only for the Stmts that are the structured-block of
+    /// OpenMP executable directives. Directives that have a structured block
+    /// are called "non-standalone" directives.
+    /// I.e. those returned by OMPExecutableDirective::getStructuredBlock().
+    unsigned IsOMPStructuredBlock : 1;
   };
-  enum { NumStmtBits = 8 };
+  enum { NumStmtBits = 9 };
 
   class NullStmtBitfields {
     friend class ASTStmtReader;
@@ -521,6 +528,16 @@ protected:
     unsigned NumExprs;
   };
 
+  class GenericSelectionExprBitfields {
+    friend class ASTStmtReader;
+    friend class GenericSelectionExpr;
+
+    unsigned : NumExprBits;
+
+    /// The location of the "_Generic".
+    SourceLocation GenericLoc;
+  };
+
   class PseudoObjectExprBitfields {
     friend class ASTStmtReader; // deserialization
     friend class PseudoObjectExpr;
@@ -916,6 +933,7 @@ protected:
     BinaryOperatorBitfields BinaryOperatorBits;
     InitListExprBitfields InitListExprBits;
     ParenListExprBitfields ParenListExprBits;
+    GenericSelectionExprBitfields GenericSelectionExprBits;
     PseudoObjectExprBitfields PseudoObjectExprBits;
 
     // C++ Expressions
@@ -976,37 +994,30 @@ public:
   struct EmptyShell {};
 
 protected:
-  /// Iterator for iterating over Stmt * arrays that contain only Expr *
+  /// Iterator for iterating over Stmt * arrays that contain only T *.
   ///
   /// This is needed because AST nodes use Stmt* arrays to store
   /// references to children (to be compatible with StmtIterator).
-  struct ExprIterator
-      : llvm::iterator_adaptor_base<ExprIterator, Stmt **,
-                                    std::random_access_iterator_tag, Expr *> {
-    ExprIterator() : iterator_adaptor_base(nullptr) {}
-    ExprIterator(Stmt **I) : iterator_adaptor_base(I) {}
+  template<typename T, typename TPtr = T *, typename StmtPtr = Stmt *>
+  struct CastIterator
+      : llvm::iterator_adaptor_base<CastIterator<T, TPtr, StmtPtr>, StmtPtr *,
+                                    std::random_access_iterator_tag, TPtr> {
+    using Base = typename CastIterator::iterator_adaptor_base;
 
-    reference operator*() const {
-      assert((*I)->getStmtClass() >= firstExprConstant &&
-             (*I)->getStmtClass() <= lastExprConstant);
-      return *reinterpret_cast<Expr **>(I);
+    CastIterator() : Base(nullptr) {}
+    CastIterator(StmtPtr *I) : Base(I) {}
+
+    typename Base::value_type operator*() const {
+      return cast_or_null<T>(*this->I);
     }
   };
 
-  /// Const iterator for iterating over Stmt * arrays that contain only Expr *
-  struct ConstExprIterator
-      : llvm::iterator_adaptor_base<ConstExprIterator, const Stmt *const *,
-                                    std::random_access_iterator_tag,
-                                    const Expr *const> {
-    ConstExprIterator() : iterator_adaptor_base(nullptr) {}
-    ConstExprIterator(const Stmt *const *I) : iterator_adaptor_base(I) {}
+  /// Const iterator for iterating over Stmt * arrays that contain only T *.
+  template <typename T>
+  using ConstCastIterator = CastIterator<T, const T *const, const Stmt *const>;
 
-    reference operator*() const {
-      assert((*I)->getStmtClass() >= firstExprConstant &&
-             (*I)->getStmtClass() <= lastExprConstant);
-      return *reinterpret_cast<const Expr *const *>(I);
-    }
-  };
+  using ExprIterator = CastIterator<Expr>;
+  using ConstExprIterator = ConstCastIterator<Expr>;
 
 private:
   /// Whether statistic collection is enabled.
@@ -1023,6 +1034,7 @@ public:
     static_assert(sizeof(*this) % alignof(void *) == 0,
                   "Insufficient alignment!");
     StmtBits.sClass = SC;
+    StmtBits.IsOMPStructuredBlock = false;
     if (StatisticsEnabled) Stmt::addStmtClass(SC);
   }
 
@@ -1030,7 +1042,17 @@ public:
     return static_cast<StmtClass>(StmtBits.sClass);
   }
 
+  Stmt(const Stmt &) = delete;
+  Stmt(Stmt &&) = delete;
+  Stmt &operator=(const Stmt &) = delete;
+  Stmt &operator=(Stmt &&) = delete;
+
   const char *getStmtClassName() const;
+
+  bool isOMPStructuredBlock() const { return StmtBits.IsOMPStructuredBlock; }
+  void setIsOMPStructuredBlock(bool IsOMPStructuredBlock) {
+    StmtBits.IsOMPStructuredBlock = IsOMPStructuredBlock;
+  }
 
   /// SourceLocation tokens are not useful in isolation - they are low level
   /// value objects created/interpreted by SourceManager. We assume AST
@@ -1068,13 +1090,6 @@ public:
   /// viewAST - Visualize an AST rooted at this Stmt* using GraphViz.  Only
   ///   works on systems with GraphViz (Mac OS X) or dot+gv installed.
   void viewAST() const;
-
-  /// Skip past any implicit AST nodes which might surround this
-  /// statement, such as ExprWithCleanups or ImplicitCastExpr nodes.
-  Stmt *IgnoreImplicit();
-  const Stmt *IgnoreImplicit() const {
-    return const_cast<Stmt *>(this)->IgnoreImplicit();
-  }
 
   /// Skip no-op (attributed, compound) container stmts and skip captured
   /// stmt at the top, if \a IgnoreCaptured is true.
@@ -1178,6 +1193,11 @@ public:
                        child_iterator(DG.end(), DG.end()));
   }
 
+  const_child_range children() const {
+    auto Children = const_cast<DeclStmt *>(this)->children();
+    return const_child_range(Children);
+  }
+
   using decl_iterator = DeclGroupRef::iterator;
   using const_decl_iterator = DeclGroupRef::const_iterator;
   using decl_range = llvm::iterator_range<decl_iterator>;
@@ -1234,6 +1254,10 @@ public:
 
   child_range children() {
     return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
   }
 };
 
@@ -1539,6 +1563,12 @@ public:
                        getTrailingObjects<Stmt *>() +
                            numTrailingObjects(OverloadToken<Stmt *>()));
   }
+
+  const_child_range children() const {
+    return const_child_range(getTrailingObjects<Stmt *>(),
+                             getTrailingObjects<Stmt *>() +
+                                 numTrailingObjects(OverloadToken<Stmt *>()));
+  }
 };
 
 class DefaultStmt : public SwitchCase {
@@ -1570,6 +1600,10 @@ public:
 
   // Iterators
   child_range children() { return child_range(&SubStmt, &SubStmt + 1); }
+
+  const_child_range children() const {
+    return const_child_range(&SubStmt, &SubStmt + 1);
+  }
 };
 
 SourceLocation SwitchCase::getEndLoc() const {
@@ -1588,21 +1622,44 @@ Stmt *SwitchCase::getSubStmt() {
   llvm_unreachable("SwitchCase is neither a CaseStmt nor a DefaultStmt!");
 }
 
+/// Represents a statement that could possibly have a value and type. This
+/// covers expression-statements, as well as labels and attributed statements.
+///
+/// Value statements have a special meaning when they are the last non-null
+/// statement in a GNU statement expression, where they determine the value
+/// of the statement expression.
+class ValueStmt : public Stmt {
+protected:
+  using Stmt::Stmt;
+
+public:
+  const Expr *getExprStmt() const;
+  Expr *getExprStmt() {
+    const ValueStmt *ConstThis = this;
+    return const_cast<Expr*>(ConstThis->getExprStmt());
+  }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() >= firstValueStmtConstant &&
+           T->getStmtClass() <= lastValueStmtConstant;
+  }
+};
+
 /// LabelStmt - Represents a label, which has a substatement.  For example:
 ///    foo: return;
-class LabelStmt : public Stmt {
+class LabelStmt : public ValueStmt {
   LabelDecl *TheDecl;
   Stmt *SubStmt;
 
 public:
   /// Build a label statement.
   LabelStmt(SourceLocation IL, LabelDecl *D, Stmt *substmt)
-      : Stmt(LabelStmtClass), TheDecl(D), SubStmt(substmt) {
+      : ValueStmt(LabelStmtClass), TheDecl(D), SubStmt(substmt) {
     setIdentLoc(IL);
   }
 
   /// Build an empty label statement.
-  explicit LabelStmt(EmptyShell Empty) : Stmt(LabelStmtClass, Empty) {}
+  explicit LabelStmt(EmptyShell Empty) : ValueStmt(LabelStmtClass, Empty) {}
 
   SourceLocation getIdentLoc() const { return LabelStmtBits.IdentLoc; }
   void setIdentLoc(SourceLocation L) { LabelStmtBits.IdentLoc = L; }
@@ -1621,6 +1678,10 @@ public:
 
   child_range children() { return child_range(&SubStmt, &SubStmt + 1); }
 
+  const_child_range children() const {
+    return const_child_range(&SubStmt, &SubStmt + 1);
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == LabelStmtClass;
   }
@@ -1631,7 +1692,7 @@ public:
 /// Represents an attribute applied to a statement. For example:
 ///   [[omp::for(...)]] for (...) { ... }
 class AttributedStmt final
-    : public Stmt,
+    : public ValueStmt,
       private llvm::TrailingObjects<AttributedStmt, const Attr *> {
   friend class ASTStmtReader;
   friend TrailingObjects;
@@ -1640,14 +1701,14 @@ class AttributedStmt final
 
   AttributedStmt(SourceLocation Loc, ArrayRef<const Attr *> Attrs,
                  Stmt *SubStmt)
-      : Stmt(AttributedStmtClass), SubStmt(SubStmt) {
+      : ValueStmt(AttributedStmtClass), SubStmt(SubStmt) {
     AttributedStmtBits.NumAttrs = Attrs.size();
     AttributedStmtBits.AttrLoc = Loc;
     std::copy(Attrs.begin(), Attrs.end(), getAttrArrayPtr());
   }
 
   explicit AttributedStmt(EmptyShell Empty, unsigned NumAttrs)
-      : Stmt(AttributedStmtClass, Empty) {
+      : ValueStmt(AttributedStmtClass, Empty) {
     AttributedStmtBits.NumAttrs = NumAttrs;
     AttributedStmtBits.AttrLoc = SourceLocation{};
     std::fill_n(getAttrArrayPtr(), NumAttrs, nullptr);
@@ -1677,6 +1738,10 @@ public:
   SourceLocation getEndLoc() const LLVM_READONLY { return SubStmt->getEndLoc();}
 
   child_range children() { return child_range(&SubStmt, &SubStmt + 1); }
+
+  const_child_range children() const {
+    return const_child_range(&SubStmt, &SubStmt + 1);
+  }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == AttributedStmtClass;
@@ -1877,6 +1942,12 @@ public:
                            numTrailingObjects(OverloadToken<Stmt *>()));
   }
 
+  const_child_range children() const {
+    return const_child_range(getTrailingObjects<Stmt *>(),
+                             getTrailingObjects<Stmt *>() +
+                                 numTrailingObjects(OverloadToken<Stmt *>()));
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == IfStmtClass;
   }
@@ -2054,6 +2125,12 @@ public:
                            numTrailingObjects(OverloadToken<Stmt *>()));
   }
 
+  const_child_range children() const {
+    return const_child_range(getTrailingObjects<Stmt *>(),
+                             getTrailingObjects<Stmt *>() +
+                                 numTrailingObjects(OverloadToken<Stmt *>()));
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == SwitchStmtClass;
   }
@@ -2179,6 +2256,12 @@ public:
                        getTrailingObjects<Stmt *>() +
                            numTrailingObjects(OverloadToken<Stmt *>()));
   }
+
+  const_child_range children() const {
+    return const_child_range(getTrailingObjects<Stmt *>(),
+                             getTrailingObjects<Stmt *>() +
+                                 numTrailingObjects(OverloadToken<Stmt *>()));
+  }
 };
 
 /// DoStmt - This represents a 'do/while' stmt.
@@ -2228,6 +2311,10 @@ public:
   // Iterators
   child_range children() {
     return child_range(&SubExprs[0], &SubExprs[0] + END_EXPR);
+  }
+
+  const_child_range children() const {
+    return const_child_range(&SubExprs[0], &SubExprs[0] + END_EXPR);
   }
 };
 
@@ -2298,6 +2385,10 @@ public:
   child_range children() {
     return child_range(&SubExprs[0], &SubExprs[0]+END_EXPR);
   }
+
+  const_child_range children() const {
+    return const_child_range(&SubExprs[0], &SubExprs[0] + END_EXPR);
+  }
 };
 
 /// GotoStmt - This represents a direct goto.
@@ -2332,6 +2423,10 @@ public:
   // Iterators
   child_range children() {
     return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
   }
 };
 
@@ -2378,6 +2473,10 @@ public:
 
   // Iterators
   child_range children() { return child_range(&Target, &Target + 1); }
+
+  const_child_range children() const {
+    return const_child_range(&Target, &Target + 1);
+  }
 };
 
 /// ContinueStmt - This represents a continue.
@@ -2404,6 +2503,10 @@ public:
   child_range children() {
     return child_range(child_iterator(), child_iterator());
   }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
 };
 
 /// BreakStmt - This represents a break.
@@ -2429,6 +2532,10 @@ public:
   // Iterators
   child_range children() {
     return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
   }
 };
 
@@ -2513,6 +2620,12 @@ public:
     if (RetExpr)
       return child_range(&RetExpr, &RetExpr + 1);
     return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    if (RetExpr)
+      return const_child_range(&RetExpr, &RetExpr + 1);
+    return const_child_range(const_child_iterator(), const_child_iterator());
   }
 };
 
@@ -2668,6 +2781,10 @@ public:
 
   child_range children() {
     return child_range(&Exprs[0], &Exprs[0] + NumOutputs + NumInputs);
+  }
+
+  const_child_range children() const {
+    return const_child_range(&Exprs[0], &Exprs[0] + NumOutputs + NumInputs);
   }
 };
 
@@ -2945,6 +3062,10 @@ public:
   child_range children() {
     return child_range(&Exprs[0], &Exprs[NumInputs + NumOutputs]);
   }
+
+  const_child_range children() const {
+    return const_child_range(&Exprs[0], &Exprs[NumInputs + NumOutputs]);
+  }
 };
 
 class SEHExceptStmt : public Stmt {
@@ -2982,6 +3103,10 @@ public:
     return child_range(Children, Children+2);
   }
 
+  const_child_range children() const {
+    return const_child_range(Children, Children + 2);
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == SEHExceptStmtClass;
   }
@@ -3011,6 +3136,10 @@ public:
 
   child_range children() {
     return child_range(&Block,&Block+1);
+  }
+
+  const_child_range children() const {
+    return const_child_range(&Block, &Block + 1);
   }
 
   static bool classof(const Stmt *T) {
@@ -3061,6 +3190,10 @@ public:
     return child_range(Children, Children+2);
   }
 
+  const_child_range children() const {
+    return const_child_range(Children, Children + 2);
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == SEHTryStmtClass;
   }
@@ -3090,6 +3223,10 @@ public:
   // Iterators
   child_range children() {
     return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
   }
 };
 
@@ -3311,6 +3448,8 @@ public:
   }
 
   child_range children();
+
+  const_child_range children() const;
 };
 
 } // namespace clang

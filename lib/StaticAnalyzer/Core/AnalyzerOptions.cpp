@@ -1,9 +1,8 @@
 //===- AnalyzerOptions.cpp - Analysis Engine Options ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -34,7 +33,7 @@ std::vector<StringRef>
 AnalyzerOptions::getRegisteredCheckers(bool IncludeExperimental /* = false */) {
   static const StringRef StaticAnalyzerChecks[] = {
 #define GET_CHECKERS
-#define CHECKER(FULLNAME, CLASS, HELPTEXT, DOC_URI)                            \
+#define CHECKER(FULLNAME, CLASS, HELPTEXT, DOC_URI, IS_HIDDEN)                 \
   FULLNAME,
 #include "clang/StaticAnalyzer/Checkers/Checkers.inc"
 #undef CHECKER
@@ -102,18 +101,14 @@ AnalyzerOptions::mayInlineCXXMemberFunction(
   return *K >= Param;
 }
 
-StringRef AnalyzerOptions::getCheckerStringOption(StringRef OptionName,
+StringRef AnalyzerOptions::getCheckerStringOption(StringRef CheckerName,
+                                                  StringRef OptionName,
                                                   StringRef DefaultVal,
-                                                  const CheckerBase *C,
-                                                  bool SearchInParents) const {
-  assert(C);
-  // Search for a package option if the option for the checker is not specified
-  // and search in parents is enabled.
-  StringRef CheckerName = C->getTagDescription();
-
+                                                  bool SearchInParents ) const {
   assert(!CheckerName.empty() &&
          "Empty checker name! Make sure the checker object (including it's "
          "bases!) if fully initialized before calling this function!");
+
   ConfigTable::const_iterator E = Config.end();
   do {
     ConfigTable::const_iterator I =
@@ -128,29 +123,56 @@ StringRef AnalyzerOptions::getCheckerStringOption(StringRef OptionName,
   return DefaultVal;
 }
 
-bool AnalyzerOptions::getCheckerBooleanOption(StringRef Name, bool DefaultVal,
-                                              const CheckerBase *C,
-                                              bool SearchInParents) const {
+StringRef AnalyzerOptions::getCheckerStringOption(const ento::CheckerBase *C,
+                                                  StringRef OptionName,
+                                                  StringRef DefaultVal,
+                                                  bool SearchInParents ) const {
+  return getCheckerStringOption(
+             C->getTagDescription(), OptionName, DefaultVal, SearchInParents);
+}
+
+bool AnalyzerOptions::getCheckerBooleanOption(StringRef CheckerName,
+                                              StringRef OptionName,
+                                              bool DefaultVal,
+                                              bool SearchInParents ) const {
   // FIXME: We should emit a warning here if the value is something other than
   // "true", "false", or the empty string (meaning the default value),
   // but the AnalyzerOptions doesn't have access to a diagnostic engine.
-  assert(C);
   return llvm::StringSwitch<bool>(
-      getCheckerStringOption(Name, DefaultVal ? "true" : "false", C,
+      getCheckerStringOption(CheckerName, OptionName,
+                             DefaultVal ? "true" : "false",
                              SearchInParents))
       .Case("true", true)
       .Case("false", false)
       .Default(DefaultVal);
 }
 
-int AnalyzerOptions::getCheckerIntegerOption(StringRef Name, int DefaultVal,
-                                        const CheckerBase *C,
-                                        bool SearchInParents) const {
+bool AnalyzerOptions::getCheckerBooleanOption(const ento::CheckerBase *C,
+                                              StringRef OptionName,
+                                              bool DefaultVal,
+                                              bool SearchInParents ) const {
+  return getCheckerBooleanOption(
+             C->getTagDescription(), OptionName, DefaultVal, SearchInParents);
+}
+
+int AnalyzerOptions::getCheckerIntegerOption(StringRef CheckerName,
+                                             StringRef OptionName,
+                                             int DefaultVal,
+                                             bool SearchInParents ) const {
   int Ret = DefaultVal;
-  bool HasFailed = getCheckerStringOption(Name, std::to_string(DefaultVal), C,
+  bool HasFailed = getCheckerStringOption(CheckerName, OptionName,
+                                          std::to_string(DefaultVal),
                                           SearchInParents)
                      .getAsInteger(10, Ret);
   assert(!HasFailed && "analyzer-config option should be numeric");
   (void)HasFailed;
   return Ret;
+}
+
+int AnalyzerOptions::getCheckerIntegerOption(const ento::CheckerBase *C,
+                                             StringRef OptionName,
+                                             int DefaultVal,
+                                             bool SearchInParents ) const {
+  return getCheckerIntegerOption(
+             C->getTagDescription(), OptionName, DefaultVal, SearchInParents);
 }

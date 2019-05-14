@@ -1,9 +1,8 @@
 //===- DeclBase.h - Base Classes for representing declarations --*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -42,6 +41,7 @@ namespace clang {
 class ASTContext;
 class ASTMutationListener;
 class Attr;
+class BlockDecl;
 class DeclContext;
 class ExternalSourceSymbolAttr;
 class FunctionDecl;
@@ -176,7 +176,10 @@ public:
     IDNS_LocalExtern         = 0x0800,
 
     /// This declaration is an OpenMP user defined reduction construction.
-    IDNS_OMPReduction        = 0x1000
+    IDNS_OMPReduction        = 0x1000,
+
+    /// This declaration is an OpenMP user defined mapper.
+    IDNS_OMPMapper           = 0x2000,
   };
 
   /// ObjCDeclQualifier - 'Qualifiers' written next to the return and
@@ -324,7 +327,7 @@ protected:
   unsigned FromASTFile : 1;
 
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
-  unsigned IdentifierNamespace : 13;
+  unsigned IdentifierNamespace : 14;
 
   /// If 0, we have not computed the linkage of this declaration.
   /// Otherwise, it is the linkage + 1.
@@ -596,10 +599,6 @@ public:
   bool isModulePrivate() const {
     return getModuleOwnershipKind() == ModuleOwnershipKind::ModulePrivate;
   }
-
-  /// Whether this declaration is exported (by virtue of being lexically
-  /// within an ExportDecl or by being a NamespaceDecl).
-  bool isExported() const;
 
   /// Return true if this declaration has an attribute which acts as
   /// definition of the entity, such as 'alias' or 'ifunc'.
@@ -1252,6 +1251,7 @@ public:
 ///   NamespaceDecl
 ///   TagDecl
 ///   OMPDeclareReductionDecl
+///   OMPDeclareMapperDecl
 ///   FunctionDecl
 ///   ObjCMethodDecl
 ///   ObjCContainerDecl
@@ -1662,6 +1662,11 @@ class DeclContext {
     /// A bit that indicates this block is passed directly to a function as a
     /// non-escaping parameter.
     uint64_t DoesNotEscape : 1;
+
+    /// A bit that indicates whether it's possible to avoid coying this block to
+    /// the heap when it initializes or is assigned to a local variable with
+    /// automatic storage.
+    uint64_t CanAvoidCopyToHeap : 1;
   };
 
   /// Number of non-inherited bits in BlockDeclBitfields.
@@ -1783,6 +1788,10 @@ public:
   }
 
   bool isClosure() const { return getDeclKind() == Decl::Block; }
+
+  /// Return this DeclContext if it is a BlockDecl. Otherwise, return the
+  /// innermost enclosing BlockDecl or null if there are no enclosing blocks.
+  const BlockDecl *getInnermostBlockDecl() const;
 
   bool isObjCContainer() const {
     switch (getDeclKind()) {

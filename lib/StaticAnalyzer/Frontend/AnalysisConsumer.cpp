@@ -1,9 +1,8 @@
 //===--- AnalysisConsumer.cpp - ASTConsumer for running Analyses ----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -340,6 +339,35 @@ public:
     AnalysisMode Mode = getModeForDecl(D, RecVisitorMode);
     if (Mode & AM_Syntax)
       checkerMgr->runCheckersOnASTDecl(D, *Mgr, *RecVisitorBR);
+    return true;
+  }
+
+  bool VisitVarDecl(VarDecl *VD) {
+    if (!Opts->IsNaiveCTUEnabled)
+      return true;
+
+    if (VD->hasExternalStorage() || VD->isStaticDataMember()) {
+      if (!cross_tu::containsConst(VD, *Ctx))
+        return true;
+    } else {
+      // Cannot be initialized in another TU.
+      return true;
+    }
+
+    if (VD->getAnyInitializer())
+      return true;
+
+    llvm::Expected<const VarDecl *> CTUDeclOrError =
+      CTU.getCrossTUDefinition(VD, Opts->CTUDir, Opts->CTUIndexName, 
+                               Opts->DisplayCTUProgress);
+
+    if (!CTUDeclOrError) {
+      handleAllErrors(CTUDeclOrError.takeError(),
+                      [&](const cross_tu::IndexError &IE) {
+                        CTU.emitCrossTUDiagnostics(IE);
+                      });
+    }
+
     return true;
   }
 

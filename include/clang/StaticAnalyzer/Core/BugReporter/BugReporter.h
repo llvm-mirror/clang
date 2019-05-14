@@ -1,9 +1,8 @@
 //===- BugReporter.h - Generate PathDiagnostics -----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -95,7 +94,7 @@ protected:
   friend class BugReportEquivClass;
   friend class BugReporter;
 
-  BugType& BT;
+  const BugType& BT;
   const Decl *DeclWithIssue = nullptr;
   std::string ShortDescription;
   std::string Description;
@@ -164,15 +163,15 @@ private:
   void popInterestingSymbolsAndRegions();
 
 public:
-  BugReport(BugType& bt, StringRef desc, const ExplodedNode *errornode)
+  BugReport(const BugType& bt, StringRef desc, const ExplodedNode *errornode)
       : BT(bt), Description(desc), ErrorNode(errornode) {}
 
-  BugReport(BugType& bt, StringRef shortDesc, StringRef desc,
+  BugReport(const BugType& bt, StringRef shortDesc, StringRef desc,
             const ExplodedNode *errornode)
       : BT(bt), ShortDescription(shortDesc), Description(desc),
         ErrorNode(errornode) {}
 
-  BugReport(BugType &bt, StringRef desc, PathDiagnosticLocation l)
+  BugReport(const BugType &bt, StringRef desc, PathDiagnosticLocation l)
       : BT(bt), Description(desc), Location(l) {}
 
   /// Create a BugReport with a custom uniqueing location.
@@ -190,7 +189,7 @@ public:
   virtual ~BugReport();
 
   const BugType& getBugType() const { return BT; }
-  BugType& getBugType() { return BT; }
+  //BugType& getBugType() { return BT; }
 
   /// True when the report has an execution path associated with it.
   ///
@@ -481,7 +480,7 @@ public:
     return {};
   }
 
-  void Register(BugType *BT);
+  void Register(const BugType *BT);
 
   /// Add the given report to the set of reports tracked by BugReporter.
   ///
@@ -591,6 +590,59 @@ public:
   }
 
   NodeMapClosure& getNodeResolver() { return NMC; }
+};
+
+
+/// The tag upon which the TagVisitor reacts. Add these in order to display
+/// additional PathDiagnosticEventPieces along the path.
+class NoteTag : public ProgramPointTag {
+public:
+  using Callback =
+      std::function<std::string(BugReporterContext &, BugReport &)>;
+
+private:
+  static int Kind;
+
+  const Callback Cb;
+
+  NoteTag(Callback &&Cb) : ProgramPointTag(&Kind), Cb(std::move(Cb)) {}
+
+public:
+  static bool classof(const ProgramPointTag *T) {
+    return T->getTagKind() == &Kind;
+  }
+
+  Optional<std::string> generateMessage(BugReporterContext &BRC,
+                                        BugReport &R) const {
+    std::string Msg = Cb(BRC, R);
+    if (Msg.empty())
+      return None;
+
+    return std::move(Msg);
+  }
+
+  StringRef getTagDescription() const override {
+    // TODO: Remember a few examples of generated messages
+    // and display them in the ExplodedGraph dump by
+    // returning them from this function.
+    return "Note Tag";
+  }
+
+  // Manage memory for NoteTag objects.
+  class Factory {
+    std::vector<std::unique_ptr<NoteTag>> Tags;
+
+  public:
+    const NoteTag *makeNoteTag(Callback &&Cb) {
+      // We cannot use make_unique because we cannot access the private
+      // constructor from inside it.
+      std::unique_ptr<NoteTag> T(new NoteTag(std::move(Cb)));
+      Tags.push_back(std::move(T));
+      return Tags.back().get();
+    }
+  };
+
+  friend class TagVisitor;
 };
 
 } // namespace ento

@@ -1,9 +1,8 @@
 //===--- AArch64.cpp - Implement AArch64 target feature support -----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -50,6 +49,7 @@ AArch64TargetInfo::AArch64TargetInfo(const llvm::Triple &Triple,
 
   // All AArch64 implementations support ARMv8 FP, which makes half a legal type.
   HasLegalHalfType = true;
+  HasFloat16 = true;
 
   LongWidth = LongAlign = PointerWidth = PointerAlign = 64;
   MaxVectorAlign = 128;
@@ -194,6 +194,9 @@ void AArch64TargetInfo::getTargetDefines(const LangOptions &Opts,
   if (HasDotProd)
     Builder.defineMacro("__ARM_FEATURE_DOTPROD", "1");
 
+  if (HasMTE)
+    Builder.defineMacro("__ARM_FEATURE_MEMORY_TAGGING", "1");
+
   if ((FPU & NeonMode) && HasFP16FML)
     Builder.defineMacro("__ARM_FEATURE_FP16FML", "1");
 
@@ -235,6 +238,7 @@ bool AArch64TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
   HasFullFP16 = 0;
   HasDotProd = 0;
   HasFP16FML = 0;
+  HasMTE = 0;
   ArchKind = llvm::AArch64::ArchKind::ARMV8A;
 
   for (const auto &Feature : Features) {
@@ -258,6 +262,8 @@ bool AArch64TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasDotProd = 1;
     if (Feature == "+fp16fml")
       HasFP16FML = 1;
+    if (Feature == "+mte")
+      HasMTE = 1;
   }
 
   setDataLayout();
@@ -543,6 +549,23 @@ void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
 TargetInfo::CallingConvKind
 MicrosoftARM64TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
   return CCK_MicrosoftWin64;
+}
+
+unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize) const {
+  unsigned Align = WindowsARM64TargetInfo::getMinGlobalAlign(TypeSize);
+
+  // MSVC does size based alignment for arm64 based on alignment section in
+  // below document, replicate that to keep alignment consistent with object
+  // files compiled by MSVC.
+  // https://docs.microsoft.com/en-us/cpp/build/arm64-windows-abi-conventions
+  if (TypeSize >= 512) {              // TypeSize >= 64 bytes
+    Align = std::max(Align, 128u);    // align type at least 16 bytes
+  } else if (TypeSize >= 64) {        // TypeSize >= 8 bytes
+    Align = std::max(Align, 64u);     // align type at least 8 butes
+  } else if (TypeSize >= 16) {        // TypeSize >= 2 bytes
+    Align = std::max(Align, 32u);     // align type at least 4 bytes
+  }
+  return Align;
 }
 
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,

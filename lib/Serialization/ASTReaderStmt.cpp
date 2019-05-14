@@ -1,9 +1,8 @@
 //===- ASTReaderStmt.cpp - Stmt/Expr Deserialization ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -112,7 +111,7 @@ namespace clang {
 
     /// The number of record fields required for the Stmt class
     /// itself.
-    static const unsigned NumStmtFields = 0;
+    static const unsigned NumStmtFields = 1;
 
     /// The number of record fields required for the Expr class
     /// itself.
@@ -148,6 +147,7 @@ void ASTStmtReader::ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
 }
 
 void ASTStmtReader::VisitStmt(Stmt *S) {
+  S->setIsOMPStructuredBlock(Record.readInt());
   assert(Record.getIdx() == NumStmtFields && "Incorrect statement field count");
 }
 
@@ -1023,21 +1023,24 @@ void ASTStmtReader::VisitBlockExpr(BlockExpr *E) {
 
 void ASTStmtReader::VisitGenericSelectionExpr(GenericSelectionExpr *E) {
   VisitExpr(E);
-  E->NumAssocs = Record.readInt();
-  E->AssocTypes = new (Record.getContext()) TypeSourceInfo*[E->NumAssocs];
-  E->SubExprs =
-   new(Record.getContext()) Stmt*[GenericSelectionExpr::END_EXPR+E->NumAssocs];
 
-  E->SubExprs[GenericSelectionExpr::CONTROLLING] = Record.readSubExpr();
-  for (unsigned I = 0, N = E->getNumAssocs(); I != N; ++I) {
-    E->AssocTypes[I] = GetTypeSourceInfo();
-    E->SubExprs[GenericSelectionExpr::END_EXPR+I] = Record.readSubExpr();
-  }
+  unsigned NumAssocs = Record.readInt();
+  assert(NumAssocs == E->getNumAssocs() && "Wrong NumAssocs!");
   E->ResultIndex = Record.readInt();
-
-  E->GenericLoc = ReadSourceLocation();
+  E->GenericSelectionExprBits.GenericLoc = ReadSourceLocation();
   E->DefaultLoc = ReadSourceLocation();
   E->RParenLoc = ReadSourceLocation();
+
+  Stmt **Stmts = E->getTrailingObjects<Stmt *>();
+  // Add 1 to account for the controlling expression which is the first
+  // expression in the trailing array of Stmt *. This is not needed for
+  // the trailing array of TypeSourceInfo *.
+  for (unsigned I = 0, N = NumAssocs + 1; I < N; ++I)
+    Stmts[I] = Record.readSubExpr();
+
+  TypeSourceInfo **TSIs = E->getTrailingObjects<TypeSourceInfo *>();
+  for (unsigned I = 0, N = NumAssocs; I < N; ++I)
+    TSIs[I] = GetTypeSourceInfo();
 }
 
 void ASTStmtReader::VisitPseudoObjectExpr(PseudoObjectExpr *E) {
@@ -1252,7 +1255,7 @@ void ASTStmtReader::VisitObjCAtFinallyStmt(ObjCAtFinallyStmt *S) {
 }
 
 void ASTStmtReader::VisitObjCAutoreleasePoolStmt(ObjCAutoreleasePoolStmt *S) {
-  VisitStmt(S);
+  VisitStmt(S); // FIXME: no test coverage.
   S->setSubStmt(Record.readSubStmt());
   S->setAtLoc(ReadSourceLocation());
 }
@@ -1272,14 +1275,14 @@ void ASTStmtReader::VisitObjCAtTryStmt(ObjCAtTryStmt *S) {
 }
 
 void ASTStmtReader::VisitObjCAtSynchronizedStmt(ObjCAtSynchronizedStmt *S) {
-  VisitStmt(S);
+  VisitStmt(S); // FIXME: no test coverage.
   S->setSynchExpr(Record.readSubStmt());
   S->setSynchBody(Record.readSubStmt());
   S->setAtSynchronizedLoc(ReadSourceLocation());
 }
 
 void ASTStmtReader::VisitObjCAtThrowStmt(ObjCAtThrowStmt *S) {
-  VisitStmt(S);
+  VisitStmt(S); // FIXME: no test coverage.
   S->setThrowExpr(Record.readSubStmt());
   S->setThrowLoc(ReadSourceLocation());
 }
@@ -2676,7 +2679,9 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
 
     case EXPR_GENERIC_SELECTION:
-      S = new (Context) GenericSelectionExpr(Empty);
+      S = GenericSelectionExpr::CreateEmpty(
+          Context,
+          /*NumAssocs=*/Record[ASTStmtReader::NumExprFields]);
       break;
 
     case EXPR_OBJC_STRING_LITERAL:

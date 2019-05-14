@@ -1,9 +1,8 @@
 //==- ProgramPoint.h - Program Points for Path-Sensitive Analysis --*- C++ -*-//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -43,12 +42,11 @@ public:
   virtual ~ProgramPointTag();
   virtual StringRef getTagDescription() const = 0;
 
-protected:
   /// Used to implement 'isKind' in subclasses.
-  const void *getTagKind() { return TagKind; }
+  const void *getTagKind() const { return TagKind; }
 
 private:
-  const void *TagKind;
+  const void *const TagKind;
 };
 
 class SimpleProgramPointTag : public ProgramPointTag {
@@ -777,9 +775,6 @@ static bool isEqual(const clang::ProgramPoint &L,
 }
 
 };
-
-template <>
-struct isPodLike<clang::ProgramPoint> { static const bool value = true; };
 
 } // end namespace llvm
 

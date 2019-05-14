@@ -1,9 +1,8 @@
 //===--- InitHeaderSearch.cpp - Initialize header search paths ------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -433,14 +432,6 @@ void InitHeaderSearch::AddDefaultCPlusPlusIncludePaths(
   case llvm::Triple::DragonFly:
     AddPath("/usr/include/c++/5.0", CXXSystem, false);
     break;
-  case llvm::Triple::OpenBSD: {
-    std::string t = triple.getTriple();
-    if (t.substr(0, 6) == "x86_64")
-      t.replace(0, 6, "amd64");
-    AddGnuCPlusPlusIncludePaths("/usr/include/g++",
-                                t, "", "", triple);
-    break;
-  }
   case llvm::Triple::Minix:
     AddGnuCPlusPlusIncludePaths("/usr/gnu/include/c++/4.4.3",
                                 "", "", "", triple);

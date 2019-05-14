@@ -1,9 +1,8 @@
 //===- ObjCRuntime.h - Objective-C Runtime Configuration --------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -245,6 +244,22 @@ public:
       return false;
     }
     llvm_unreachable("bad kind");
+  }
+
+  /// Does this runtime provide the objc_alloc_init entrypoint? This can apply
+  /// the same optimization as objc_alloc, but also sends an -init message,
+  /// reducing code size on the caller.
+  bool shouldUseRuntimeFunctionForCombinedAllocInit() const {
+    switch (getKind()) {
+    case MacOSX:
+      return getVersion() >= VersionTuple(10, 14, 4);
+    case iOS:
+      return getVersion() >= VersionTuple(12, 2);
+    case WatchOS:
+      return getVersion() >= VersionTuple(5, 2);
+    default:
+      return false;
+    }
   }
 
   /// Does this runtime supports optimized setter entrypoints?

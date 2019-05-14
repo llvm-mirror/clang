@@ -1,9 +1,8 @@
 //===--- OSTargets.h - Declare OS target feature support --------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -614,6 +613,53 @@ public:
   }
 };
 
+// AIX Target
+template <typename Target>
+class AIXTargetInfo : public OSTargetInfo<Target> {
+protected:
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const override {
+    DefineStd(Builder, "unix", Opts);
+    Builder.defineMacro("_IBMR2");
+    Builder.defineMacro("_POWER");
+
+    // FIXME: Define AIX OS-Version Macros.
+    Builder.defineMacro("_AIX");
+
+    // FIXME: Do not define _LONG_LONG when -fno-long-long is specified.
+    Builder.defineMacro("_LONG_LONG");
+
+    if (Opts.POSIXThreads) {
+      Builder.defineMacro("_THREAD_SAFE");
+    }
+
+    if (this->PointerWidth == 64) {
+      Builder.defineMacro("__64BIT__");
+    }
+
+    // Define _WCHAR_T when it is a fundamental type
+    // (i.e., for C++ without -fno-wchar).
+    if (Opts.CPlusPlus && Opts.WChar) {
+      Builder.defineMacro("_WCHAR_T");
+    }
+  }
+
+public:
+  AIXTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : OSTargetInfo<Target>(Triple, Opts) {
+    if (this->PointerWidth == 64) {
+      this->WCharType = this->UnsignedInt;
+    } else {
+      this->WCharType = this->UnsignedShort;
+    }
+    this->UseZeroLengthBitfieldAlignment = true;
+  }
+
+  // AIX sets FLT_EVAL_METHOD to be 1.
+  unsigned getFloatEvalMethod() const override { return 1; }
+  bool hasInt128Type() const override { return false; }
+};
+
 // Windows target
 template <typename Target>
 class LLVM_LIBRARY_VISIBILITY WindowsTargetInfo : public OSTargetInfo<Target> {
@@ -764,14 +810,17 @@ public:
 template <typename Target>
 class LLVM_LIBRARY_VISIBILITY WebAssemblyOSTargetInfo
     : public OSTargetInfo<Target> {
+protected:
   void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
-                    MacroBuilder &Builder) const final {
+                    MacroBuilder &Builder) const {
     // A common platform macro.
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
     // Follow g++ convention and predefine _GNU_SOURCE for C++.
     if (Opts.CPlusPlus)
       Builder.defineMacro("_GNU_SOURCE");
+    // Indicate that we have __float128.
+    Builder.defineMacro("__FLOAT128__");
   }
 
 public:
@@ -780,7 +829,38 @@ public:
       : OSTargetInfo<Target>(Triple, Opts) {
     this->MCountName = "__mcount";
     this->TheCXXABI.set(TargetCXXABI::WebAssembly);
+    this->HasFloat128 = true;
   }
+};
+
+// WASI target
+template <typename Target>
+class LLVM_LIBRARY_VISIBILITY WASITargetInfo
+    : public WebAssemblyOSTargetInfo<Target> {
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const final {
+    WebAssemblyOSTargetInfo<Target>::getOSDefines(Opts, Triple, Builder);
+    Builder.defineMacro("__wasi__");
+  }
+
+public:
+  explicit WASITargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : WebAssemblyOSTargetInfo<Target>(Triple, Opts) {}
+};
+
+// Emscripten target
+template <typename Target>
+class LLVM_LIBRARY_VISIBILITY EmscriptenTargetInfo
+    : public WebAssemblyOSTargetInfo<Target> {
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const final {
+    WebAssemblyOSTargetInfo<Target>::getOSDefines(Opts, Triple, Builder);
+    Builder.defineMacro("__EMSCRIPTEN__");
+  }
+
+public:
+  explicit EmscriptenTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : WebAssemblyOSTargetInfo<Target>(Triple, Opts) {}
 };
 
 } // namespace targets

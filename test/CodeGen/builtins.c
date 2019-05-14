@@ -246,6 +246,9 @@ void test_float_builtins(float F, double D, long double LD) {
   // CHECK: fcmp uge float {{.*}}, 0x3810000000000000
   // CHECK: and i1
   // CHECK: and i1
+
+  res = __builtin_flt_rounds();
+  // CHECK: call i32 @llvm.flt.rounds(
 }
 
 // CHECK-LABEL: define void @test_float_builtin_ops
@@ -768,7 +771,7 @@ void test_builtin_os_log_merge_helper1(void *buf, unsigned u, long long ll) {
 void test_builtin_os_log_errno() {
   // CHECK-NOT: @stacksave
   // CHECK: %[[BUF:.*]] = alloca [4 x i8], align 1
-  // CHECK: %[[DECAY:.*]] = getelementptr inbounds [4 x i8], [4 x i8]* %[[BUF]], i32 0, i32 0
+  // CHECK: %[[DECAY:.*]] = getelementptr inbounds [4 x i8], [4 x i8]* %[[BUF]], i64 0, i64 0
   // CHECK: call void @__os_log_helper_1_2_1_0_96(i8* %[[DECAY]])
   // CHECK-NOT: @stackrestore
 

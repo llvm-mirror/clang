@@ -1,9 +1,8 @@
 //===- ExprEngine.h - Path-Sensitive Expression-Level Dataflow --*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,6 +22,7 @@
 #include "clang/Analysis/ProgramPoint.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporterVisitors.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CoreEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/FunctionSummary.h"
@@ -131,6 +131,9 @@ private:
   /// SymMgr - Object that manages the symbol information.
   SymbolManager &SymMgr;
 
+  /// MRMgr - MemRegionManager object that creates memory regions.
+  MemRegionManager &MRMgr;
+
   /// svalBuilder - SValBuilder object that creates SVals from expressions.
   SValBuilder &svalBuilder;
 
@@ -152,6 +155,8 @@ private:
 
   /// The flag, which specifies the mode of inlining for the engine.
   InliningModes HowToInline;
+
+  NoteTag::Factory NoteTags;
 
 public:
   ExprEngine(cross_tu::CrossTranslationUnitContext &CTU, AnalysisManager &mgr,
@@ -179,6 +184,10 @@ public:
   ASTContext &getContext() const { return AMgr.getASTContext(); }
 
   AnalysisManager &getAnalysisManager() override { return AMgr; }
+
+  AnalysisDeclContextManager &getAnalysisDeclContextManager() {
+    return AMgr.getAnalysisDeclContextManager();
+  }
 
   CheckerManager &getCheckerManager() const {
     return *AMgr.getCheckerManager();
@@ -387,9 +396,11 @@ public:
     return StateMgr.getBasicVals();
   }
 
-  // FIXME: Remove when we migrate over to just using ValueManager.
   SymbolManager &getSymbolManager() { return SymMgr; }
-  const SymbolManager &getSymbolManager() const { return SymMgr; }
+  MemRegionManager &getRegionManager() { return MRMgr; }
+
+  NoteTag::Factory &getNoteTags() { return NoteTags; }
+
 
   // Functions for external checking of whether we have unfinished work
   bool wasBlocksExhausted() const { return Engine.wasBlocksExhausted(); }
@@ -706,6 +717,25 @@ private:
                                      const ExplodedNode *Pred,
                                      AnalyzerOptions &Opts,
                                      const EvalCallOptions &CallOpts);
+
+  /// See if the given AnalysisDeclContext is built for a function that we
+  /// should always inline simply because it's small enough.
+  /// Apart from "small" functions, we also have "large" functions
+  /// (cf. isLarge()), some of which are huge (cf. isHuge()), and we classify
+  /// the remaining functions as "medium".
+  bool isSmall(AnalysisDeclContext *ADC) const;
+
+  /// See if the given AnalysisDeclContext is built for a function that we
+  /// should inline carefully because it looks pretty large.
+  bool isLarge(AnalysisDeclContext *ADC) const;
+
+  /// See if the given AnalysisDeclContext is built for a function that we
+  /// should never inline because it's legit gigantic.
+  bool isHuge(AnalysisDeclContext *ADC) const;
+
+  /// See if the given AnalysisDeclContext is built for a function that we
+  /// should inline, just by looking at the declaration of the function.
+  bool mayInlineDecl(AnalysisDeclContext *ADC) const;
 
   /// Checks our policies and decides weither the given call should be inlined.
   bool shouldInlineCall(const CallEvent &Call, const Decl *D,

@@ -1,9 +1,8 @@
 //===- unittests/Lex/PPCallbacksTest.cpp - PPCallbacks tests ------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===--------------------------------------------------------------===//
 
@@ -14,7 +13,6 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
-#include "clang/Basic/MemoryBufferCache.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
@@ -179,14 +177,13 @@ protected:
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
 
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
 
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, LangOpts, Target.get());
     AddFakeHeader(HeaderInfo, HeaderPath, SystemHeader);
 
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
-                    SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     return InclusionDirectiveCallback(PP)->FilenameRange;
@@ -199,14 +196,13 @@ protected:
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
 
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
 
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, LangOpts, Target.get());
     AddFakeHeader(HeaderInfo, HeaderPath, SystemHeader);
 
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
-                    SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     return InclusionDirectiveCallback(PP)->FileType;
@@ -234,14 +230,13 @@ protected:
   std::vector<CondDirectiveCallbacks::Result>
   DirectiveExprRange(StringRef SourceText) {
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
     std::unique_ptr<llvm::MemoryBuffer> Buf =
         llvm::MemoryBuffer::getMemBuffer(SourceText);
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, LangOpts, Target.get());
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
-                    SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
@@ -271,12 +266,11 @@ protected:
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(SourceBuf)));
 
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, OpenCLLangOpts, Target.get());
 
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags,
-                    OpenCLLangOpts, SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    OpenCLLangOpts, SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
@@ -431,16 +425,69 @@ TEST_F(PPCallbacksTest, OpenCLExtensionPragmaDisabled) {
 }
 
 TEST_F(PPCallbacksTest, DirectiveExprRanges) {
+  const auto &Results1 = DirectiveExprRange("#if FLUZZY_FLOOF\n#endif\n");
+  EXPECT_EQ(Results1.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results1[0].ConditionRange, false)),
+      "FLUZZY_FLOOF");
+
+  const auto &Results2 = DirectiveExprRange("#if 1 + 4 < 7\n#endif\n");
+  EXPECT_EQ(Results2.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results2[0].ConditionRange, false)),
+      "1 + 4 < 7");
+
+  const auto &Results3 = DirectiveExprRange("#if 1 + \\\n  2\n#endif\n");
+  EXPECT_EQ(Results3.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results3[0].ConditionRange, false)),
+      "1 + \\\n  2");
+
+  const auto &Results4 = DirectiveExprRange("#if 0\n#elif FLOOFY\n#endif\n");
+  EXPECT_EQ(Results4.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results4[0].ConditionRange, false)),
+      "0");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results4[1].ConditionRange, false)),
+      "FLOOFY");
+
+  const auto &Results5 = DirectiveExprRange("#if 1\n#elif FLOOFY\n#endif\n");
+  EXPECT_EQ(Results5.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results5[0].ConditionRange, false)),
+      "1");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results5[1].ConditionRange, false)),
+      "FLOOFY");
+
+  const auto &Results6 =
+      DirectiveExprRange("#if defined(FLUZZY_FLOOF)\n#endif\n");
+  EXPECT_EQ(Results6.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results6[0].ConditionRange, false)),
+      "defined(FLUZZY_FLOOF)");
+
+  const auto &Results7 =
+      DirectiveExprRange("#if 1\n#elif defined(FLOOFY)\n#endif\n");
+  EXPECT_EQ(Results7.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results7[0].ConditionRange, false)),
+      "1");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results7[1].ConditionRange, false)),
+      "defined(FLOOFY)");
+
   const auto &Results8 =
       DirectiveExprRange("#define FLOOFY 0\n#if __FILE__ > FLOOFY\n#endif\n");
   EXPECT_EQ(Results8.size(), 1U);
   EXPECT_EQ(
       GetSourceStringToEnd(CharSourceRange(Results8[0].ConditionRange, false)),
-      " __FILE__ > FLOOFY\n#");
+      "__FILE__ > FLOOFY");
   EXPECT_EQ(
       Lexer::getSourceText(CharSourceRange(Results8[0].ConditionRange, false),
                            SourceMgr, LangOpts),
-      " __FILE__ > FLOOFY\n");
+      "__FILE__ > FLOOFY");
 }
 
 } // namespace
