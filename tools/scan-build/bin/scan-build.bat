@@ -1,1 +1,1 @@
-perl -S scan-build %*
+perl -S "%~dp0/scan-build" %*
