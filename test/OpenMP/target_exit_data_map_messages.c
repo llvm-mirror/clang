@@ -1,5 +1,8 @@
-// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -ferror-limit 100 -o - %s
-// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -ferror-limit 100 -o - -x c++ %s
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -ferror-limit 100 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -ferror-limit 100 -o - -x c++ %s -Wuninitialized
+
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp-simd -ferror-limit 100 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp-simd -ferror-limit 100 -o - -x c++ %s -Wuninitialized
 
 int main(int argc, char **argv) {
 
@@ -9,7 +12,7 @@ int main(int argc, char **argv) {
   #pragma omp target exit data map(r) // expected-error {{map type must be specified for '#pragma omp target exit data'}}
   #pragma omp target exit data map(tofrom: r) // expected-error {{map type 'tofrom' is not allowed for '#pragma omp target exit data'}}
 
-  #pragma omp target exit data map(always, from: r)
+  #pragma omp target exit data map(always, from: r) allocate(r) // expected-error {{unexpected OpenMP clause 'allocate' in directive '#pragma omp target exit data'}}
   #pragma omp target exit data map(delete: r)
   #pragma omp target exit data map(release: r)
   #pragma omp target exit data map(always, alloc: r) // expected-error {{map type 'alloc' is not allowed for '#pragma omp target exit data'}}

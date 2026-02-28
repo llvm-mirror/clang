@@ -4,14 +4,19 @@
 //
 // Check that we properly detect CUDA installation.
 // RUN: %clang -v --target=i386-unknown-linux \
-// RUN:   --sysroot=%S/no-cuda-there 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN:   --sysroot=%S/no-cuda-there --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
 // RUN: %clang -v --target=i386-apple-macosx \
-// RUN:   --sysroot=%S/no-cuda-there 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN:   --sysroot=%S/no-cuda-there --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN: %clang -v --target=x86_64-unknown-linux \
+// RUN:   --sysroot=%S/no-cuda-there --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN: %clang -v --target=x86_64-apple-macosx \
+// RUN:   --sysroot=%S/no-cuda-there --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
+
 
 // RUN: %clang -v --target=i386-unknown-linux \
-// RUN:   --sysroot=%S/Inputs/CUDA 2>&1 | FileCheck %s
+// RUN:   --sysroot=%S/Inputs/CUDA --cuda-path-ignore-env 2>&1 | FileCheck %s
 // RUN: %clang -v --target=i386-apple-macosx \
-// RUN:   --sysroot=%S/Inputs/CUDA 2>&1 | FileCheck %s
+// RUN:   --sysroot=%S/Inputs/CUDA --cuda-path-ignore-env 2>&1 | FileCheck %s
 
 // RUN: %clang -v --target=i386-unknown-linux \
 // RUN:   --cuda-path=%S/Inputs/CUDA/usr/local/cuda 2>&1 | FileCheck %s
@@ -20,15 +25,23 @@
 
 // Check that we don't find a CUDA installation without libdevice ...
 // RUN: %clang -v --target=i386-unknown-linux \
-// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
 // RUN: %clang -v --target=i386-apple-macosx \
-// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN: %clang -v --target=x86_64-unknown-linux \
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
+// RUN: %clang -v --target=x84_64-apple-macosx \
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NOCUDA
 
 // ... unless the user doesn't need libdevice
 // RUN: %clang -v --target=i386-unknown-linux -nocudalib \
-// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
 // RUN: %clang -v --target=i386-apple-macosx -nocudalib \
-// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
+// RUN: %clang -v --target=x86_64-unknown-linux -nocudalib \
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
+// RUN: %clang -v --target=x86_64-apple-macosx -nocudalib \
+// RUN:   --sysroot=%S/Inputs/CUDA-nolibdevice --cuda-path-ignore-env 2>&1 | FileCheck %s -check-prefix NO-LIBDEVICE
 
 
 // Make sure we map libdevice bitcode files to proper GPUs. These
@@ -124,6 +137,16 @@
 // RUN: --gcc-toolchain="" 2>&1 \
 // RUN: | FileCheck %s --check-prefix CHECK-CXXINCLUDE
 
+// Verify that CUDA SDK version is propagated to the CC1 compilations.
+// RUN: %clang -### -v -target x86_64-linux-gnu --cuda-gpu-arch=sm_50 \
+// RUN:   --cuda-path=%S/Inputs/CUDA_80/usr/local/cuda %s 2>&1 \
+// RUN:   | FileCheck %s -check-prefix CUDA80
+
+// Verify that if no version file is found, we report the default of 7.0.
+// RUN: %clang -### -v -target x86_64-linux-gnu --cuda-gpu-arch=sm_50 \
+// RUN:   --cuda-path=%S/Inputs/CUDA/usr/local/cuda %s 2>&1 \
+// RUN:   | FileCheck %s -check-prefix CUDA70
+
 // CHECK: Found CUDA installation: {{.*}}/Inputs/CUDA/usr/local/cuda
 // NO-LIBDEVICE: Found CUDA installation: {{.*}}/Inputs/CUDA-nolibdevice/usr/local/cuda
 // NOCUDA-NOT: Found CUDA installation:
@@ -132,8 +155,8 @@
 
 // COMMON: "-triple" "nvptx-nvidia-cuda"
 // COMMON-SAME: "-fcuda-is-device"
-// LIBDEVICE-SAME: "-mlink-cuda-bitcode"
-// NOLIBDEVICE-NOT: "-mlink-cuda-bitcode"
+// LIBDEVICE-SAME: "-mlink-builtin-bitcode"
+// NOLIBDEVICE-NOT: "-mlink-builtin-bitcode"
 // LIBDEVICE20-SAME: libdevice.compute_20.10.bc
 // LIBDEVICE30-SAME: libdevice.compute_30.10.bc
 // LIBDEVICE35-SAME: libdevice.compute_35.10.bc
@@ -151,6 +174,18 @@
 // COMMON-SAME: "-x" "cuda"
 // CHECK-CXXINCLUDE: clang{{.*}} "-cc1" "-triple" "nvptx64-nvidia-cuda"
 // CHECK-CXXINCLUDE-SAME: {{.*}}"-internal-isystem" "{{.+}}/include/c++/4.8"
-// CHECK-CXXINCLUDE: clang{{.*}} "-cc1" "-triple" "x86_64--linux-gnu"
+// CHECK-CXXINCLUDE: clang{{.*}} "-cc1" "-triple" "x86_64-unknown-linux-gnu"
 // CHECK-CXXINCLUDE-SAME: {{.*}}"-internal-isystem" "{{.+}}/include/c++/4.8"
 // CHECK-CXXINCLUDE: ld{{.*}}"
+
+// CUDA80: "-cc1" "-triple" "nvptx64-nvidia-cuda"
+// CUDA80-SAME: -target-sdk-version=8.0
+// CUDA80: "-cc1" "-triple" "x86_64-unknown-linux-gnu"
+// CUDA80-SAME: -target-sdk-version=8.0
+// CUDA80: ld{{.*}}"
+
+// CUDA70: "-cc1" "-triple" "nvptx64-nvidia-cuda"
+// CUDA70-SAME: -target-sdk-version=7.0
+// CUDA70: "-cc1" "-triple" "x86_64-unknown-linux-gnu"
+// CUDA70-SAME: -target-sdk-version=7.0
+// CUDA70: ld{{.*}}"

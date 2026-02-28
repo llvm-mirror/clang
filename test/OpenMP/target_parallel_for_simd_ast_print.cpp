@@ -1,6 +1,10 @@
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 -ast-print %s | FileCheck %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -x c++ -std=c++11 -emit-pch -o %t %s -Wno-openmp-target
+// RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -fopenmp-version=45 -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=45 -x c++ -std=c++11 -emit-pch -o %t %s -Wno-openmp-target
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=45 -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -35,7 +39,7 @@ public:
   }
 };
 
-// CHECK: #pragma omp target parallel for simd private(this->a) private(this->a) private(T::a)
+// CHECK: #pragma omp target parallel for simd private(this->a) private(this->a) private(T::a){{$}}
 // CHECK: #pragma omp target parallel for simd private(this->a) private(this->a)
 // CHECK: #pragma omp target parallel for simd private(this->a) private(this->a) private(this->S::a)
 
@@ -71,20 +75,20 @@ T tmain(T argc, T *argv) {
   const T clen = 5;
 // CHECK: T clen = 5;
 #pragma omp threadprivate(g)
-#pragma omp target parallel for simd schedule(dynamic) default(none) linear(a)
-  // CHECK: #pragma omp target parallel for simd schedule(dynamic) default(none) linear(a)
+#pragma omp target parallel for simd schedule(dynamic) default(none) linear(a) allocate(a)
+  // CHECK: #pragma omp target parallel for simd schedule(dynamic) default(none) linear(a) allocate(a)
   for (T i = 0; i < 2; ++i)
     a = 2;
 // CHECK-NEXT: for (T i = 0; i < 2; ++i)
 // CHECK-NEXT: a = 2;
-#pragma omp target parallel for simd private(argc, b), firstprivate(c, d), lastprivate(d, f) collapse(N) schedule(static, N) ordered(N) if (parallel :argc) num_threads(N) default(shared) shared(e) reduction(+ : h)
+#pragma omp target parallel for simd allocate(d) private(argc, b), firstprivate(c, d), lastprivate(d, f) collapse(N) schedule(static, N) ordered if (parallel :argc) num_threads(N) default(shared) shared(e) reduction(+ : h)
   for (int i = 0; i < 2; ++i)
     for (int j = 0; j < 2; ++j)
       for (int j = 0; j < 2; ++j)
         for (int j = 0; j < 2; ++j)
           for (int j = 0; j < 2; ++j)
             foo();
-  // CHECK-NEXT: #pragma omp target parallel for simd private(argc,b) firstprivate(c,d) lastprivate(d,f) collapse(N) schedule(static, N) ordered(N) if(parallel: argc) num_threads(N) default(shared) shared(e) reduction(+: h)
+  // CHECK-NEXT: #pragma omp target parallel for simd allocate(d) private(argc,b) firstprivate(c,d) lastprivate(d,f) collapse(N) schedule(static, N) ordered if(parallel: argc) num_threads(N) default(shared) shared(e) reduction(+: h)
   // CHECK-NEXT: for (int i = 0; i < 2; ++i)
   // CHECK-NEXT: for (int j = 0; j < 2; ++j)
   // CHECK-NEXT: for (int j = 0; j < 2; ++j)
@@ -196,8 +200,8 @@ int main(int argc, char **argv) {
 // CHECK: int clen = 5;
   static float g;
 #pragma omp threadprivate(g)
-#pragma omp target parallel for simd schedule(guided, argc) default(none) linear(a)
-  // CHECK: #pragma omp target parallel for simd schedule(guided, argc) default(none) linear(a)
+#pragma omp target parallel for simd schedule(guided, argc) default(none) linear(a) shared(argc)
+  // CHECK: #pragma omp target parallel for simd schedule(guided, argc) default(none) linear(a) shared(argc)
   for (int i = 0; i < 2; ++i)
     a = 2;
 // CHECK-NEXT: for (int i = 0; i < 2; ++i)

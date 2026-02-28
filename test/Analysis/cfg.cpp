@@ -1,5 +1,16 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=debug.DumpCFG -triple x86_64-apple-darwin12 -analyzer-config cfg-temporary-dtors=true -std=c++11 %s > %t 2>&1
-// RUN: FileCheck --input-file=%t %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=debug.DumpCFG -triple x86_64-apple-darwin12 -fheinous-gnu-extensions -std=c++11 -analyzer-config cfg-rich-constructors=false %s > %t 2>&1
+// RUN: FileCheck --input-file=%t -check-prefixes=CHECK,WARNINGS %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=debug.DumpCFG -triple x86_64-apple-darwin12 -fheinous-gnu-extensions -std=c++11 -analyzer-config cfg-rich-constructors=true %s > %t 2>&1
+// RUN: FileCheck --input-file=%t -check-prefixes=CHECK,ANALYZER %s
+
+// This file tests how we construct two different flavors of the Clang CFG -
+// the CFG used by the Sema analysis-based warnings and the CFG used by the
+// static analyzer. The difference in the behavior is checked via FileCheck
+// prefixes (WARNINGS and ANALYZER respectively). When introducing new analyzer
+// flags, no new run lines should be added - just these flags would go to the
+// respective line depending on where is it turned on and where is it turned
+// off. Feel free to add tests that test only one of the CFG flavors if you're
+// not sure how the other flavor is supposed to work in your case.
 
 // CHECK-LABEL: void checkWrap(int i)
 // CHECK: ENTRY
@@ -48,11 +59,14 @@ void checkWrap(int i) {
 // CHECK-NEXT:   5: int l;
 // CHECK-NEXT:   6: 2
 // CHECK-NEXT:   7: int m = 2;
-// CHECK-NEXT: CXXConstructExpr
+// WARNINGS-NEXT: (CXXConstructExpr, struct standalone)
+// ANALYZER-NEXT: (CXXConstructExpr, [B1.9], struct standalone)
 // CHECK-NEXT:   9: struct standalone myStandalone;
-// CHECK-NEXT: CXXConstructExpr
+// WARNINGS-NEXT: (CXXConstructExpr, struct (anonymous struct at {{.*}}))
+// ANALYZER-NEXT: (CXXConstructExpr, [B1.11], struct (anonymous struct at {{.*}}))
 // CHECK-NEXT:  11: struct (anonymous struct at {{.*}}) myAnon;
-// CHECK-NEXT: CXXConstructExpr
+// WARNINGS-NEXT: (CXXConstructExpr, struct named)
+// ANALYZER-NEXT: (CXXConstructExpr, [B1.13], struct named)
 // CHECK-NEXT:  13: struct named myNamed;
 // CHECK-NEXT:   Preds (1): B2
 // CHECK-NEXT:   Succs (1): B0
@@ -69,6 +83,24 @@ void checkDeclStmts() {
 
   static_assert(1, "abc");
 }
+
+
+// CHECK-LABEL: void checkGCCAsmRValueOutput()
+// CHECK: [B2 (ENTRY)]
+// CHECK-NEXT: Succs (1): B1
+// CHECK: [B1]
+// CHECK-NEXT:   1: int arg
+// CHECK-NEXT:   2: arg
+// CHECK-NEXT:   3: (int)[B1.2] (CStyleCastExpr, NoOp, int)
+// CHECK-NEXT:   4: asm ("" : "=r" ([B1.3]));
+// CHECK-NEXT:   5: arg
+// CHECK-NEXT:   6: asm ("" : "=r" ([B1.5]));
+void checkGCCAsmRValueOutput() {
+  int arg;
+  __asm__("" : "=r"((int)arg));  // rvalue output operand
+  __asm__("" : "=r"(arg));       // lvalue output operand
+}
+
 
 // CHECK-LABEL: void F(EmptyE e)
 // CHECK: ENTRY
@@ -116,7 +148,8 @@ public:
 // CHECK-NEXT:   Succs (1): B1
 // CHECK: [B1]
 // CHECK-NEXT:   1:  CFGNewAllocator(A *)
-// CHECK-NEXT:   2:  (CXXConstructExpr, class A)
+// WARNINGS-NEXT:   2:  (CXXConstructExpr, class A)
+// ANALYZER-NEXT:   2:  (CXXConstructExpr, [B1.3], class A)
 // CHECK-NEXT:   3: new A([B1.2])
 // CHECK-NEXT:   4: A *a = new A();
 // CHECK-NEXT:   5: a
@@ -138,7 +171,8 @@ void test_deletedtor() {
 // CHECK: [B1]
 // CHECK-NEXT:   1: 5
 // CHECK-NEXT:   2: CFGNewAllocator(A *)
-// CHECK-NEXT:   3:  (CXXConstructExpr, class A [5])
+// WARNINGS-NEXT:   3:  (CXXConstructExpr, class A [5])
+// ANALYZER-NEXT:   3:  (CXXConstructExpr, [B1.4], class A [5])
 // CHECK-NEXT:   4: new A {{\[\[}}B1.1]]
 // CHECK-NEXT:   5: A *a = new A [5];
 // CHECK-NEXT:   6: a
@@ -169,7 +203,7 @@ namespace NoReturnSingleSuccessor {
 // CHECK-LABEL: int test1(int *x)
 // CHECK: 1: 1
 // CHECK-NEXT: 2: return
-// CHECK-NEXT: ~B() (Implicit destructor)
+// CHECK-NEXT: ~NoReturnSingleSuccessor::B() (Implicit destructor)
 // CHECK-NEXT: Preds (1)
 // CHECK-NEXT: Succs (1): B0
   int test1(int *x) {
@@ -331,7 +365,8 @@ int test_enum_with_extension_default(enum MyEnum value) {
 // CHECK-NEXT:  3: [B1.2] (ImplicitCastExpr, ArrayToPointerDecay, int *)
 // CHECK-NEXT:  4: [B1.3] (ImplicitCastExpr, BitCast, void *)
 // CHECK-NEXT:  5: CFGNewAllocator(MyClass *)
-// CHECK-NEXT:  6:  (CXXConstructExpr, class MyClass)
+// WARNINGS-NEXT:  6:  (CXXConstructExpr, class MyClass)
+// ANALYZER-NEXT:  6:  (CXXConstructExpr, [B1.7], class MyClass)
 // CHECK-NEXT:  7: new ([B1.4]) MyClass([B1.6])
 // CHECK-NEXT:  8: MyClass *obj = new (buffer) MyClass();
 // CHECK-NEXT:  Preds (1): B2
@@ -363,7 +398,8 @@ void test_placement_new() {
 // CHECK-NEXT:  4: [B1.3] (ImplicitCastExpr, BitCast, void *)
 // CHECK-NEXT:  5: 5
 // CHECK-NEXT:  6: CFGNewAllocator(MyClass *)
-// CHECK-NEXT:  7:  (CXXConstructExpr, class MyClass [5])
+// WARNINGS-NEXT:  7:  (CXXConstructExpr, class MyClass [5])
+// ANALYZER-NEXT:  7:  (CXXConstructExpr, [B1.8], class MyClass [5])
 // CHECK-NEXT:  8: new ([B1.4]) MyClass {{\[\[}}B1.5]]
 // CHECK-NEXT:  9: MyClass *obj = new (buffer) MyClass [5];
 // CHECK-NEXT:  Preds (1): B2
@@ -432,6 +468,106 @@ void test_lifetime_extended_temporaries() {
 }
 
 
+// FIXME: The destructor for 'a' shouldn't be there because it's deleted
+// in the union.
+// CHECK-LABEL: void foo()
+// CHECK:  [B2 (ENTRY)]
+// CHECK-NEXT:    Succs (1): B1
+// CHECK:  [B1]
+// WARNINGS-NEXT:    1:  (CXXConstructExpr, struct pr37688_deleted_union_destructor::A)
+// ANALYZER-NEXT:    1:  (CXXConstructExpr, [B1.2], struct pr37688_deleted_union_destructor::A)
+// CHECK-NEXT:    2: pr37688_deleted_union_destructor::A a;
+// CHECK-NEXT:    3: [B1.2].~pr37688_deleted_union_destructor::A() (Implicit destructor)
+// CHECK-NEXT:    Preds (1): B2
+// CHECK-NEXT:    Succs (1): B0
+// CHECK:  [B0 (EXIT)]
+// CHECK-NEXT:    Preds (1): B1
+
+namespace pr37688_deleted_union_destructor {
+struct S { ~S(); };
+struct A {
+  ~A() noexcept {}
+  union {
+    struct {
+      S s;
+    } ss;
+  };
+};
+void foo() {
+  A a;
+}
+} // end namespace pr37688_deleted_union_destructor
+
+
+namespace return_statement_expression {
+int unknown();
+
+// CHECK-LABEL: int foo()
+// CHECK:       [B6 (ENTRY)]
+// CHECK-NEXT:    Succs (1): B5
+// CHECK:       [B1]
+// CHECK-NEXT:    1: 0
+// CHECK-NEXT:    2: return [B1.1];
+// CHECK-NEXT:    Preds (1): B5
+// CHECK-NEXT:    Succs (1): B0
+// CHECK:       [B2]
+// CHECK-NEXT:    1: 0
+// CHECK-NEXT:    2: ({ ... ; [B2.1] })
+// CHECK-NEXT:    3: return [B2.2];
+// CHECK-NEXT:    Preds (1): B4
+// CHECK-NEXT:    Succs (1): B0
+// FIXME: Why do we have [B3] at all?
+// CHECK:       [B3]
+// CHECK-NEXT:    Succs (1): B4
+// CHECK:       [B4]
+// CHECK-NEXT:    1: 0
+// CHECK-NEXT:    2: [B4.1] (ImplicitCastExpr, IntegralToBoolean, _Bool)
+// CHECK-NEXT:    T: while [B4.2]
+// CHECK-NEXT:    Preds (2): B3 B5
+// CHECK-NEXT:    Succs (2): NULL B2
+// CHECK:       [B5]
+// CHECK-NEXT:    1: unknown
+// CHECK-NEXT:    2: [B5.1] (ImplicitCastExpr, FunctionToPointerDecay, int (*)(void))
+// CHECK-NEXT:    3: [B5.2]()
+// CHECK-NEXT:    4: [B5.3] (ImplicitCastExpr, IntegralToBoolean, _Bool)
+// CHECK-NEXT:    T: if [B5.4]
+// CHECK-NEXT:    Preds (1): B6
+// CHECK-NEXT:    Succs (2): B4 B1
+// CHECK:       [B0 (EXIT)]
+// CHECK-NEXT:    Preds (2): B1 B2
+int foo() {
+  if (unknown())
+    return ({
+      while (0)
+        ;
+      0;
+    });
+  else
+    return 0;
+}
+} // namespace statement_expression_in_return
+
+// CHECK-LABEL: int overlap_compare(int x)
+// CHECK: [B2]
+// CHECK-NEXT:   1: 1
+// CHECK-NEXT:   2: return [B2.1];
+// CHECK-NEXT:   Preds (1): B3(Unreachable)
+// CHECK-NEXT:   Succs (1): B0
+// CHECK: [B3]
+// CHECK-NEXT:   1: x
+// CHECK-NEXT:   2: [B3.1] (ImplicitCastExpr, LValueToRValue, int)
+// CHECK-NEXT:   3: 5
+// CHECK-NEXT:   4: [B3.2] > [B3.3]
+// CHECK-NEXT:   T: if [B4.5] && [B3.4]
+// CHECK-NEXT:   Preds (1): B4
+// CHECK-NEXT:   Succs (2): B2(Unreachable) B1
+int overlap_compare(int x) {
+  if (x == -1 && x > 5)
+    return 1;
+
+  return 2;
+}
+
 // CHECK-LABEL: template<> int *PR18472<int>()
 // CHECK: [B2 (ENTRY)]
 // CHECK-NEXT:   Succs (1): B1
@@ -455,4 +591,3 @@ template <class T> T *PR18472() {
 void PR18472_helper() {
   PR18472<int>();
 }
-

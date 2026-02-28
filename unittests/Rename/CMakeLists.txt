@@ -13,14 +13,16 @@ add_clang_unittest(ClangRenameTests
   RenameFunctionTest.cpp
   )
 
-target_link_libraries(ClangRenameTests
+clang_target_link_libraries(ClangRenameTests
+  PRIVATE
   clangAST
   clangASTMatchers
   clangBasic
   clangFormat
   clangFrontend
   clangRewrite
+  clangSerialization
   clangTooling
   clangToolingCore
-  clangToolingRefactor
+  clangToolingRefactoring
   )

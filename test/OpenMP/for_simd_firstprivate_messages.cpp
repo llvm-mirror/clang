@@ -1,5 +1,8 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+extern int omp_default_mem_alloc;
 void foo() {
 }
 
@@ -91,7 +94,7 @@ int foomain(int argc, char **argv) {
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp parallel
-#pragma omp for simd firstprivate(argc)
+#pragma omp for simd firstprivate(argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp parallel

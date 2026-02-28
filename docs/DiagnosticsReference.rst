@@ -7555,9 +7555,9 @@ This diagnostic is enabled by default.
 
 **Diagnostic text:**
 
-+------------------------------------------------------------------------------------------------------------+
-|:warning:`warning:` |nbsp| :diagtext:`default property attribute 'assign' not appropriate for non-GC object`|
-+------------------------------------------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------------------+
+|:warning:`warning:` |nbsp| :diagtext:`default property attribute 'assign' not appropriate for object`|
++-----------------------------------------------------------------------------------------------------+
 
 +--------------------------------------------------------------------------------------------------------------------+
 |:warning:`warning:` |nbsp| :diagtext:`no 'assign', 'retain', or 'copy' attribute is specified - 'assign' is assumed`|
@@ -7884,6 +7884,10 @@ This diagnostic is enabled by default.
 |                                                                                               ||:diagtext:`functions`||
 |                                                                                               |+---------------------+|
 +-----------------------------------------------------------------------------------------------+-----------------------+
+
+-Woverride-init
+---------------
+Synonym for `-Winitializer-overrides`_.
 
 
 -Woverride-module
@@ -8637,9 +8641,9 @@ Also controls `-Wpragma-pack-suspicious-include`_.
 
 **Diagnostic text:**
 
-+---------------------------------------------------------------------------------------------------------------+
-|:warning:`warning:` |nbsp| :diagtext:`the current #pragma pack aligment value is modified in the included file`|
-+---------------------------------------------------------------------------------------------------------------+
++----------------------------------------------------------------------------------------------------------------+
+|:warning:`warning:` |nbsp| :diagtext:`the current #pragma pack alignment value is modified in the included file`|
++----------------------------------------------------------------------------------------------------------------+
 
 +---------------------------------------------------------------------------------------------+
 |:warning:`warning:` |nbsp| :diagtext:`unterminated '#pragma pack (push, ...)' at end of file`|

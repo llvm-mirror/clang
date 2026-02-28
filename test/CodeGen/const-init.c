@@ -121,8 +121,8 @@ struct g22 {int x;} __attribute((packed));
 struct g23 {char a; short b; char c; struct g22 d;};
 struct g23 g24 = {1,2,3,4};
 
-// CHECK: @g25.g26 = internal global i8* getelementptr inbounds ([4 x i8], [4 x i8]* @__func__.g25, i32 0, i32 0)
-// CHECK: @__func__.g25 = private unnamed_addr constant [4 x i8] c"g25\00"
+// CHECK: @g25.g26 = internal global i8* getelementptr inbounds ([4 x i8], [4 x i8]* @[[FUNC:.*]], i32 0, i32 0)
+// CHECK: @[[FUNC]] = private unnamed_addr constant [4 x i8] c"g25\00"
 int g25() {
   static const char *g26 = __func__;
   return *g26;
@@ -141,8 +141,8 @@ void g28() {
   // CHECK: @g28.b = internal global <12 x i16> <i16 0, i16 0, i16 0, i16 -32768, i16 16383, i16 0, i16 0, i16 0, i16 0, i16 -32768, i16 16384, i16 0>
   // CHECK: @g28.c = internal global <2 x x86_fp80> <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>, align 32
   static v1i64 a = (v1i64)10LL;
-  static v12i16 b = (v2f80){1,2};
-  static v2f80 c = (v12i16){0,0,0,-32768,16383,0,0,0,0,-32768,16384,0};
+  static v12i16 b = (v12i16)(v2f80){1,2};
+  static v2f80 c = (v2f80)(v12i16){0,0,0,-32768,16383,0,0,0,0,-32768,16384,0};
 }
 
 // PR13643
@@ -153,7 +153,7 @@ void g29() {
       DCC_PASSWD passwd;
   } DCC_SRVR_NM;
   // CHECK: @g29.a = internal global %struct.DCC_SRVR_NM { [2 x i8] c"@\00" }, align 1
-  // CHECK: @g29.b = internal global [1 x i32] [i32 ptrtoint ([5 x i8]* @.str to i32)], align 4
+  // CHECK: @g29.b = internal global [1 x i32] [i32 ptrtoint ([5 x i8]* @.str.1 to i32)], align 4
   // CHECK: @g29.c = internal global [1 x i32] [i32 97], align 4
   static DCC_SRVR_NM a = { {"@"} };
   static int b[1] = { "asdf" }; // expected-warning {{incompatible pointer to integer conversion initializing 'int' with an expression of type 'char [5]'}}

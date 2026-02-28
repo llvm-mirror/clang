@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s
+// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -std=c++11 %s -Wuninitialized
 
 void foo() {
 }
@@ -23,13 +25,13 @@ int main(int argc, char **argv, char *env[]) {
 
   #pragma omp target simd depend // expected-error {{expected '(' after 'depend'}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target simd depend ( // expected-error {{expected 'in', 'out' or 'inout' in OpenMP clause 'depend'}} expected-error {{expected ')'}} expected-note {{to match this '('}} expected-warning {{missing ':' after dependency type - ignoring}}
+  #pragma omp target simd depend ( // expected-error {{expected 'in', 'out', 'inout' or 'mutexinoutset' in OpenMP clause 'depend'}} expected-error {{expected ')'}} expected-note {{to match this '('}} expected-warning {{missing ':' after dependency type - ignoring}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target simd depend () // expected-error {{expected 'in', 'out' or 'inout' in OpenMP clause 'depend'}} expected-warning {{missing ':' after dependency type - ignoring}}
+  #pragma omp target simd depend () // expected-error {{expected 'in', 'out', 'inout' or 'mutexinoutset' in OpenMP clause 'depend'}} expected-warning {{missing ':' after dependency type - ignoring}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target simd depend (argc // expected-error {{expected 'in', 'out' or 'inout' in OpenMP clause 'depend'}} expected-warning {{missing ':' after dependency type - ignoring}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp target simd depend (argc // expected-error {{expected 'in', 'out', 'inout' or 'mutexinoutset' in OpenMP clause 'depend'}} expected-warning {{missing ':' after dependency type - ignoring}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target simd depend (source : argc) // expected-error {{expected 'in', 'out' or 'inout' in OpenMP clause 'depend'}}
+  #pragma omp target simd depend (source : argc) // expected-error {{expected 'in', 'out', 'inout' or 'mutexinoutset' in OpenMP clause 'depend'}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target simd depend (source) // expected-error {{expected expression}} expected-warning {{missing ':' after dependency type - ignoring}}
   for (i = 0; i < argc; ++i) foo();

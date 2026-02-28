@@ -7,11 +7,13 @@ add_clang_tool(clang-format
 set(CLANG_FORMAT_LIB_DEPS
   clangBasic
   clangFormat
+  clangFrontend
   clangRewrite
   clangToolingCore
   )
 
-target_link_libraries(clang-format
+clang_target_link_libraries(clang-format
+  PRIVATE
   ${CLANG_FORMAT_LIB_DEPS}
   )
 

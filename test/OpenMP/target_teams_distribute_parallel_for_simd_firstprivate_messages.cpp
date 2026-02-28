@@ -1,4 +1,16 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+typedef void **omp_allocator_handle_t;
+extern const omp_allocator_handle_t omp_default_mem_alloc;
+extern const omp_allocator_handle_t omp_large_cap_mem_alloc;
+extern const omp_allocator_handle_t omp_const_mem_alloc;
+extern const omp_allocator_handle_t omp_high_bw_mem_alloc;
+extern const omp_allocator_handle_t omp_low_lat_mem_alloc;
+extern const omp_allocator_handle_t omp_cgroup_mem_alloc;
+extern const omp_allocator_handle_t omp_pteam_mem_alloc;
+extern const omp_allocator_handle_t omp_thread_mem_alloc;
 
 void foo() {
 }
@@ -7,11 +19,18 @@ bool foobool(int argc) {
   return argc;
 }
 
+void xxx(int argc) {
+  int fp; // expected-note {{initialize the variable 'fp' to silence this warning}}
+#pragma omp target teams distribute parallel for simd firstprivate(fp) // expected-warning {{variable 'fp' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
+}
+
 struct S1; // expected-note {{declared here}} expected-note{{forward declaration of 'S1'}}
 extern S1 a;
 class S2 {
   mutable int a;
-  
+
 public:
   S2() : a(0) {}
   S2(const S2 &s2) : a(s2.a) {}
@@ -24,7 +43,7 @@ const S2 ba[5];
 class S3 {
   int a;
   S3 &operator=(const S3 &s3);
-  
+
 public:
   S3() : a(0) {} // expected-note 2 {{candidate constructor not viable: requires 0 arguments, but 1 was provided}}
   S3(S3 &s3) : a(s3.a) {} // expected-note 2 {{candidate constructor not viable: 1st argument ('const S3') would lose const qualifier}}
@@ -61,7 +80,7 @@ int main(int argc, char **argv) {
   S4 e(4);
   S5 g(5);
   S6 p;
-  int i;
+  int i, z;
   int &j = i;
 
 #pragma omp target teams distribute parallel for simd firstprivate // expected-error {{expected '(' after 'firstprivate'}}
@@ -82,7 +101,7 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute parallel for simd firstprivate (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute parallel for simd firstprivate (argc)
+#pragma omp target teams distribute parallel for simd firstprivate (argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute parallel for simd firstprivate (S1) // expected-error {{'S1' does not refer to a value}}
@@ -94,13 +113,13 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute parallel for simd firstprivate (argv[1]) // expected-error {{expected variable name}}
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute parallel for simd firstprivate(ba)
+#pragma omp target teams distribute parallel for simd allocate(omp_thread_mem_alloc: ba) firstprivate(ba) // expected-warning {{allocator with the 'thread' trait access has unspecified behavior on 'target teams distribute parallel for simd' directive}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute parallel for simd firstprivate(ca) // expected-error {{no matching constructor for initialization of 'S3'}}
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute parallel for simd firstprivate(da)
+#pragma omp target teams distribute parallel for simd firstprivate(da, z)
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute parallel for simd firstprivate(S2::S2s)
@@ -124,7 +143,8 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute parallel for simd firstprivate(j)
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute parallel for simd lastprivate(argc), firstprivate(argc) // OK
+// expected-error@+1 {{lastprivate variable cannot be firstprivate}} expected-note@+1 {{defined as lastprivate}}
+#pragma omp target teams distribute parallel for simd lastprivate(argc), firstprivate(argc)
   for (i = 0; i < argc; ++i) foo();
 
   return 0;

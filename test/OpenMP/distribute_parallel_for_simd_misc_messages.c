@@ -1,4 +1,13 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -verify %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp distribute parallel for simd
+  for (int i = 0; i < 10; ++i)
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp distribute parallel for simd'}}
 #pragma omp distribute parallel for simd
@@ -68,7 +77,7 @@ void test_non_identifiers() {
 #pragma omp target
 #pragma omp teams
 // expected-warning@+1 {{extra tokens at the end of '#pragma omp distribute parallel for simd' are ignored}}
-#pragma omp distribute parallel for simd linear(x);
+#pragma omp distribute parallel for simd firstprivate(x);
   for (i = 0; i < 16; ++i)
     ;
 
@@ -548,89 +557,6 @@ void test_linear() {
 #pragma omp distribute parallel for simd linear(x, y, z)
   for (i = 0; i < 16; ++i)
     ;
-
-  int x, y;
-#pragma omp target
-#pragma omp teams
-// expected-error@+1 {{expected expression}}
-#pragma omp distribute parallel for simd linear(x :)
-  for (i = 0; i < 16; ++i)
-    ;
-#pragma omp target
-#pragma omp teams
-// expected-error@+1 {{expected expression}} expected-error@+1 {{expected ')'}} expected-note@+1 {{to match this '('}}
-#pragma omp distribute parallel for simd linear(x :, )
-  for (i = 0; i < 16; ++i)
-    ;
-#pragma omp target
-#pragma omp teams
-#pragma omp distribute parallel for simd linear(x : 1)
-  for (i = 0; i < 16; ++i)
-    ;
-#pragma omp target
-#pragma omp teams
-#pragma omp distribute parallel for simd linear(x : 2 * 2)
-  for (i = 0; i < 16; ++i)
-    ;
-#pragma omp target
-#pragma omp teams
-// expected-error@+1 {{expected ')'}} expected-note@+1 {{to match this '('}}
-#pragma omp distribute parallel for simd linear(x : 1, y)
-  for (i = 0; i < 16; ++i)
-    ;
-#pragma omp target
-#pragma omp teams
-// expected-error@+1 {{expected ')'}} expected-note@+1 {{to match this '('}}
-#pragma omp distribute parallel for simd linear(x : 1, y, z : 1)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-note@+2 {{defined as linear}}
-// expected-error@+1 {{linear variable cannot be linear}}
-#pragma omp distribute parallel for simd linear(x) linear(x)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-note@+2 {{defined as private}}
-// expected-error@+1 {{private variable cannot be linear}}
-#pragma omp distribute parallel for simd private(x) linear(x)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-note@+2 {{defined as linear}}
-// expected-error@+1 {{linear variable cannot be private}}
-#pragma omp distribute parallel for simd linear(x) private(x)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-warning@+1 {{zero linear step (x and other variables in clause should probably be const)}}
-#pragma omp distribute parallel for simd linear(x, y : 0)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-note@+2 {{defined as linear}}
-// expected-error@+1 {{linear variable cannot be lastprivate}}
-#pragma omp distribute parallel for simd linear(x) lastprivate(x)
-  for (i = 0; i < 16; ++i)
-    ;
-
-#pragma omp target
-#pragma omp teams
-// expected-note@+2 {{defined as lastprivate}}
-// expected-error@+1 {{lastprivate variable cannot be linear}}
-#pragma omp distribute parallel for simd lastprivate(x) linear(x)
-  for (i = 0; i < 16; ++i)
-    ;
 }
 
 void test_aligned() {
@@ -934,16 +860,19 @@ void test_firstprivate() {
     ;
 
   int x, y, z;
+// expected-error@+3 {{lastprivate variable cannot be firstprivate}} expected-note@+3 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
 #pragma omp distribute parallel for simd lastprivate(x) firstprivate(x)
   for (i = 0; i < 16; ++i)
     ;
+// expected-error@+3 2 {{lastprivate variable cannot be firstprivate}} expected-note@+3 2 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
 #pragma omp distribute parallel for simd lastprivate(x, y) firstprivate(x, y)
   for (i = 0; i < 16; ++i)
     ;
+// expected-error@+3 3 {{lastprivate variable cannot be firstprivate}} expected-note@+3 3 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
 #pragma omp distribute parallel for simd lastprivate(x, y, z) firstprivate(x, y, z)

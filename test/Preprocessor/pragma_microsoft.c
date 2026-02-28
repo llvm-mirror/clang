@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 %s -fsyntax-only -verify -fms-extensions -Wunknown-pragmas
-// RUN: not %clang_cc1 %s -fms-extensions -E | FileCheck %s
-// REQUIRES: non-ps4-sdk
+// RUN: %clang_cc1 -triple i686-unknown-windows-msvc %s -fsyntax-only -verify -fms-extensions -Wunknown-pragmas
+// RUN: not %clang_cc1 -triple i686-unknown-windows-msvc %s -fms-extensions -E | FileCheck %s
+// UNSUPPORTED: ps4
 
 // rdar://6495941
 
@@ -51,6 +51,8 @@ __pragma(comment(linker," bar=" BAR))
   __pragma(warning(pop)); \
 }
 
+#define PRAGMA_IN_ARGS(p) p
+
 void f()
 {
   __pragma() // expected-warning{{unknown pragma ignored}}
@@ -64,8 +66,16 @@ void f()
 // CHECK: #pragma warning(disable: 10000)
 // CHECK: ; 1 + (2 > 3) ? 4 : 5;
 // CHECK: #pragma warning(pop)
-}
 
+  // Check that macro arguments can contain __pragma.
+  PRAGMA_IN_ARGS(MACRO_WITH__PRAGMA) // expected-warning {{lower precedence}} \
+                                     // expected-note 2 {{place parentheses}} \
+                                     // expected-warning {{expression result unused}}
+// CHECK: #pragma warning(push)
+// CHECK: #pragma warning(disable: 10000)
+// CHECK: ; 1 + (2 > 3) ? 4 : 5;
+// CHECK: #pragma warning(pop)
+}
 
 // This should include macro_arg_directive even though the include
 // is looking for test.h  This allows us to assign to "n"
@@ -190,3 +200,29 @@ void g() {}
 #pragma intrinsic(asdf) // no-warning
 #pragma clang diagnostic pop
 #pragma intrinsic(asdf) // expected-warning {{'asdf' is not a recognized builtin; consider including <intrin.h>}}
+
+#pragma optimize          // expected-warning{{missing '(' after '#pragma optimize'}}
+#pragma optimize(         // expected-warning{{expected string literal in '#pragma optimize'}}
+#pragma optimize(a        // expected-warning{{expected string literal in '#pragma optimize'}}
+#pragma optimize("g"      // expected-warning{{expected ',' in '#pragma optimize'}}
+#pragma optimize("g",     // expected-warning{{missing argument to '#pragma optimize'; expected 'on' or 'off'}}
+#pragma optimize("g",xyz  // expected-warning{{unexpected argument 'xyz' to '#pragma optimize'; expected 'on' or 'off'}}
+#pragma optimize("g",on)  // expected-warning{{#pragma optimize' is not supported}}
+
+#pragma execution_character_set                 // expected-warning {{expected '('}}
+#pragma execution_character_set(                // expected-warning {{expected 'push' or 'pop'}}
+#pragma execution_character_set()               // expected-warning {{expected 'push' or 'pop'}}
+#pragma execution_character_set(asdf            // expected-warning {{expected 'push' or 'pop'}}
+#pragma execution_character_set(asdf)           // expected-warning {{expected 'push' or 'pop'}}
+#pragma execution_character_set(push            // expected-warning {{expected ')'}}
+#pragma execution_character_set(pop,)           // expected-warning {{expected ')'}}
+#pragma execution_character_set(pop,"asdf")     // expected-warning {{expected ')'}}
+#pragma execution_character_set(push,           // expected-error {{expected string literal}}
+#pragma execution_character_set(push,)          // expected-error {{expected string literal}}
+#pragma execution_character_set(push,asdf)      // expected-error {{expected string literal}}
+#pragma execution_character_set(push, "asdf")   // expected-warning {{only 'UTF-8' is supported}}
+
+#pragma execution_character_set(push)
+#pragma execution_character_set(push, "utf-8")
+#pragma execution_character_set(push, "UTF-8")
+#pragma execution_character_set(pop)

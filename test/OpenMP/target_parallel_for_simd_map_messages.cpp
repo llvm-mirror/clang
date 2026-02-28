@@ -1,10 +1,19 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wno-openmp-target -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wno-openmp-target -Wuninitialized
 
 void foo() {
 }
 
 bool foobool(int argc) {
   return argc;
+}
+
+void xxx(int argc) {
+  int map; // expected-note {{initialize the variable 'map' to silence this warning}}
+#pragma omp target parallel for simd map(map) // expected-warning {{variable 'map' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
 }
 
 struct S1; // expected-note 2 {{declared here}}
@@ -59,7 +68,7 @@ T tmain(T argc) {
   T &j = i;
   T *k = &j;
   T x;
-  T y;
+  T y ,z;
   T to, tofrom, always;
   const T (&l)[5] = da;
 
@@ -84,6 +93,8 @@ T tmain(T argc) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(l[:-1]) // expected-error 2 {{section length is evaluated to a negative value -1}}
   for (i = 0; i < argc; ++i) foo();
+#pragma omp target parallel for simd map(l[true:true])
+  for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(x)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(tofrom: t[:I])
@@ -98,7 +109,7 @@ T tmain(T argc) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(S2::S2sc)
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target parallel for simd map(x)
+#pragma omp target parallel for simd map(x, z)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(to: x)
   for (i = 0; i < argc; ++i) foo();
@@ -161,7 +172,7 @@ T tmain(T argc) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(always: x) // expected-error {{missing map type}}
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target parallel for simd map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always'}} expected-error {{incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'}}
+#pragma omp target parallel for simd map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always', 'close', or 'mapper'}} expected-error {{missing map type}}
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(always, tofrom: always, tofrom, x)
   for (i = 0; i < argc; ++i) foo();
@@ -180,7 +191,7 @@ int main(int argc, char **argv) {
   int &j = i;
   int *k = &j;
   int x;
-  int y;
+  int y, z;
   int to, tofrom, always;
   const int (&l)[5] = da;
 
@@ -204,13 +215,15 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel map(l[:-1]) // expected-error {{section length is evaluated to a negative value -1}}
   for (i = 0; i < argc; ++i) foo();
+#pragma omp target parallel map(l[true:true])
+  for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(x)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(to: x)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(to: to)
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target parallel for simd map(to)
+#pragma omp target parallel for simd map(to, z)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(to, x)
   for (i = 0; i < argc; ++i) foo();
@@ -269,7 +282,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(always: x) // expected-error {{missing map type}}
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target parallel for simd map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always'}} expected-error {{incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'}}
+#pragma omp target parallel for simd map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always', 'close', or 'mapper'}} expected-error {{missing map type}}
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target parallel for simd map(always, tofrom: always, tofrom, x)
   for (i = 0; i < argc; ++i) foo();

@@ -1,9 +1,8 @@
 // unittests/ASTMatchers/ASTMatchersNarrowingTest.cpp - AST matcher unit tests//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -332,6 +331,16 @@ TEST(DeclarationMatcher, ClassIsDerived) {
   EXPECT_TRUE(notMatches("class Y;", IsDerivedFromX));
   EXPECT_TRUE(notMatches("", IsDerivedFromX));
 
+  DeclarationMatcher IsDirectlyDerivedFromX =
+      cxxRecordDecl(isDirectlyDerivedFrom("X"));
+
+  EXPECT_TRUE(
+      matches("class X {}; class Y : public X {};", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatches("class X {};", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatches("class X;", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatches("class Y;", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatches("", IsDirectlyDerivedFromX));
+
   DeclarationMatcher IsAX = cxxRecordDecl(isSameOrDerivedFrom("X"));
 
   EXPECT_TRUE(matches("class X {}; class Y : public X {};", IsAX));
@@ -342,13 +351,22 @@ TEST(DeclarationMatcher, ClassIsDerived) {
 
   DeclarationMatcher ZIsDerivedFromX =
     cxxRecordDecl(hasName("Z"), isDerivedFrom("X"));
+  DeclarationMatcher ZIsDirectlyDerivedFromX =
+      cxxRecordDecl(hasName("Z"), isDirectlyDerivedFrom("X"));
   EXPECT_TRUE(
     matches("class X {}; class Y : public X {}; class Z : public Y {};",
             ZIsDerivedFromX));
   EXPECT_TRUE(
+      notMatches("class X {}; class Y : public X {}; class Z : public Y {};",
+                 ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(
     matches("class X {};"
               "template<class T> class Y : public X {};"
               "class Z : public Y<int> {};", ZIsDerivedFromX));
+  EXPECT_TRUE(notMatches("class X {};"
+                         "template<class T> class Y : public X {};"
+                         "class Z : public Y<int> {};",
+                         ZIsDirectlyDerivedFromX));
   EXPECT_TRUE(matches("class X {}; template<class T> class Z : public X {};",
                       ZIsDerivedFromX));
   EXPECT_TRUE(
@@ -412,6 +430,9 @@ TEST(DeclarationMatcher, ClassIsDerived) {
     matches("class X {}; class Y : public X {}; "
               "typedef Y V; typedef V W; class Z : public W {};",
             ZIsDerivedFromX));
+  EXPECT_TRUE(notMatches("class X {}; class Y : public X {}; "
+                         "typedef Y V; typedef V W; class Z : public W {};",
+                         ZIsDirectlyDerivedFromX));
   EXPECT_TRUE(
     matches("template<class T, class U> class X {}; "
               "template<class T> class A { class Z : public X<T, int> {}; };",
@@ -468,6 +489,14 @@ TEST(DeclarationMatcher, ClassIsDerived) {
       "template<> struct X<0> : public A {};"
       "struct B : public X<42> {};",
     cxxRecordDecl(hasName("B"), isDerivedFrom(recordDecl(hasName("A"))))));
+  EXPECT_TRUE(notMatches(
+      "struct A {};"
+      "template<int> struct X;"
+      "template<int i> struct X : public X<i-1> {};"
+      "template<> struct X<0> : public A {};"
+      "struct B : public X<42> {};",
+      cxxRecordDecl(hasName("B"),
+                    isDirectlyDerivedFrom(recordDecl(hasName("A"))))));
 
   // FIXME: Once we have better matchers for template type matching,
   // get rid of the Variable(...) matching and match the right template
@@ -537,6 +566,118 @@ TEST(DeclarationMatcher, ClassIsDerived) {
     cxxRecordDecl(isDerivedFrom(namedDecl(hasName("X"))))));
 }
 
+TEST(DeclarationMatcher, IsDerivedFromEmptyName) {
+  const char *const Code = "class X {}; class Y : public X {};";
+  EXPECT_TRUE(notMatches(Code, cxxRecordDecl(isDerivedFrom(""))));
+  EXPECT_TRUE(notMatches(Code, cxxRecordDecl(isDirectlyDerivedFrom(""))));
+  EXPECT_TRUE(notMatches(Code, cxxRecordDecl(isSameOrDerivedFrom(""))));
+}
+
+TEST(DeclarationMatcher, ObjCClassIsDerived) {
+  DeclarationMatcher IsDerivedFromX = objcInterfaceDecl(isDerivedFrom("X"));
+  EXPECT_TRUE(
+      matchesObjC("@interface X @end @interface Y : X @end", IsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @interface Y<__covariant ObjectType> : X @end",
+      IsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @compatibility_alias Y X; @interface Z : Y @end",
+      IsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end typedef X Y; @interface Z : Y @end", IsDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end", IsDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@class X;", IsDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@class Y;", IsDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end @compatibility_alias Y X;",
+                             IsDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end typedef X Y;", IsDerivedFromX));
+
+  DeclarationMatcher IsDirectlyDerivedFromX =
+      objcInterfaceDecl(isDirectlyDerivedFrom("X"));
+  EXPECT_TRUE(
+      matchesObjC("@interface X @end @interface Y : X @end", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @interface Y<__covariant ObjectType> : X @end",
+      IsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @compatibility_alias Y X; @interface Z : Y @end",
+      IsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end typedef X Y; @interface Z : Y @end",
+      IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@class X;", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@class Y;", IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end @compatibility_alias Y X;",
+                             IsDirectlyDerivedFromX));
+  EXPECT_TRUE(notMatchesObjC("@interface X @end typedef X Y;",
+                             IsDirectlyDerivedFromX));
+
+  DeclarationMatcher IsAX = objcInterfaceDecl(isSameOrDerivedFrom("X"));
+  EXPECT_TRUE(matchesObjC("@interface X @end @interface Y : X @end", IsAX));
+  EXPECT_TRUE(matchesObjC("@interface X @end", IsAX));
+  EXPECT_TRUE(matchesObjC("@class X;", IsAX));
+  EXPECT_TRUE(notMatchesObjC("@interface Y @end", IsAX));
+  EXPECT_TRUE(notMatchesObjC("@class Y;", IsAX));
+
+  DeclarationMatcher ZIsDerivedFromX =
+      objcInterfaceDecl(hasName("Z"), isDerivedFrom("X"));
+  DeclarationMatcher ZIsDirectlyDerivedFromX =
+      objcInterfaceDecl(hasName("Z"), isDirectlyDerivedFrom("X"));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @interface Y : X @end @interface Z : Y @end",
+      ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC("@interface X @end @interface Y : X @end typedef Y "
+                          "V; typedef V W; @interface Z : W @end",
+                          ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end typedef X Y; @interface Z : Y @end", ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end typedef X Y; @interface Z : Y @end",
+      ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end typedef A X; typedef A Y; @interface Z : Y @end",
+      ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end typedef A X; typedef A Y; @interface Z : Y @end",
+      ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @compatibility_alias Y X; @interface Z : Y @end",
+      ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface X @end @compatibility_alias Y X; @interface Z : Y @end",
+      ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface Y @end @compatibility_alias X Y; @interface Z : Y @end",
+      ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface Y @end @compatibility_alias X Y; @interface Z : Y @end",
+      ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end @compatibility_alias X A; @compatibility_alias Y A;"
+      "@interface Z : Y @end", ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end @compatibility_alias X A; @compatibility_alias Y A;"
+      "@interface Z : Y @end", ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface Y @end typedef Y X; @interface Z : X @end", ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface Y @end typedef Y X; @interface Z : X @end",
+      ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end @compatibility_alias Y A; typedef Y X;"
+      "@interface Z : A @end", ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end @compatibility_alias Y A; typedef Y X;"
+      "@interface Z : A @end", ZIsDirectlyDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end typedef A Y; @compatibility_alias X Y;"
+      "@interface Z : A @end", ZIsDerivedFromX));
+  EXPECT_TRUE(matchesObjC(
+      "@interface A @end typedef A Y; @compatibility_alias X Y;"
+      "@interface Z : A @end", ZIsDirectlyDerivedFromX));
+}
+
 TEST(DeclarationMatcher, IsLambda) {
   const auto IsLambda = cxxMethodDecl(ofClass(cxxRecordDecl(isLambda())));
   EXPECT_TRUE(matches("auto x = []{};", IsLambda));
@@ -547,24 +688,24 @@ TEST(Matcher, BindMatchedNodes) {
   DeclarationMatcher ClassX = has(recordDecl(hasName("::X")).bind("x"));
 
   EXPECT_TRUE(matchAndVerifyResultTrue("class X {};",
-                                       ClassX, llvm::make_unique<VerifyIdIsBoundTo<CXXRecordDecl>>("x")));
+                                       ClassX, std::make_unique<VerifyIdIsBoundTo<CXXRecordDecl>>("x")));
 
   EXPECT_TRUE(matchAndVerifyResultFalse("class X {};",
-                                        ClassX, llvm::make_unique<VerifyIdIsBoundTo<CXXRecordDecl>>("other-id")));
+                                        ClassX, std::make_unique<VerifyIdIsBoundTo<CXXRecordDecl>>("other-id")));
 
   TypeMatcher TypeAHasClassB = hasDeclaration(
     recordDecl(hasName("A"), has(recordDecl(hasName("B")).bind("b"))));
 
   EXPECT_TRUE(matchAndVerifyResultTrue("class A { public: A *a; class B {}; };",
                                        TypeAHasClassB,
-                                       llvm::make_unique<VerifyIdIsBoundTo<Decl>>("b")));
+                                       std::make_unique<VerifyIdIsBoundTo<Decl>>("b")));
 
   StatementMatcher MethodX =
     callExpr(callee(cxxMethodDecl(hasName("x")))).bind("x");
 
   EXPECT_TRUE(matchAndVerifyResultTrue("class A { void x() { x(); } };",
                                        MethodX,
-                                       llvm::make_unique<VerifyIdIsBoundTo<CXXMemberCallExpr>>("x")));
+                                       std::make_unique<VerifyIdIsBoundTo<CXXMemberCallExpr>>("x")));
 }
 
 TEST(Matcher, BindTheSameNameInAlternatives) {
@@ -581,7 +722,7 @@ TEST(Matcher, BindTheSameNameInAlternatives) {
     // The second branch binds x to f() and succeeds.
     "int f() { return 0 + f(); }",
     matcher,
-    llvm::make_unique<VerifyIdIsBoundTo<CallExpr>>("x")));
+    std::make_unique<VerifyIdIsBoundTo<CallExpr>>("x")));
 }
 
 TEST(Matcher, BindsIDForMemoizedResults) {
@@ -593,7 +734,7 @@ TEST(Matcher, BindsIDForMemoizedResults) {
     DeclarationMatcher(anyOf(
       recordDecl(hasName("A"), hasDescendant(ClassX)),
       recordDecl(hasName("B"), hasDescendant(ClassX)))),
-    llvm::make_unique<VerifyIdIsBoundTo<Decl>>("x", 2)));
+    std::make_unique<VerifyIdIsBoundTo<Decl>>("x", 2)));
 }
 
 TEST(HasType, MatchesAsString) {
@@ -643,7 +784,7 @@ TEST(Matcher, NestedOverloadedOperatorCalls) {
       "Y& operator&&(Y& x, Y& y) { return x; }; "
       "Y a; Y b; Y c; Y d = a && b && c;",
     cxxOperatorCallExpr(hasOverloadedOperatorName("&&")).bind("x"),
-    llvm::make_unique<VerifyIdIsBoundTo<CXXOperatorCallExpr>>("x", 2)));
+    std::make_unique<VerifyIdIsBoundTo<CXXOperatorCallExpr>>("x", 2)));
   EXPECT_TRUE(matches("class Y { }; "
                         "Y& operator&&(Y& x, Y& y) { return x; }; "
                         "Y a; Y b; Y c; Y d = a && b && c;",
@@ -665,6 +806,14 @@ TEST(Matcher, VarDecl_Storage) {
   EXPECT_TRUE(notMatches("void f() { int X; }", M));
   EXPECT_TRUE(matches("int X;", M));
   EXPECT_TRUE(matches("void f() { static int X; }", M));
+}
+
+TEST(Matcher, VarDecl_IsStaticLocal) {
+  auto M = varDecl(isStaticLocal());
+  EXPECT_TRUE(matches("void f() { static int X; }", M));
+  EXPECT_TRUE(notMatches("static int X;", M));
+  EXPECT_TRUE(notMatches("void f() { int X; }", M));
+  EXPECT_TRUE(notMatches("int X;", M));
 }
 
 TEST(Matcher, VarDecl_StorageDuration) {
@@ -765,6 +914,11 @@ TEST(IsArrow, MatchesMemberVariablesViaArrow) {
                       memberExpr(isArrow())));
   EXPECT_TRUE(notMatches("class Y { void x() { (*this).y; } int y; };",
                          memberExpr(isArrow())));
+  EXPECT_TRUE(matches("template <class T> class Y { void x() { this->m; } };",
+                      cxxDependentScopeMemberExpr(isArrow())));
+  EXPECT_TRUE(
+      notMatches("template <class T> class Y { void x() { (*this).m; } };",
+                 cxxDependentScopeMemberExpr(isArrow())));
 }
 
 TEST(IsArrow, MatchesStaticMemberVariablesViaArrow) {
@@ -783,6 +937,14 @@ TEST(IsArrow, MatchesMemberCallsViaArrow) {
                       memberExpr(isArrow())));
   EXPECT_TRUE(notMatches("class Y { void x() { Y y; y.x(); } };",
                          memberExpr(isArrow())));
+  EXPECT_TRUE(
+      matches("class Y { template <class T> void x() { this->x<T>(); } };",
+              unresolvedMemberExpr(isArrow())));
+  EXPECT_TRUE(matches("class Y { template <class T> void x() { x<T>(); } };",
+                      unresolvedMemberExpr(isArrow())));
+  EXPECT_TRUE(
+      notMatches("class Y { template <class T> void x() { (*this).x<T>(); } };",
+                 unresolvedMemberExpr(isArrow())));
 }
 
 TEST(ConversionDeclaration, IsExplicit) {
@@ -790,6 +952,15 @@ TEST(ConversionDeclaration, IsExplicit) {
                       cxxConversionDecl(isExplicit())));
   EXPECT_TRUE(notMatches("struct S { operator int(); };",
                          cxxConversionDecl(isExplicit())));
+  EXPECT_TRUE(matchesConditionally(
+      "template<bool b> struct S { explicit(b) operator int(); };",
+      cxxConversionDecl(isExplicit()), false, "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally(
+      "struct S { explicit(true) operator int(); };",
+      cxxConversionDecl(isExplicit()), true, "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally(
+      "struct S { explicit(false) operator int(); };",
+      cxxConversionDecl(isExplicit()), false, "-std=c++2a"));
 }
 
 TEST(Matcher, ArgumentCount) {
@@ -894,6 +1065,10 @@ TEST(isConstexpr, MatchesConstexprDeclarations) {
                       varDecl(hasName("foo"), isConstexpr())));
   EXPECT_TRUE(matches("constexpr int bar();",
                       functionDecl(hasName("bar"), isConstexpr())));
+  EXPECT_TRUE(matches("void baz() { if constexpr(1 > 0) {} }",
+                      ifStmt(isConstexpr()), LanguageMode::Cxx17OrLater));
+  EXPECT_TRUE(notMatches("void baz() { if (1 > 0) {} }", ifStmt(isConstexpr()),
+                         LanguageMode::Cxx17OrLater));
 }
 
 TEST(TemplateArgumentCountIs, Matches) {
@@ -1105,6 +1280,38 @@ TEST(ConstructorDeclaration, IsExplicit) {
                       cxxConstructorDecl(isExplicit())));
   EXPECT_TRUE(notMatches("struct S { S(int); };",
                          cxxConstructorDecl(isExplicit())));
+  EXPECT_TRUE(matchesConditionally(
+      "template<bool b> struct S { explicit(b) S(int);};",
+      cxxConstructorDecl(isExplicit()), false, "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally("struct S { explicit(true) S(int);};",
+                                   cxxConstructorDecl(isExplicit()), true,
+                                   "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally("struct S { explicit(false) S(int);};",
+                                   cxxConstructorDecl(isExplicit()), false,
+                                   "-std=c++2a"));
+}
+
+TEST(DeductionGuideDeclaration, IsExplicit) {
+  EXPECT_TRUE(matchesConditionally("template<typename T> struct S { S(int);};"
+                                   "S(int) -> S<int>;",
+                                   cxxDeductionGuideDecl(isExplicit()), false,
+                                   "-std=c++17"));
+  EXPECT_TRUE(matchesConditionally("template<typename T> struct S { S(int);};"
+                                   "explicit S(int) -> S<int>;",
+                                   cxxDeductionGuideDecl(isExplicit()), true,
+                                   "-std=c++17"));
+  EXPECT_TRUE(matchesConditionally("template<typename T> struct S { S(int);};"
+                                   "explicit(true) S(int) -> S<int>;",
+                                   cxxDeductionGuideDecl(isExplicit()), true,
+                                   "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally("template<typename T> struct S { S(int);};"
+                                   "explicit(false) S(int) -> S<int>;",
+                                   cxxDeductionGuideDecl(isExplicit()), false,
+                                   "-std=c++2a"));
+  EXPECT_TRUE(matchesConditionally(
+      "template<typename T> struct S { S(int);};"
+      "template<bool b = true> explicit(b) S(int) -> S<int>;",
+      cxxDeductionGuideDecl(isExplicit()), false, "-std=c++2a"));
 }
 
 TEST(ConstructorDeclaration, Kinds) {
@@ -1315,6 +1522,14 @@ TEST(Matcher, IsDefinition) {
     cxxMethodDecl(hasName("a"), isDefinition());
   EXPECT_TRUE(matches("class A { void a() {} };", DefinitionOfMethodA));
   EXPECT_TRUE(notMatches("class A { void a(); };", DefinitionOfMethodA));
+
+  DeclarationMatcher DefinitionOfObjCMethodA =
+    objcMethodDecl(hasName("a"), isDefinition());
+  EXPECT_TRUE(matchesObjC("@interface A @end "
+                          "@implementation A; -(void)a {} @end",
+                          DefinitionOfObjCMethodA));
+  EXPECT_TRUE(notMatchesObjC("@interface A; - (void)a; @end",
+                             DefinitionOfObjCMethodA));
 }
 
 TEST(Matcher, HandlesNullQualTypes) {
@@ -1342,6 +1557,20 @@ TEST(Matcher, HandlesNullQualTypes) {
       ))))));
 }
 
+TEST(ObjCIvarRefExprMatcher, IvarExpr) {
+  std::string ObjCString =
+    "@interface A @end "
+    "@implementation A { A *x; } - (void) func { x = 0; } @end";
+  EXPECT_TRUE(matchesObjC(ObjCString, objcIvarRefExpr()));
+  EXPECT_TRUE(matchesObjC(ObjCString, objcIvarRefExpr(
+        hasDeclaration(namedDecl(hasName("x"))))));
+  EXPECT_FALSE(matchesObjC(ObjCString, objcIvarRefExpr(
+        hasDeclaration(namedDecl(hasName("y"))))));
+}
+
+TEST(BlockExprMatcher, BlockExpr) {
+  EXPECT_TRUE(matchesObjC("void f() { ^{}(); }", blockExpr()));
+}
 
 TEST(StatementCountIs, FindsNoStatementsInAnEmptyCompoundStatement) {
   EXPECT_TRUE(matches("void f() { }",
@@ -1495,6 +1724,26 @@ TEST(HasObjectExpression, MatchesBaseOfVariable) {
     "struct X { int m; }; void f(X* x) { x->m; }",
     memberExpr(hasObjectExpression(
       hasType(pointsTo(recordDecl(hasName("X"))))))));
+  EXPECT_TRUE(matches("template <class T> struct X { void f() { T t; t.m; } };",
+                      cxxDependentScopeMemberExpr(hasObjectExpression(
+                          declRefExpr(to(namedDecl(hasName("t"))))))));
+  EXPECT_TRUE(
+      matches("template <class T> struct X { void f() { T t; t->m; } };",
+              cxxDependentScopeMemberExpr(hasObjectExpression(
+                  declRefExpr(to(namedDecl(hasName("t"))))))));
+}
+
+TEST(HasObjectExpression, MatchesBaseOfMemberFunc) {
+  EXPECT_TRUE(matches(
+      "struct X { void f(); }; void g(X x) { x.f(); }",
+      memberExpr(hasObjectExpression(hasType(recordDecl(hasName("X")))))));
+  EXPECT_TRUE(matches("struct X { template <class T> void f(); };"
+                      "template <class T> void g(X x) { x.f<T>(); }",
+                      unresolvedMemberExpr(hasObjectExpression(
+                          hasType(recordDecl(hasName("X")))))));
+  EXPECT_TRUE(matches("template <class T> void f(T t) { t.g(); }",
+                      cxxDependentScopeMemberExpr(hasObjectExpression(
+                          declRefExpr(to(namedDecl(hasName("t"))))))));
 }
 
 TEST(HasObjectExpression,
@@ -1568,7 +1817,7 @@ TEST(EachOf, TriggersForEachMatch) {
     "class A { int a; int b; };",
     recordDecl(eachOf(has(fieldDecl(hasName("a")).bind("v")),
                       has(fieldDecl(hasName("b")).bind("v")))),
-    llvm::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 2)));
+    std::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 2)));
 }
 
 TEST(EachOf, BehavesLikeAnyOfUnlessBothMatch) {
@@ -1576,12 +1825,12 @@ TEST(EachOf, BehavesLikeAnyOfUnlessBothMatch) {
     "class A { int a; int c; };",
     recordDecl(eachOf(has(fieldDecl(hasName("a")).bind("v")),
                       has(fieldDecl(hasName("b")).bind("v")))),
-    llvm::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 1)));
+    std::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 1)));
   EXPECT_TRUE(matchAndVerifyResultTrue(
     "class A { int c; int b; };",
     recordDecl(eachOf(has(fieldDecl(hasName("a")).bind("v")),
                       has(fieldDecl(hasName("b")).bind("v")))),
-    llvm::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 1)));
+    std::make_unique<VerifyIdIsBoundTo<FieldDecl>>("v", 1)));
   EXPECT_TRUE(notMatches(
     "class A { int c; int d; };",
     recordDecl(eachOf(has(fieldDecl(hasName("a")).bind("v")),
@@ -1615,6 +1864,14 @@ TEST(IsTemplateInstantiation, MatchesExplicitClassTemplateInstantiation) {
       "template class X<A>;",
     cxxRecordDecl(isTemplateInstantiation(), hasDescendant(
       fieldDecl(hasType(recordDecl(hasName("A"))))))));
+
+  // Make sure that we match the instantiation instead of the template
+  // definition by checking whether the member function is present.
+  EXPECT_TRUE(
+      matches("template <typename T> class X { void f() { T t; } };"
+              "extern template class X<int>;",
+              cxxRecordDecl(isTemplateInstantiation(),
+                            unless(hasDescendant(varDecl(hasName("t")))))));
 }
 
 TEST(IsTemplateInstantiation,
@@ -1718,6 +1975,48 @@ TEST(IsInTemplateInstantiation, Sharing) {
     Matcher));
 }
 
+TEST(IsInstantiationDependent, MatchesNonValueTypeDependent) {
+  EXPECT_TRUE(matches(
+      "template<typename T> void f() { (void) sizeof(sizeof(T() + T())); }",
+      expr(isInstantiationDependent())));
+}
+
+TEST(IsInstantiationDependent, MatchesValueDependent) {
+  EXPECT_TRUE(matches("template<int T> int f() { return T; }",
+                      expr(isInstantiationDependent())));
+}
+
+TEST(IsInstantiationDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isInstantiationDependent())));
+}
+
+TEST(IsTypeDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isTypeDependent())));
+}
+
+TEST(IsTypeDependent, NotMatchesValueDependent) {
+  EXPECT_TRUE(notMatches("template<int T> int f() { return T; }",
+                         expr(isTypeDependent())));
+}
+
+TEST(IsValueDependent, MatchesValueDependent) {
+  EXPECT_TRUE(matches("template<int T> int f() { return T; }",
+                      expr(isValueDependent())));
+}
+
+TEST(IsValueDependent, MatchesTypeDependent) {
+  EXPECT_TRUE(matches("template<typename T> T f() { return T(); }",
+                      expr(isValueDependent())));
+}
+
+TEST(IsValueDependent, MatchesInstantiationDependent) {
+  EXPECT_TRUE(matches(
+      "template<typename T> void f() { (void) sizeof(sizeof(T() + T())); }",
+      expr(isValueDependent())));
+}
+
 TEST(IsExplicitTemplateSpecialization,
      DoesNotMatchPrimaryTemplate) {
   EXPECT_TRUE(notMatches(
@@ -1760,6 +2059,84 @@ TEST(IsExplicitTemplateSpecialization,
     "template <typename T> void f(T t) {}"
       "template<> void f(int t) {}",
     functionDecl(isExplicitTemplateSpecialization())));
+}
+
+TEST(TypeMatching, MatchesNoReturn) {
+  EXPECT_TRUE(notMatches("void func();", functionDecl(isNoReturn())));
+  EXPECT_TRUE(notMatches("void func() {}", functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(notMatchesC("void func();", functionDecl(isNoReturn())));
+  EXPECT_TRUE(notMatchesC("void func() {}", functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(
+      notMatches("struct S { void func(); };", functionDecl(isNoReturn())));
+  EXPECT_TRUE(
+      notMatches("struct S { void func() {} };", functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(notMatches("struct S { static void func(); };",
+                         functionDecl(isNoReturn())));
+  EXPECT_TRUE(notMatches("struct S { static void func() {} };",
+                         functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(notMatches("struct S { S(); };", functionDecl(isNoReturn())));
+  EXPECT_TRUE(notMatches("struct S { S() {} };", functionDecl(isNoReturn())));
+
+  // ---
+
+  EXPECT_TRUE(matches("[[noreturn]] void func();", functionDecl(isNoReturn())));
+  EXPECT_TRUE(
+      matches("[[noreturn]] void func() {}", functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(matches("struct S { [[noreturn]] void func(); };",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("struct S { [[noreturn]] void func() {} };",
+                      functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(matches("struct S { [[noreturn]] static void func(); };",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("struct S { [[noreturn]] static void func() {} };",
+                      functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(
+      matches("struct S { [[noreturn]] S(); };", functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("struct S { [[noreturn]] S() {} };",
+                      functionDecl(isNoReturn())));
+
+  // ---
+
+  EXPECT_TRUE(matches("__attribute__((noreturn)) void func();",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("__attribute__((noreturn)) void func() {}",
+                      functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(matches("struct S { __attribute__((noreturn)) void func(); };",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("struct S { __attribute__((noreturn)) void func() {} };",
+                      functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(
+      matches("struct S { __attribute__((noreturn)) static void func(); };",
+              functionDecl(isNoReturn())));
+  EXPECT_TRUE(
+      matches("struct S { __attribute__((noreturn)) static void func() {} };",
+              functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(matches("struct S { __attribute__((noreturn)) S(); };",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matches("struct S { __attribute__((noreturn)) S() {} };",
+                      functionDecl(isNoReturn())));
+
+  // ---
+
+  EXPECT_TRUE(matchesC("__attribute__((noreturn)) void func();",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matchesC("__attribute__((noreturn)) void func() {}",
+                      functionDecl(isNoReturn())));
+
+  EXPECT_TRUE(matchesC("_Noreturn void func();",
+                      functionDecl(isNoReturn())));
+  EXPECT_TRUE(matchesC("_Noreturn void func() {}",
+                      functionDecl(isNoReturn())));
 }
 
 TEST(TypeMatching, MatchesBool) {
@@ -1837,6 +2214,57 @@ TEST(NS, Anonymous) {
   EXPECT_TRUE(matches("namespace {}", namespaceDecl(isAnonymous())));
 }
 
+TEST(DeclarationMatcher, InStdNamespace) {
+  EXPECT_TRUE(notMatches("class vector {};"
+                         "namespace foo {"
+                         "  class vector {};"
+                         "}"
+                         "namespace foo {"
+                         "  namespace std {"
+                         "    class vector {};"
+                         "  }"
+                         "}",
+                         cxxRecordDecl(hasName("vector"), isInStdNamespace())));
+
+  EXPECT_TRUE(matches("namespace std {"
+                      "  class vector {};"
+                      "}",
+                      cxxRecordDecl(hasName("vector"), isInStdNamespace())));
+  EXPECT_TRUE(matches("namespace std {"
+                      "  inline namespace __1 {"
+                      "    class vector {};"
+                      "  }"
+                      "}",
+                      cxxRecordDecl(hasName("vector"), isInStdNamespace())));
+  EXPECT_TRUE(notMatches("namespace std {"
+                         "  inline namespace __1 {"
+                         "    inline namespace __fs {"
+                         "      namespace filesystem {"
+                         "        inline namespace v1 {"
+                         "          class path {};"
+                         "        }"
+                         "      }"
+                         "    }"
+                         "  }"
+                         "}",
+                         cxxRecordDecl(hasName("path"), isInStdNamespace())));
+  EXPECT_TRUE(
+      matches("namespace std {"
+              "  inline namespace __1 {"
+              "    inline namespace __fs {"
+              "      namespace filesystem {"
+              "        inline namespace v1 {"
+              "          class path {};"
+              "        }"
+              "      }"
+              "    }"
+              "  }"
+              "}",
+              cxxRecordDecl(hasName("path"),
+                            hasAncestor(namespaceDecl(hasName("filesystem"),
+                                                      isInStdNamespace())))));
+}
+
 TEST(EqualsBoundNodeMatcher, QualType) {
   EXPECT_TRUE(matches(
     "int i = 1;", varDecl(hasType(qualType().bind("type")),
@@ -1909,7 +2337,7 @@ TEST(EqualsBoundNodeMatcher, UsingForEachDescendant) {
                  forEachDescendant(varDecl(hasType(
                    qualType(equalsBoundNode("type")))).bind("decl"))),
     // Only i and j should match, not k.
-    llvm::make_unique<VerifyIdIsBoundTo<VarDecl>>("decl", 2)));
+    std::make_unique<VerifyIdIsBoundTo<VarDecl>>("decl", 2)));
 }
 
 TEST(EqualsBoundNodeMatcher, FiltersMatchedCombinations) {
@@ -1922,7 +2350,7 @@ TEST(EqualsBoundNodeMatcher, FiltersMatchedCombinations) {
     functionDecl(
       hasName("f"), forEachDescendant(varDecl().bind("d")),
       forEachDescendant(declRefExpr(to(decl(equalsBoundNode("d")))))),
-    llvm::make_unique<VerifyIdIsBoundTo<VarDecl>>("d", 5)));
+    std::make_unique<VerifyIdIsBoundTo<VarDecl>>("d", 5)));
 }
 
 TEST(EqualsBoundNodeMatcher, UnlessDescendantsOfAncestorsMatch) {
@@ -1939,7 +2367,7 @@ TEST(EqualsBoundNodeMatcher, UnlessDescendantsOfAncestorsMatch) {
         callee(cxxMethodDecl(anyOf(hasName("size"), hasName("length")))),
         on(declRefExpr(to(varDecl(equalsBoundNode("var")))))))))))
       .bind("data"),
-    llvm::make_unique<VerifyIdIsBoundTo<Expr>>("data", 1)));
+    std::make_unique<VerifyIdIsBoundTo<Expr>>("data", 1)));
 
   EXPECT_FALSE(matches(
     "struct StringRef { int size() const; const char* data() const; };"
@@ -1964,7 +2392,7 @@ TEST(NullPointerConstants, Basic) {
   EXPECT_TRUE(matches("void *v3 = __null;", expr(nullPointerConstant())));
   EXPECT_TRUE(matches("char *cp = (char *)0;", expr(nullPointerConstant())));
   EXPECT_TRUE(matches("int *ip = 0;", expr(nullPointerConstant())));
-  EXPECT_TRUE(notMatches("int i = 0;", expr(nullPointerConstant())));
+  EXPECT_TRUE(matches("int i = 0;", expr(nullPointerConstant())));
 }
 
 TEST(HasExternalFormalLinkage, Basic) {
@@ -1981,6 +2409,336 @@ TEST(HasExternalFormalLinkage, Basic) {
   // translation units.
   EXPECT_TRUE(matches("namespace { int a = 0; }",
                       namedDecl(hasExternalFormalLinkage())));
+}
+
+TEST(HasDefaultArgument, Basic) {
+  EXPECT_TRUE(matches("void x(int val = 0) {}", 
+                      parmVarDecl(hasDefaultArgument())));
+  EXPECT_TRUE(notMatches("void x(int val) {}",
+                      parmVarDecl(hasDefaultArgument())));
+}
+
+TEST(IsArray, Basic) {
+  EXPECT_TRUE(matches("struct MyClass {}; MyClass *p1 = new MyClass[10];",
+                      cxxNewExpr(isArray())));
+}
+
+TEST(HasArraySize, Basic) {
+  EXPECT_TRUE(matches("struct MyClass {}; MyClass *p1 = new MyClass[10];",
+                      cxxNewExpr(hasArraySize(integerLiteral(equals(10))))));
+}
+
+TEST(HasDefinition, MatchesStructDefinition) {
+  EXPECT_TRUE(matches("struct x {};",
+                      cxxRecordDecl(hasDefinition())));
+  EXPECT_TRUE(notMatches("struct x;",
+                      cxxRecordDecl(hasDefinition())));
+}
+
+TEST(HasDefinition, MatchesClassDefinition) {
+  EXPECT_TRUE(matches("class x {};",
+                      cxxRecordDecl(hasDefinition())));
+  EXPECT_TRUE(notMatches("class x;",
+                      cxxRecordDecl(hasDefinition())));
+}
+
+TEST(HasDefinition, MatchesUnionDefinition) {
+  EXPECT_TRUE(matches("union x {};",
+                      cxxRecordDecl(hasDefinition())));
+  EXPECT_TRUE(notMatches("union x;",
+                      cxxRecordDecl(hasDefinition())));
+}
+
+TEST(IsScopedEnum, MatchesScopedEnum) {
+  EXPECT_TRUE(matches("enum class X {};", enumDecl(isScoped())));
+  EXPECT_TRUE(notMatches("enum X {};", enumDecl(isScoped())));
+}
+
+TEST(HasTrailingReturn, MatchesTrailingReturn) {
+  EXPECT_TRUE(matches("auto Y() -> int { return 0; }",
+                      functionDecl(hasTrailingReturn())));
+  EXPECT_TRUE(matches("auto X() -> int;", functionDecl(hasTrailingReturn())));
+  EXPECT_TRUE(notMatches("int X() { return 0; }", 
+                      functionDecl(hasTrailingReturn())));
+  EXPECT_TRUE(notMatches("int X();", functionDecl(hasTrailingReturn())));
+  EXPECT_TRUE(notMatchesC("void X();", functionDecl(hasTrailingReturn())));
+}
+
+TEST(HasTrailingReturn, MatchesLambdaTrailingReturn) {
+  EXPECT_TRUE(matches(
+          "auto lambda2 = [](double x, double y) -> double {return x + y;};",
+          functionDecl(hasTrailingReturn())));
+  EXPECT_TRUE(notMatches(
+          "auto lambda2 = [](double x, double y) {return x + y;};",
+          functionDecl(hasTrailingReturn())));
+}
+
+TEST(IsAssignmentOperator, Basic) {
+  StatementMatcher BinAsgmtOperator = binaryOperator(isAssignmentOperator());
+  StatementMatcher CXXAsgmtOperator =
+      cxxOperatorCallExpr(isAssignmentOperator());
+
+  EXPECT_TRUE(matches("void x() { int a; a += 1; }", BinAsgmtOperator));
+  EXPECT_TRUE(matches("void x() { int a; a = 2; }", BinAsgmtOperator));
+  EXPECT_TRUE(matches("void x() { int a; a &= 3; }", BinAsgmtOperator));
+  EXPECT_TRUE(matches("struct S { S& operator=(const S&); };"
+                      "void x() { S s1, s2; s1 = s2; }",
+                      CXXAsgmtOperator));
+  EXPECT_TRUE(
+      notMatches("void x() { int a; if(a == 0) return; }", BinAsgmtOperator));
+}
+
+TEST(HasInit, Basic) {
+  EXPECT_TRUE(
+    matches("int x{0};",
+            initListExpr(hasInit(0, expr()))));
+  EXPECT_FALSE(
+    matches("int x{0};",
+            initListExpr(hasInit(1, expr()))));
+  EXPECT_FALSE(
+    matches("int x;",
+            initListExpr(hasInit(0, expr()))));
+}
+
+TEST(Matcher, isMain) {
+  EXPECT_TRUE(
+    matches("int main() {}", functionDecl(isMain())));
+
+  EXPECT_TRUE(
+    notMatches("int main2() {}", functionDecl(isMain())));
+}
+
+TEST(OMPExecutableDirective, isStandaloneDirective) {
+  auto Matcher = ompExecutableDirective(isStandaloneDirective());
+
+  const std::string Source0 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source0, Matcher));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp taskyield
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source1, Matcher));
+}
+
+TEST(Stmt, isOMPStructuredBlock) {
+  const std::string Source0 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(
+      matchesWithOpenMP(Source0, stmt(nullStmt(), isOMPStructuredBlock())));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+{;}
+})";
+  EXPECT_TRUE(
+      notMatchesWithOpenMP(Source1, stmt(nullStmt(), isOMPStructuredBlock())));
+  EXPECT_TRUE(
+      matchesWithOpenMP(Source1, stmt(compoundStmt(), isOMPStructuredBlock())));
+}
+
+TEST(OMPExecutableDirective, hasStructuredBlock) {
+  const std::string Source0 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(
+      Source0, ompExecutableDirective(hasStructuredBlock(nullStmt()))));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+{;}
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(
+      Source1, ompExecutableDirective(hasStructuredBlock(nullStmt()))));
+  EXPECT_TRUE(matchesWithOpenMP(
+      Source1, ompExecutableDirective(hasStructuredBlock(compoundStmt()))));
+
+  const std::string Source2 = R"(
+void x() {
+#pragma omp taskyield
+{;}
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(
+      Source2, ompExecutableDirective(hasStructuredBlock(anything()))));
+}
+
+TEST(OMPExecutableDirective, hasClause) {
+  auto Matcher = ompExecutableDirective(hasAnyClause(anything()));
+
+  const std::string Source0 = R"(
+void x() {
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source0, Matcher));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source1, Matcher));
+
+  const std::string Source2 = R"(
+void x() {
+#pragma omp parallel default(none)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source2, Matcher));
+
+  const std::string Source3 = R"(
+void x() {
+#pragma omp parallel default(shared)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source3, Matcher));
+
+  const std::string Source4 = R"(
+void x(int x) {
+#pragma omp parallel num_threads(x)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source4, Matcher));
+}
+
+TEST(OMPDefaultClause, isNoneKind) {
+  auto Matcher =
+      ompExecutableDirective(hasAnyClause(ompDefaultClause(isNoneKind())));
+
+  const std::string Source0 = R"(
+void x() {
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source0, Matcher));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source1, Matcher));
+
+  const std::string Source2 = R"(
+void x() {
+#pragma omp parallel default(none)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source2, Matcher));
+
+  const std::string Source3 = R"(
+void x() {
+#pragma omp parallel default(shared)
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source3, Matcher));
+
+  const std::string Source4 = R"(
+void x(int x) {
+#pragma omp parallel num_threads(x)
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source4, Matcher));
+}
+
+TEST(OMPDefaultClause, isSharedKind) {
+  auto Matcher =
+      ompExecutableDirective(hasAnyClause(ompDefaultClause(isSharedKind())));
+
+  const std::string Source0 = R"(
+void x() {
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source0, Matcher));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source1, Matcher));
+
+  const std::string Source2 = R"(
+void x() {
+#pragma omp parallel default(shared)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source2, Matcher));
+
+  const std::string Source3 = R"(
+void x() {
+#pragma omp parallel default(none)
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source3, Matcher));
+
+  const std::string Source4 = R"(
+void x(int x) {
+#pragma omp parallel num_threads(x)
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source4, Matcher));
+}
+
+TEST(OMPExecutableDirective, isAllowedToContainClauseKind) {
+  auto Matcher =
+      ompExecutableDirective(isAllowedToContainClauseKind(OMPC_default));
+
+  const std::string Source0 = R"(
+void x() {
+;
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source0, Matcher));
+
+  const std::string Source1 = R"(
+void x() {
+#pragma omp parallel
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source1, Matcher));
+
+  const std::string Source2 = R"(
+void x() {
+#pragma omp parallel default(none)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source2, Matcher));
+
+  const std::string Source3 = R"(
+void x() {
+#pragma omp parallel default(shared)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source3, Matcher));
+
+  const std::string Source4 = R"(
+void x(int x) {
+#pragma omp parallel num_threads(x)
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source4, Matcher));
+
+  const std::string Source5 = R"(
+void x() {
+#pragma omp taskyield
+})";
+  EXPECT_TRUE(notMatchesWithOpenMP(Source5, Matcher));
+
+  const std::string Source6 = R"(
+void x() {
+#pragma omp task
+;
+})";
+  EXPECT_TRUE(matchesWithOpenMP(Source6, Matcher));
 }
 
 } // namespace ast_matchers

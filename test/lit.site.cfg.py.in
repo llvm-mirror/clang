@@ -20,13 +20,16 @@ config.have_zlib = @HAVE_LIBZ@
 config.clang_arcmt = @CLANG_ENABLE_ARCMT@
 config.clang_default_cxx_stdlib = "@CLANG_DEFAULT_CXX_STDLIB@"
 config.clang_staticanalyzer = @CLANG_ENABLE_STATIC_ANALYZER@
-config.clang_staticanalyzer_z3 = "@CLANG_ANALYZER_WITH_Z3@"
+config.clang_staticanalyzer_z3 = "@LLVM_WITH_Z3@"
 config.clang_examples = @CLANG_BUILD_EXAMPLES@
 config.enable_shared = @ENABLE_SHARED@
 config.enable_backtrace = @ENABLE_BACKTRACES@
+config.enable_experimental_new_pass_manager = @ENABLE_EXPERIMENTAL_NEW_PASS_MANAGER@
+config.enable_threads = @LLVM_ENABLE_THREADS@
 config.host_arch = "@HOST_ARCH@"
-config.enable_abi_breaking_checks = "@LLVM_ENABLE_ABI_BREAKING_CHECKS@"
 config.python_executable = "@PYTHON_EXECUTABLE@"
+config.use_z3_solver = lit_config.params.get('USE_Z3_SOLVER', "@USE_Z3_SOLVER@")
+config.has_plugins = @LLVM_ENABLE_PLUGINS@
 
 # Support substitution of the tools and libs dirs with user parameters. This is
 # used when we can't determine the tool dir at configuration time.
@@ -40,7 +43,8 @@ except KeyError:
     key, = e.args
     lit_config.fatal("unable to find %r parameter, use '--param=%s=VALUE'" % (key,key))
 
-@LIT_SITE_CFG_IN_FOOTER@
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
 
 # Let the main config do the real work.
 lit_config.load_config(config, "@CLANG_SOURCE_DIR@/test/lit.cfg.py")

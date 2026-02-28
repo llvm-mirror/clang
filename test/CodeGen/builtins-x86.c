@@ -1,5 +1,6 @@
-// RUN: %clang_cc1 -DUSE_64 -triple x86_64-unknown-unknown -target-feature +fxsr -target-feature +avx -target-feature +xsaveopt -target-feature +xsaves -target-feature +xsavec -target-feature +mwaitx -target-feature +clzero -emit-llvm -o %t %s
-// RUN: %clang_cc1 -DUSE_ALL -triple x86_64-unknown-unknown -target-feature +fxsr -target-feature +avx -target-feature +xsaveopt -target-feature +xsaves -target-feature +xsavec -target-feature +mwaitx -target-feature +clzero -fsyntax-only -o %t %s
+// RUN: %clang_cc1 -DUSE_64 -triple x86_64-unknown-unknown -target-feature +fxsr -target-feature +avx -target-feature +xsaveopt -target-feature +xsaves -target-feature +xsavec -target-feature +mwaitx -target-feature +clzero -target-feature +shstk -target-feature +wbnoinvd -target-feature +cldemote -emit-llvm -o %t %s
+// RUN: %clang_cc1 -DUSE_ALL -triple x86_64-unknown-unknown -target-feature +fxsr -target-feature +avx -target-feature +xsaveopt -target-feature +xsaves -target-feature +xsavec -target-feature +mwaitx -target-feature +shstk -target-feature +clzero -target-feature +wbnoinvd -target-feature +cldemote -fsyntax-only -o %t %s
+// RUN: %clang_cc1 -DUSE_64 -DOPENCL -x cl -cl-std=CL2.0 -triple x86_64-unknown-unknown -target-feature +fxsr -target-feature +avx -target-feature +xsaveopt -target-feature +xsaves -target-feature +xsavec -target-feature +mwaitx -target-feature +clzero -target-feature +shstk -target-feature +wbnoinvd -target-feature +cldemote -emit-llvm -o %t %s
 
 #ifdef USE_ALL
 #define USE_3DNOW
@@ -11,7 +12,11 @@
 typedef char V8c __attribute__((vector_size(8 * sizeof(char))));
 typedef signed short V4s __attribute__((vector_size(8)));
 typedef signed int V2i __attribute__((vector_size(8)));
+#ifndef OPENCL
 typedef signed long long V1LLi __attribute__((vector_size(8)));
+#else
+typedef signed long V1LLi __attribute__((vector_size(8)));
+#endif
 
 typedef float V2f __attribute__((vector_size(8)));
 
@@ -19,7 +24,11 @@ typedef float V2f __attribute__((vector_size(8)));
 typedef char V16c __attribute__((vector_size(16)));
 typedef signed short V8s __attribute__((vector_size(16)));
 typedef signed int V4i __attribute__((vector_size(16)));
+#ifndef OPENCL
 typedef signed long long V2LLi __attribute__((vector_size(16)));
+#else
+typedef signed long V2LLi __attribute__((vector_size(16)));
+#endif
 
 typedef float V4f __attribute__((vector_size(16)));
 typedef double V2d __attribute__((vector_size(16)));
@@ -27,7 +36,11 @@ typedef double V2d __attribute__((vector_size(16)));
 // 256-bit
 typedef char V32c __attribute__((vector_size(32)));
 typedef signed int V8i __attribute__((vector_size(32)));
+#ifndef OPENCL
 typedef signed long long V4LLi __attribute__((vector_size(32)));
+#else
+typedef signed long V4LLi __attribute__((vector_size(32)));
+#endif
 
 typedef double V4d __attribute__((vector_size(32)));
 typedef float  V8f __attribute__((vector_size(32)));
@@ -41,21 +54,30 @@ void f0() {
 #endif
   signed int          tmp_i;
   unsigned int        tmp_Ui;
+#ifndef OPENCL
   signed long long    tmp_LLi;
   unsigned long long  tmp_ULLi;
+#else
+  signed long         tmp_LLi;
+  unsigned long       tmp_ULLi;
+#endif
   float               tmp_f;
   double              tmp_d;
 
   void*          tmp_vp;
   const void*    tmp_vCp;
-  char*          tmp_cp; 
-  const char*    tmp_cCp; 
+  char*          tmp_cp;
+  const char*    tmp_cCp;
   int*           tmp_ip;
   float*         tmp_fp;
   const float*   tmp_fCp;
   double*        tmp_dp;
   const double*  tmp_dCp;
+#ifndef OPENCL
   long long*     tmp_LLip;
+#else
+  long*          tmp_LLip;
+#endif
 
 #define imm_i 32
 #define imm_i_0_2 0
@@ -102,8 +124,8 @@ void f0() {
   const V4d* tmp_V4dCp;
   const V8f* tmp_V8fCp;
 
-  tmp_V2LLi = __builtin_ia32_undef128();
-  tmp_V4LLi = __builtin_ia32_undef256();
+  tmp_V2d = __builtin_ia32_undef128();
+  tmp_V4d = __builtin_ia32_undef256();
 
   tmp_i = __builtin_ia32_comieq(tmp_V4f, tmp_V4f);
   tmp_i = __builtin_ia32_comilt(tmp_V4f, tmp_V4f);
@@ -203,9 +225,9 @@ void f0() {
   tmp_V8s = __builtin_ia32_pmaxsw128(tmp_V8s, tmp_V8s);
   tmp_V16c = __builtin_ia32_pminub128(tmp_V16c, tmp_V16c);
   tmp_V8s = __builtin_ia32_pminsw128(tmp_V8s, tmp_V8s);
-  tmp_V8s = __builtin_ia32_packsswb128(tmp_V8s, tmp_V8s);
-  tmp_V4i = __builtin_ia32_packssdw128(tmp_V4i, tmp_V4i);
-  tmp_V8s = __builtin_ia32_packuswb128(tmp_V8s, tmp_V8s);
+  tmp_V16c = __builtin_ia32_packsswb128(tmp_V8s, tmp_V8s);
+  tmp_V8s = __builtin_ia32_packssdw128(tmp_V4i, tmp_V4i);
+  tmp_V16c = __builtin_ia32_packuswb128(tmp_V8s, tmp_V8s);
   tmp_V8s = __builtin_ia32_pmulhuw128(tmp_V8s, tmp_V8s);
   tmp_V4f = __builtin_ia32_addsubps(tmp_V4f, tmp_V4f);
   tmp_V2d = __builtin_ia32_addsubpd(tmp_V2d, tmp_V2d);
@@ -225,7 +247,7 @@ void f0() {
   tmp_V2i = __builtin_ia32_phsubd(tmp_V2i, tmp_V2i);
   tmp_V8s = __builtin_ia32_phsubsw128(tmp_V8s, tmp_V8s);
   tmp_V4s = __builtin_ia32_phsubsw(tmp_V4s, tmp_V4s);
-  tmp_V16c = __builtin_ia32_pmaddubsw128(tmp_V16c, tmp_V16c);
+  tmp_V8s = __builtin_ia32_pmaddubsw128(tmp_V16c, tmp_V16c);
   tmp_V8c = __builtin_ia32_pmaddubsw(tmp_V8c, tmp_V8c);
   tmp_V8s = __builtin_ia32_pmulhrsw128(tmp_V8s, tmp_V8s);
   tmp_V4s = __builtin_ia32_pmulhrsw(tmp_V4s, tmp_V4s);
@@ -257,10 +279,27 @@ void f0() {
   tmp_V8c = __builtin_ia32_packuswb(tmp_V4s, tmp_V4s);
   tmp_i = __builtin_ia32_vec_ext_v2si(tmp_V2i, 0);
 
+  __builtin_ia32_incsspd(tmp_Ui);
+  __builtin_ia32_incsspq(tmp_ULLi);
+  tmp_Ui = __builtin_ia32_rdsspd(tmp_Ui);
+  tmp_ULLi = __builtin_ia32_rdsspq(tmp_ULLi);
+  __builtin_ia32_saveprevssp();
+  __builtin_ia32_rstorssp(tmp_vp);
+  __builtin_ia32_wrssd(tmp_Ui, tmp_vp);
+  __builtin_ia32_wrssq(tmp_ULLi, tmp_vp);
+  __builtin_ia32_wrussd(tmp_Ui, tmp_vp);
+  __builtin_ia32_wrussq(tmp_ULLi, tmp_vp);
+  __builtin_ia32_setssbsy();
+  __builtin_ia32_clrssbsy(tmp_vp);
+
   (void) __builtin_ia32_ldmxcsr(tmp_Ui);
+#ifndef OPENCL
   (void) _mm_setcsr(tmp_Ui);
+#endif
   tmp_Ui = __builtin_ia32_stmxcsr();
+#ifndef OPENCL
   tmp_Ui = _mm_getcsr();
+#endif
   (void)__builtin_ia32_fxsave(tmp_vp);
   (void)__builtin_ia32_fxsave64(tmp_vp);
   (void)__builtin_ia32_fxrstor(tmp_vp);
@@ -268,6 +307,8 @@ void f0() {
 
   (void)__builtin_ia32_xsave(tmp_vp, tmp_ULLi);
   (void)__builtin_ia32_xsave64(tmp_vp, tmp_ULLi);
+  tmp_ULLi = __builtin_ia32_xgetbv(tmp_Ui);
+  (void)__builtin_ia32_xsetbv(tmp_Ui, tmp_ULLi);
   (void)__builtin_ia32_xrstor(tmp_vp, tmp_ULLi);
   (void)__builtin_ia32_xrstor64(tmp_vp, tmp_ULLi);
   (void)__builtin_ia32_xsaveopt(tmp_vp, tmp_ULLi);
@@ -282,6 +323,7 @@ void f0() {
   (void) __builtin_ia32_monitorx(tmp_vp, tmp_Ui, tmp_Ui);
   (void) __builtin_ia32_mwaitx(tmp_Ui, tmp_Ui, tmp_Ui);
   (void) __builtin_ia32_clzero(tmp_vp);
+  (void) __builtin_ia32_cldemote(tmp_vp);
 
   tmp_V4f = __builtin_ia32_cvtpi2ps(tmp_V4f, tmp_V2i);
   tmp_V2i = __builtin_ia32_cvtps2pi(tmp_V4f);
@@ -292,19 +334,20 @@ void f0() {
   tmp_i = __rdtsc();
   tmp_i = __builtin_ia32_rdtscp(&tmp_Ui);
   tmp_LLi = __builtin_ia32_rdpmc(tmp_i);
+  __builtin_ia32_wbnoinvd();
 #ifdef USE_64
   tmp_LLi = __builtin_ia32_cvtss2si64(tmp_V4f);
   tmp_LLi = __builtin_ia32_cvttss2si64(tmp_V4f);
 #endif
   tmp_V2i = __builtin_ia32_cvttps2pi(tmp_V4f);
   (void) __builtin_ia32_maskmovq(tmp_V8c, tmp_V8c, tmp_cp);
-  (void) __builtin_ia32_storehps(tmp_V2ip, tmp_V4f);
-  (void) __builtin_ia32_storelps(tmp_V2ip, tmp_V4f);
   tmp_i = __builtin_ia32_movmskps(tmp_V4f);
   tmp_i = __builtin_ia32_pmovmskb(tmp_V8c);
   (void) __builtin_ia32_movntq(tmp_V1LLip, tmp_V1LLi);
   (void) __builtin_ia32_sfence();
+#ifndef OPENCL
   (void) _mm_sfence();
+#endif
 
   tmp_V4s = __builtin_ia32_psadbw(tmp_V8c, tmp_V8c);
   tmp_V4f = __builtin_ia32_rcpps(tmp_V4f);
@@ -323,7 +366,6 @@ void f0() {
   tmp_V2LLi = __builtin_ia32_psadbw128(tmp_V16c, tmp_V16c);
   tmp_V2d = __builtin_ia32_sqrtpd(tmp_V2d);
   tmp_V2d = __builtin_ia32_sqrtsd(tmp_V2d);
-  tmp_V4f = __builtin_ia32_cvtdq2ps(tmp_V4i);
   tmp_V2LLi = __builtin_ia32_cvtpd2dq(tmp_V2d);
   tmp_V2i = __builtin_ia32_cvtpd2pi(tmp_V2d);
   tmp_V4f = __builtin_ia32_cvtpd2ps(tmp_V2d);
@@ -340,13 +382,32 @@ void f0() {
   tmp_V4i = __builtin_ia32_cvtps2dq(tmp_V4f);
   tmp_V4i = __builtin_ia32_cvttps2dq(tmp_V4f);
   (void) __builtin_ia32_clflush(tmp_vCp);
+#ifndef OPENCL
   (void) _mm_clflush(tmp_vCp);
+#endif
   (void) __builtin_ia32_lfence();
+#ifndef OPENCL
   (void) _mm_lfence();
+#endif
   (void) __builtin_ia32_mfence();
+#ifndef OPENCL
   (void) _mm_mfence();
+#endif
   (void) __builtin_ia32_pause();
+#ifndef OPENCL
   (void) _mm_pause();
+#endif
+
+  tmp_V4s = __builtin_ia32_psllwi(tmp_V4s, imm_i_0_8);
+  tmp_V2i = __builtin_ia32_pslldi(tmp_V2i, imm_i_0_8);
+  tmp_V1LLi = __builtin_ia32_psllqi(tmp_V1LLi, imm_i_0_8);
+  tmp_V4s = __builtin_ia32_psrawi(tmp_V4s, imm_i_0_8);
+  tmp_V2i = __builtin_ia32_psradi(tmp_V2i, imm_i_0_8);
+  tmp_V4s = __builtin_ia32_psrlwi(tmp_V4s, imm_i_0_8);
+  tmp_V2i = __builtin_ia32_psrldi(tmp_V2i, imm_i_0_8);
+  tmp_V1LLi = __builtin_ia32_psrlqi(tmp_V1LLi, imm_i_0_8);
+
+  // Using non-immediate argument supported for gcc compatibility
   tmp_V4s = __builtin_ia32_psllwi(tmp_V4s, tmp_i);
   tmp_V2i = __builtin_ia32_pslldi(tmp_V2i, tmp_i);
   tmp_V1LLi = __builtin_ia32_psllqi(tmp_V1LLi, tmp_i);
@@ -355,6 +416,7 @@ void f0() {
   tmp_V4s = __builtin_ia32_psrlwi(tmp_V4s, tmp_i);
   tmp_V2i = __builtin_ia32_psrldi(tmp_V2i, tmp_i);
   tmp_V1LLi = __builtin_ia32_psrlqi(tmp_V1LLi, tmp_i);
+
   tmp_V1LLi = __builtin_ia32_pmuludq(tmp_V2i, tmp_V2i);
   tmp_V2LLi = __builtin_ia32_pmuludq128(tmp_V4i, tmp_V4i);
   tmp_V8s = __builtin_ia32_psraw128(tmp_V8s, tmp_V8s);
@@ -365,6 +427,17 @@ void f0() {
   tmp_V8s = __builtin_ia32_psllw128(tmp_V8s, tmp_V8s);
   tmp_V4i = __builtin_ia32_pslld128(tmp_V4i, tmp_V4i);
   tmp_V2LLi = __builtin_ia32_psllq128(tmp_V2LLi, tmp_V2LLi);
+
+  tmp_V8s = __builtin_ia32_psllwi128(tmp_V8s, imm_i_0_8);
+  tmp_V4i = __builtin_ia32_pslldi128(tmp_V4i, imm_i_0_8);
+  tmp_V2LLi = __builtin_ia32_psllqi128(tmp_V2LLi, imm_i_0_8);
+  tmp_V8s = __builtin_ia32_psrlwi128(tmp_V8s, imm_i_0_8);
+  tmp_V4i = __builtin_ia32_psrldi128(tmp_V4i, imm_i_0_8);
+  tmp_V2LLi = __builtin_ia32_psrlqi128(tmp_V2LLi, imm_i_0_8);
+  tmp_V8s = __builtin_ia32_psrawi128(tmp_V8s, imm_i_0_8);
+  tmp_V4i = __builtin_ia32_psradi128(tmp_V4i, imm_i_0_8);
+
+  // Using non-immediate argument supported for gcc compatibility
   tmp_V8s = __builtin_ia32_psllwi128(tmp_V8s, tmp_i);
   tmp_V4i = __builtin_ia32_pslldi128(tmp_V4i, tmp_i);
   tmp_V2LLi = __builtin_ia32_psllqi128(tmp_V2LLi, tmp_i);
@@ -373,12 +446,13 @@ void f0() {
   tmp_V2LLi = __builtin_ia32_psrlqi128(tmp_V2LLi, tmp_i);
   tmp_V8s = __builtin_ia32_psrawi128(tmp_V8s, tmp_i);
   tmp_V4i = __builtin_ia32_psradi128(tmp_V4i, tmp_i);
-  tmp_V8s = __builtin_ia32_pmaddwd128(tmp_V8s, tmp_V8s);
+
+  tmp_V4i = __builtin_ia32_pmaddwd128(tmp_V8s, tmp_V8s);
   (void) __builtin_ia32_monitor(tmp_vp, tmp_Ui, tmp_Ui);
   (void) __builtin_ia32_mwait(tmp_Ui, tmp_Ui);
   tmp_V16c = __builtin_ia32_lddqu(tmp_cCp);
-  tmp_V2LLi = __builtin_ia32_palignr128(tmp_V2LLi, tmp_V2LLi, imm_i);
-  tmp_V1LLi = __builtin_ia32_palignr(tmp_V1LLi, tmp_V1LLi, imm_i);
+  tmp_V16c = __builtin_ia32_palignr128(tmp_V16c, tmp_V16c, imm_i);
+  tmp_V8c = __builtin_ia32_palignr(tmp_V8c, tmp_V8c, imm_i);
 #ifdef USE_SSE4
   tmp_V16c = __builtin_ia32_pblendvb128(tmp_V16c, tmp_V16c, tmp_V16c);
   tmp_V2d = __builtin_ia32_blendvpd(tmp_V2d, tmp_V2d, tmp_V2d);
@@ -419,7 +493,6 @@ void f0() {
   tmp_V8f = __builtin_ia32_dpps256(tmp_V8f, tmp_V8f, 0x7);
   tmp_V4d = __builtin_ia32_cmppd256(tmp_V4d, tmp_V4d, 0);
   tmp_V8f = __builtin_ia32_cmpps256(tmp_V8f, tmp_V8f, 0);
-  tmp_V8f = __builtin_ia32_cvtdq2ps256(tmp_V8i);
   tmp_V4f = __builtin_ia32_cvtpd2ps256(tmp_V4d);
   tmp_V8i = __builtin_ia32_cvtps2dq256(tmp_V8f);
   tmp_V4i = __builtin_ia32_cvttpd2dq256(tmp_V4d);
@@ -453,8 +526,6 @@ void f0() {
   tmp_i = __builtin_ia32_movmskps256(tmp_V8f);
   __builtin_ia32_vzeroall();
   __builtin_ia32_vzeroupper();
-  tmp_V4d = __builtin_ia32_vbroadcastf128_pd256(tmp_V2dCp);
-  tmp_V8f = __builtin_ia32_vbroadcastf128_ps256(tmp_V4fCp);
   tmp_V32c = __builtin_ia32_lddqu256(tmp_cCp);
   tmp_V2d = __builtin_ia32_maskloadpd(tmp_V2dCp, tmp_V2LLi);
   tmp_V4f = __builtin_ia32_maskloadps(tmp_V4fCp, tmp_V4i);

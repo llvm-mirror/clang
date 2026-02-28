@@ -36,3 +36,32 @@ namespace check_conversion_early {
   struct Y { constexpr operator int() const { return 0; } };
   template<Y &y> struct A<y> {}; // expected-error {{cannot be deduced}} expected-note {{'y'}}
 }
+
+namespace ReportCorrectParam {
+template <int a, unsigned b, int c>
+void TempFunc() {}
+
+void Useage() {
+  //expected-error@+2 {{no matching function}}
+  //expected-note@-4 {{candidate template ignored: invalid explicitly-specified argument for template parameter 'b'}}
+  TempFunc<1, -1, 1>();
+}
+}
+
+namespace PR42513 {
+  template<typename X, int Ret = WidgetCtor((X*)nullptr)> void f();
+  constexpr int WidgetCtor(struct X1*);
+
+  struct X1 {
+    friend constexpr int WidgetCtor(X1*);
+  };
+  template<typename X1>
+  struct StandardWidget {
+    friend constexpr int WidgetCtor(X1*) {
+      return 0;
+    }
+  };
+  template struct StandardWidget<X1>;
+
+  void use() { f<X1>(); }
+}

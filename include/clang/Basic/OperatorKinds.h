@@ -1,14 +1,13 @@
 //===--- OperatorKinds.h - C++ Overloaded Operators -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief Defines an enumeration for C++ overloaded operators.
+/// Defines an enumeration for C++ overloaded operators.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -17,7 +16,7 @@
 
 namespace clang {
 
-/// \brief Enumeration specifying the different kinds of C++ overloaded
+/// Enumeration specifying the different kinds of C++ overloaded
 /// operators.
 enum OverloadedOperatorKind : int {
   OO_None,                ///< Not an overloaded operator
@@ -27,9 +26,28 @@ enum OverloadedOperatorKind : int {
   NUM_OVERLOADED_OPERATORS
 };
 
-/// \brief Retrieve the spelling of the given overloaded operator, without 
+/// Retrieve the spelling of the given overloaded operator, without
 /// the preceding "operator" keyword.
 const char *getOperatorSpelling(OverloadedOperatorKind Operator);
+
+/// Get the other overloaded operator that the given operator can be rewritten
+/// into, if any such operator exists.
+inline OverloadedOperatorKind
+getRewrittenOverloadedOperator(OverloadedOperatorKind Kind) {
+  switch (Kind) {
+  case OO_Less:
+  case OO_LessEqual:
+  case OO_Greater:
+  case OO_GreaterEqual:
+    return OO_Spaceship;
+
+  case OO_ExclaimEqual:
+    return OO_EqualEqual;
+
+  default:
+    return OO_None;
+  }
+}
 
 } // end namespace clang
 

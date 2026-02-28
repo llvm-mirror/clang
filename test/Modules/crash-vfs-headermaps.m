@@ -1,18 +1,12 @@
 // REQUIRES: crash-recovery, shell, system-darwin
 
-// This uses a headermap with this entry:
-//   Foo.h -> Foo/Foo.h
-
-// Copy out the headermap from test/Preprocessor/Inputs/headermap-rel and avoid
-// adding another binary format to the repository.
-
 // RUN: rm -rf %t
-// RUN: mkdir -p %t/m
-// RUN: cp -a %S/../Preprocessor/Inputs/headermap-rel %t/i
+// RUN: mkdir -p %t/m %t/i/Foo.framework/Headers
 // RUN: echo '// Foo.h' > %t/i/Foo.framework/Headers/Foo.h
+// RUN: %hmaptool write %S/../Preprocessor/Inputs/headermap-rel/foo.hmap.json %t/i/foo.hmap
 
-// RUN: not env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
-// RUN: %clang -fsyntax-only -fmodules -fmodules-cache-path=%t/m %s \
+// RUN: env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
+// RUN: not %clang -fsyntax-only -fmodules -fmodules-cache-path=%t/m %s \
 // RUN:     -I %t/i/foo.hmap -F %t/i 2>&1 | FileCheck %s
 
 // RUN: FileCheck --check-prefix=CHECKSH %s -input-file %t/crash-vfs-*.sh
@@ -38,7 +32,6 @@
 // CHECKYAML: 'case-sensitive':
 // CHECKYAML-NEXT: 'use-external-names': 'false',
 // CHECKYAML-NEXT: 'overlay-relative': 'true',
-// CHECKYAML-NEXT: 'ignore-non-existent-contents': 'false'
 // CHECKYAML: 'type': 'directory'
 // CHECKYAML: 'name': "/[[PATH:.*]]/Foo.framework/Headers",
 // CHECKYAML-NEXT: 'contents': [

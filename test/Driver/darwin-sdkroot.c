@@ -2,7 +2,7 @@
 //
 // RUN: rm -rf %t.tmpdir
 // RUN: mkdir -p %t.tmpdir
-// RUN: env SDKROOT=%t.tmpdir %clang -target x86_64-apple-darwin10 \
+// RUN: env SDKROOT=%t.tmpdir %clang -target x86_64-apple-darwin10 --sysroot="" \
 // RUN:   -c %s -### 2> %t.log
 // RUN: FileCheck --check-prefix=CHECK-BASIC < %t.log %s
 //
@@ -13,7 +13,7 @@
 // Check that we don't use SDKROOT as the default if it is not a valid path.
 //
 // RUN: rm -rf %t.nonpath
-// RUN: env SDKROOT=%t.nonpath %clang -target x86_64-apple-darwin10 \
+// RUN: env SDKROOT=%t.nonpath %clang -target x86_64-apple-darwin10 --sysroot="" \
 // RUN:   -c %s -### 2> %t.log
 // RUN: FileCheck --check-prefix=CHECK-NONPATH < %t.log %s
 //
@@ -23,7 +23,7 @@
 
 // Check that we don't use SDKROOT as the default if it is just "/"
 //
-// RUN: env SDKROOT=/ %clang -target x86_64-apple-darwin10 \
+// RUN: env SDKROOT=/ %clang -target x86_64-apple-darwin10 --sysroot="" \
 // RUN:   -c %s -### 2> %t.log
 // RUN: FileCheck --check-prefix=CHECK-NONROOT < %t.log %s
 //
@@ -43,7 +43,7 @@
 //
 // RUN: rm -rf %t/SDKs/iPhoneOS8.0.0.sdk
 // RUN: mkdir -p %t/SDKs/iPhoneOS8.0.0.sdk
-// RUN: env SDKROOT=%t/SDKs/iPhoneOS8.0.0.sdk %clang -target arm64-apple-darwin %s -### 2>&1 \
+// RUN: env SDKROOT=%t/SDKs/iPhoneOS8.0.0.sdk %clang -target arm64-apple-darwin --sysroot="" %s -### 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-IPHONE %s
 //
 // CHECK-IPHONE: clang
@@ -55,18 +55,18 @@
 //
 // RUN: rm -rf %t/SDKs/iPhoneSimulator8.0.sdk
 // RUN: mkdir -p %t/SDKs/iPhoneSimulator8.0.sdk
-// RUN: env SDKROOT=%t/SDKs/iPhoneSimulator8.0.sdk %clang -target x86_64-apple-darwin %s -### 2>&1 \
+// RUN: env SDKROOT=%t/SDKs/iPhoneSimulator8.0.sdk %clang -target x86_64-apple-darwin --sysroot="" %s -### 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-SIMULATOR %s
 //
 // CHECK-SIMULATOR: clang
 // CHECK-SIMULATOR: "-cc1"
-// CHECK-SIMULATOR: "-triple" "x86_64-apple-ios8.0.0"
+// CHECK-SIMULATOR: "-triple" "x86_64-apple-ios8.0.0-simulator"
 // CHECK-SIMULATOR: ld
 // CHECK-SIMULATOR: "-ios_simulator_version_min" "8.0.0"
 //
 // RUN: rm -rf %t/SDKs/MacOSX10.10.0.sdk
 // RUN: mkdir -p %t/SDKs/MacOSX10.10.0.sdk
-// RUN: env SDKROOT=%t/SDKs/MacOSX10.10.0.sdk %clang -target x86_64-apple-darwin %s -### 2>&1 \
+// RUN: env SDKROOT=%t/SDKs/MacOSX10.10.0.sdk %clang -target x86_64-apple-darwin --sysroot="" %s -### 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-MACOSX %s
 //
 // CHECK-MACOSX: clang

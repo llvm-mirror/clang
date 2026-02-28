@@ -218,13 +218,13 @@ int FooBar();
 
 // rdar://14124644
 @interface test_vararg1
-/// @param[in] arg somthing
+/// @param[in] arg something
 /// @param[in] ... This is vararg
 - (void) VarArgMeth : (id)arg, ...;
 @end
 
 @implementation test_vararg1
-/// @param[in] arg somthing
+/// @param[in] arg something
 /// @param[in] ... This is vararg
 - (void) VarArgMeth : (id)arg, ... {}
 @end
@@ -310,3 +310,11 @@ void (^_Nullable blockPointerVariableThatLeadsNowhere)();
  * now should work too.
  */
 typedef void (^VariadicBlockType)(int a, ...);
+
+// PR42844 - Assertion failures when using typedefed block pointers
+typedef void(^VoidBlockType)();
+typedef VoidBlockType VoidBlockTypeCall();
+VoidBlockTypeCall *d; ///< \return none
+// expected-warning@-1 {{'\return' command used in a comment that is not attached to a function or method declaration}}
+VoidBlockTypeCall ^e; ///< \return none
+// expected-warning@-1 {{'\return' command used in a comment that is not attached to a function or method declaration}}

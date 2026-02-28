@@ -32,8 +32,8 @@ void f5_watchos(int) __attribute__((availability(watchos,introduced=2.0))) __att
 void f5_attr_reversed_watchos(int) __attribute__((availability(ios, deprecated=3.0))) __attribute__((availability(watchos,introduced=2.0)));
 void f5b_watchos(int) __attribute__((availability(watchos,introduced=2.0))) __attribute__((availability(watchos,deprecated=3.0))); // expected-note {{'f5b_watchos' has been explicitly marked deprecated here}}
 void f5c_watchos(int) __attribute__((availability(ios,introduced=2.0))) __attribute__((availability(ios,deprecated=3.0))); // expected-note {{'f5c_watchos' has been explicitly marked deprecated here}}
-void f6_watchos(int) __attribute__((availability(watchos,deprecated=3.0)));
-void f6_watchos(int) __attribute__((availability(watchOS,introduced=2.0))); // expected-note {{'f6_watchos' has been explicitly marked deprecated here}}
+void f6_watchos(int) __attribute__((availability(watchos,deprecated=3.0))); // expected-note {{'f6_watchos' has been explicitly marked deprecated here}}
+void f6_watchos(int) __attribute__((availability(watchOS,introduced=2.0)));
 
 void test_watchos() {
   f0_watchos(0); // expected-warning{{'f0_watchos' is deprecated: first deprecated in watchOS 2.1}}
@@ -42,7 +42,7 @@ void test_watchos() {
   f3_watchos(0);
   f4_watchos(0); // expected-error{{'f4_watchos' is unavailable: obsoleted in watchOS 3.0}}
   // We get no warning here because any explicit 'watchos' availability causes
-  // the ios availablity to not implicitly become 'watchos' availability.  Otherwise we'd get
+  // the ios availability to not implicitly become 'watchos' availability.  Otherwise we'd get
   // a deprecated warning.
   f5_watchos(0); // no-warning
   f5_attr_reversed_watchos(0); // no-warning
@@ -51,4 +51,10 @@ void test_watchos() {
   // We get a deprecated warning here because both attributes are 'ios' (both get mapped to 'watchos').
   f5c_watchos(0); // expected-warning {{'f5c_watchos' is deprecated: first deprecated in watchOS 2.0}}
   f6_watchos(0); // expected-warning {{'f6_watchos' is deprecated: first deprecated in watchOS 3.0}}
+}
+
+void deprecatedAfterIntroduced() __attribute__((availability(ios,introduced=9.3,deprecated=10))); // expected-note {{here}}
+
+void test_ios_correctly_map_to_watchos() {
+  deprecatedAfterIntroduced(); // expected-warning {{'deprecatedAfterIntroduced' is deprecated: first deprecated in watchOS 3}}
 }

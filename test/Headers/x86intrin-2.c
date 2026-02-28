@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -ffreestanding %s -verify
-// RUN: %clang_cc1 -fsyntax-only -ffreestanding -fno-lax-vector-conversions %s -verify
+// RUN: %clang_cc1 -fsyntax-only -ffreestanding -flax-vector-conversions=none %s -verify
 // RUN: %clang_cc1 -fsyntax-only -ffreestanding -x c++ %s -verify
 // expected-no-diagnostics
 
@@ -70,10 +70,6 @@ __m512i __attribute__((__target__("avx512f"))) mm512_setzero_si512_wrap(void) {
 
 __mmask8 __attribute__((__target__("avx512vl"))) mm_cmpeq_epi32_mask_wrap(__m128i a, __m128i b) {
   return _mm_cmpeq_epi32_mask(a, b);
-}
-
-__m512i __attribute__((__target__("avx512bw"))) mm512_setzero_qi_wrap(void) {
-  return _mm512_setzero_qi();
 }
 
 __m512i __attribute__((__target__("avx512dq"))) mm512_mullo_epi64_wrap(__m512i a, __m512i b) {

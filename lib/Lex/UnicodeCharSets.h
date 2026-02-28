@@ -1,9 +1,8 @@
 //===--- UnicodeCharSets.h - Contains important sets of characters --------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 #ifndef LLVM_CLANG_LIB_LEX_UNICODECHARSETS_H
@@ -216,7 +215,7 @@ static const llvm::sys::UnicodeCharRange C99AllowedIDCharRanges[] = {
   // Digits (2)
   { 0x06F0, 0x06F9 },
 
-  // Devanagari and Special characeter 0x093D.
+  // Devanagari and Special character 0x093D.
   { 0x0901, 0x0903 }, { 0x0905, 0x0939 }, { 0x093D, 0x094D },
   { 0x0950, 0x0952 }, { 0x0958, 0x0963 },
 

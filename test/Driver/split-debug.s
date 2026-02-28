@@ -3,9 +3,15 @@
 // RUN: %clang -target x86_64-unknown-linux-gnu -gsplit-dwarf -c -### %s 2> %t
 // RUN: FileCheck -check-prefix=CHECK-ACTIONS < %t %s
 //
-// CHECK-ACTIONS: objcopy{{.*}}--extract-dwo{{.*}}"split-debug.dwo"
-// CHECK-ACTIONS: objcopy{{.*}}--strip-dwo{{.*}}"split-debug.o"
+// CHECK-ACTIONS: "-split-dwarf-output" "split-debug.dwo"
 
+// Check we pass -split-dwarf-output to `as` if -gsplit-dwarf=split.
+// RUN: %clang -target x86_64-unknown-linux-gnu -gsplit-dwarf=split -c -### %s 2> %t
+// RUN: FileCheck -check-prefix=CHECK-ACTIONS < %t %s
+
+// Check we do not pass any -split-dwarf* commands to `as` if -gsplit-dwarf=single.
+// RUN: %clang -target x86_64-unknown-linux-gnu -gsplit-dwarf=single -c -### %s 2> %t
+// RUN: FileCheck -check-prefix=CHECK-NO-ACTIONS < %t %s
 
 // RUN: %clang -target x86_64-macosx -gsplit-dwarf -c -### %s 2> %t
 // RUN: FileCheck -check-prefix=CHECK-NO-ACTIONS < %t %s

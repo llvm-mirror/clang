@@ -1,9 +1,8 @@
 //===--- BPF.h - Declare BPF target feature support -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,6 +22,8 @@ namespace clang {
 namespace targets {
 
 class LLVM_LIBRARY_VISIBILITY BPFTargetInfo : public TargetInfo {
+  static const Builtin::Info BuiltinInfo[];
+
 public:
   BPFTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
       : TargetInfo(Triple) {
@@ -46,9 +47,16 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
-  bool hasFeature(StringRef Feature) const override { return Feature == "bpf"; }
+  bool hasFeature(StringRef Feature) const override {
+    return Feature == "bpf" || Feature == "alu32" || Feature == "dwarfris";
+  }
 
-  ArrayRef<Builtin::Info> getTargetBuiltins() const override { return None; }
+  void setFeatureEnabled(llvm::StringMap<bool> &Features, StringRef Name,
+                         bool Enabled) const override {
+    Features[Name] = Enabled;
+  }
+
+  ArrayRef<Builtin::Info> getTargetBuiltins() const override;
 
   const char *getClobbers() const override { return ""; }
 
@@ -56,6 +64,7 @@ public:
     return TargetInfo::VoidPtrBuiltinVaList;
   }
 
+  bool isValidGCCRegisterName(StringRef Name) const override { return true; }
   ArrayRef<const char *> getGCCRegNames() const override { return None; }
 
   bool validateAsmConstraint(const char *&Name,
@@ -77,12 +86,9 @@ public:
     }
   }
 
-  bool isValidCPUName(StringRef Name) const override {
-    if (Name == "generic" || Name == "v1" ||
-        Name == "v2" || Name == "probe")
-      return true;
-    return false;
-  }
+  bool isValidCPUName(StringRef Name) const override;
+
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
   bool setCPU(const std::string &Name) override {
     StringRef CPUName(Name);

@@ -56,12 +56,12 @@ struct StoresNonLit {
 #if defined(TEST_ONE) // Test semantics of attribute
 
 // Test diagnostics when attribute is applied to non-static declarations.
-void test_func_local(ATTR int param) { // expected-error {{only applies to variables with static or thread}}
-  ATTR int x = 42;                     // expected-error {{only applies to variables with static or thread}}
+void test_func_local(ATTR int param) { // expected-error {{only applies to global variables}}
+  ATTR int x = 42;                     // expected-error {{only applies to}}
   ATTR extern int y;
 }
-struct ATTR class_mem { // expected-error {{only applies to variables with static or thread}}
-  ATTR int x;           // expected-error {{only applies to variables with static or thread}}
+struct ATTR class_mem { // expected-error {{only applies to}}
+  ATTR int x;           // expected-error {{only applies to}}
 };
 
 // [basic.start.static]p2.1
@@ -185,7 +185,7 @@ struct TT2 {
   ATTR static constexpr LitType lit = {};
   ATTR static const NonLit non_lit;
   ATTR static const NonLit non_lit_list_init;
-  ATTR static const NonLit non_lit_copy_init; // expected-note {{required by 'require_constant_initialization' attribute here}}
+  ATTR static const NonLit non_lit_copy_init;
 #endif
 };
 PODType TT2::pod_noinit; // expected-note 0+ {{declared here}}
@@ -203,8 +203,9 @@ PODType TT2::pod_copy_init(TT2::pod_noinit); // expected-error {{variable does n
 #if __cplusplus >= 201402L
 const NonLit TT2::non_lit(42);
 const NonLit TT2::non_lit_list_init = {42};
-const NonLit TT2::non_lit_copy_init = 42; // expected-error {{variable does not have a constant initializer}}
-// expected-note@-1 {{subexpression not valid in a constant expression}}
+// FIXME: This is invalid, but we incorrectly elide the copy. It's OK if we
+// start diagnosing this.
+const NonLit TT2::non_lit_copy_init = 42;
 #endif
 
 #if __cplusplus >= 201103L
@@ -299,6 +300,17 @@ ATTR TestCtor<NotC> t(42); // expected-error {{variable does not have a constant
 // Test various array types
 ATTR const char *foo[] = {"abc", "def"};
 ATTR PODType bar[] = {{}, {123, 456}};
+
+
+namespace AttrAddedTooLate {
+  struct A {
+    static const int n = 0; // expected-note {{here}}
+  };
+  ATTR const int A::n; // expected-warning {{added after initialization}}
+
+  int m = 0; // expected-note {{here}}
+  extern ATTR int m; // expected-warning {{added after initialization}}
+}
 
 #elif defined(TEST_TWO) // Test for duplicate warnings
 struct NotC {

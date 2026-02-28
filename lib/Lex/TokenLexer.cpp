@@ -1,9 +1,8 @@
-//===--- TokenLexer.cpp - Lex from a token stream -------------------------===//
+//===- TokenLexer.cpp - Lex from a token stream ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,13 +11,25 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/TokenLexer.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/LangOptions.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/LexDiagnostic.h"
+#include "clang/Lex/Lexer.h"
 #include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/Token.h"
 #include "clang/Lex/VariadicMacroSupport.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/iterator_range.h"
+#include <cassert>
+#include <cstring>
 
 using namespace clang;
 
@@ -42,6 +53,7 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
   Tokens = &*Macro->tokens_begin();
   OwnsTokens = false;
   DisableMacroExpansion = false;
+  IsReinject = false;
   NumTokens = Macro->tokens_end()-Macro->tokens_begin();
   MacroExpansionStart = SourceLocation();
 
@@ -80,7 +92,9 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
 /// Create a TokenLexer for the specified token stream.  This does not
 /// take ownership of the specified token vector.
 void TokenLexer::Init(const Token *TokArray, unsigned NumToks,
-                      bool disableMacroExpansion, bool ownsTokens) {
+                      bool disableMacroExpansion, bool ownsTokens,
+                      bool isReinject) {
+  assert(!isReinject || disableMacroExpansion);
   // If the client is reusing a TokenLexer, make sure to free any memory
   // associated with it.
   destroy();
@@ -90,6 +104,7 @@ void TokenLexer::Init(const Token *TokArray, unsigned NumToks,
   Tokens = TokArray;
   OwnsTokens = ownsTokens;
   DisableMacroExpansion = disableMacroExpansion;
+  IsReinject = isReinject;
   NumTokens = NumToks;
   CurTokenIdx = 0;
   ExpandLocStart = ExpandLocEnd = SourceLocation();
@@ -232,13 +247,11 @@ void TokenLexer::ExpandFunctionArguments() {
   // we install the newly expanded sequence as the new 'Tokens' list.
   bool MadeChange = false;
 
-  const bool CalledWithVariadicArguments =
-      ActualArgs->invokedWithVariadicArgument(Macro);
+  Optional<bool> CalledWithVariadicArguments;
 
   VAOptExpansionContext VCtx(PP);
-  
+
   for (unsigned I = 0, E = NumTokens; I != E; ++I) {
-    
     const Token &CurTok = Tokens[I];
     // We don't want a space for the next token after a paste
     // operator.  In valid code, the token will get smooshed onto the
@@ -257,7 +270,7 @@ void TokenLexer::ExpandFunctionArguments() {
       ++I;             // Skip the l_paren
       VCtx.sawVAOptFollowedByOpeningParens(CurTok.getLocation(),
                                            ResultToks.size());
-      
+
       continue;
     }
 
@@ -281,13 +294,17 @@ void TokenLexer::ExpandFunctionArguments() {
       // this token. Note sawClosingParen() returns true only if the r_paren matches
       // the closing r_paren of the __VA_OPT__.
       if (!Tokens[I].is(tok::r_paren) || !VCtx.sawClosingParen()) {
-        if (!CalledWithVariadicArguments) {
+        // Lazily expand __VA_ARGS__ when we see the first __VA_OPT__.
+        if (!CalledWithVariadicArguments.hasValue()) {
+          CalledWithVariadicArguments =
+              ActualArgs->invokedWithVariadicArgument(Macro, PP);
+        }
+        if (!*CalledWithVariadicArguments) {
           // Skip this token.
           continue;
         }
         // ... else the macro was called with variadic arguments, and we do not
         // have a closing rparen - so process this token normally.
-
       } else {
         // Current token is the closing r_paren which marks the end of the
         // __VA_OPT__ invocation, so handle any place-marker pasting (if
@@ -305,8 +322,8 @@ void TokenLexer::ExpandFunctionArguments() {
           stringifyVAOPTContents(ResultToks, VCtx,
                                  /*ClosingParenLoc*/ Tokens[I].getLocation());
 
-        } else if (/*No tokens within VAOPT*/ !(
-            ResultToks.size() - VCtx.getNumberOfTokensPriorToVAOpt())) {
+        } else if (/*No tokens within VAOPT*/
+                   ResultToks.size() == VCtx.getNumberOfTokensPriorToVAOpt()) {
           // Treat VAOPT as a placemarker token.  Eat either the '##' before the
           // RHS/VAOPT (if one exists, suggesting that the LHS (if any) to that
           // hashhash was not a placemarker) or the '##'
@@ -317,6 +334,26 @@ void TokenLexer::ExpandFunctionArguments() {
           } else if ((I + 1 != E) && Tokens[I + 1].is(tok::hashhash)) {
             ++I; // Skip the following hashhash.
           }
+        } else {
+          // If there's a ## before the __VA_OPT__, we might have discovered
+          // that the __VA_OPT__ begins with a placeholder. We delay action on
+          // that to now to avoid messing up our stashed count of tokens before
+          // __VA_OPT__.
+          if (VCtx.beginsWithPlaceholder()) {
+            assert(VCtx.getNumberOfTokensPriorToVAOpt() > 0 &&
+                   ResultToks.size() >= VCtx.getNumberOfTokensPriorToVAOpt() &&
+                   ResultToks[VCtx.getNumberOfTokensPriorToVAOpt() - 1].is(
+                       tok::hashhash) &&
+                   "no token paste before __VA_OPT__");
+            ResultToks.erase(ResultToks.begin() +
+                             VCtx.getNumberOfTokensPriorToVAOpt() - 1);
+          }
+          // If the expansion of __VA_OPT__ ends with a placeholder, eat any
+          // following '##' token.
+          if (VCtx.endsWithPlaceholder() && I + 1 != E &&
+              Tokens[I + 1].is(tok::hashhash)) {
+            ++I;
+          }
         }
         VCtx.reset();
         // We processed __VA_OPT__'s closing paren (and the exit out of
@@ -326,14 +363,14 @@ void TokenLexer::ExpandFunctionArguments() {
     }
 
     // If we found the stringify operator, get the argument stringified.  The
-    // preprocessor already verified that the following token is a macro 
+    // preprocessor already verified that the following token is a macro
     // parameter or __VA_OPT__ when the #define was lexed.
-    
+
     if (CurTok.isOneOf(tok::hash, tok::hashat)) {
       int ArgNo = Macro->getParameterNum(Tokens[I+1].getIdentifierInfo());
       assert((ArgNo != -1 || VCtx.isVAOptToken(Tokens[I + 1])) &&
              "Token following # is not an argument or __VA_OPT__!");
-      
+
       if (ArgNo == -1) {
         // Handle the __VA_OPT__ case.
         VCtx.sawHashOrHashAtBefore(NextTokGetsSpace,
@@ -346,18 +383,10 @@ void TokenLexer::ExpandFunctionArguments() {
       SourceLocation ExpansionLocEnd =
           getExpansionLocForMacroDefLoc(Tokens[I+1].getLocation());
 
-      Token Res;
-      if (CurTok.is(tok::hash))  // Stringify
-        Res = ActualArgs->getStringifiedArgument(ArgNo, PP,
-                                                 ExpansionLocStart,
-                                                 ExpansionLocEnd);
-      else {
-        // 'charify': don't bother caching these.
-        Res = MacroArgs::StringifyArgument(ActualArgs->getUnexpArgument(ArgNo),
-                                           PP, true,
-                                           ExpansionLocStart,
-                                           ExpansionLocEnd);
-      }
+      bool Charify = CurTok.is(tok::hashat);
+      const Token *UnexpArg = ActualArgs->getUnexpArgument(ArgNo);
+      Token Res = MacroArgs::StringifyArgument(
+          UnexpArg, PP, Charify, ExpansionLocStart, ExpansionLocEnd);
       Res.setFlag(Token::StringifiedInMacro);
 
       // The stringified/charified string leading space flag gets set to match
@@ -377,6 +406,7 @@ void TokenLexer::ExpandFunctionArguments() {
       !ResultToks.empty() && ResultToks.back().is(tok::hashhash);
     bool PasteBefore = I != 0 && Tokens[I-1].is(tok::hashhash);
     bool PasteAfter = I+1 != E && Tokens[I+1].is(tok::hashhash);
+    bool RParenAfter = I+1 != E && Tokens[I+1].is(tok::r_paren);
 
     assert((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt()) &&
            "unexpected ## in ResultToks");
@@ -461,6 +491,18 @@ void TokenLexer::ExpandFunctionArguments() {
                                              NextTokGetsSpace);
         ResultToks[FirstResult].setFlagValue(Token::StartOfLine, false);
         NextTokGetsSpace = false;
+      } else {
+        // We're creating a placeholder token. Usually this doesn't matter,
+        // but it can affect paste behavior when at the start or end of a
+        // __VA_OPT__.
+        if (NonEmptyPasteBefore) {
+          // We're imagining a placeholder token is inserted here. If this is
+          // the first token in a __VA_OPT__ after a ##, delete the ##.
+          assert(VCtx.isInVAOpt() && "should only happen inside a __VA_OPT__");
+          VCtx.hasPlaceholderAfterHashhashAtStart();
+        }
+        if (RParenAfter)
+          VCtx.hasPlaceholderBeforeRParen();
       }
       continue;
     }
@@ -473,7 +515,7 @@ void TokenLexer::ExpandFunctionArguments() {
       bool VaArgsPseudoPaste = false;
       // If this is the GNU ", ## __VA_ARGS__" extension, and we just learned
       // that __VA_ARGS__ expands to multiple tokens, avoid a pasting error when
-      // the expander trys to paste ',' with the first token of the __VA_ARGS__
+      // the expander tries to paste ',' with the first token of the __VA_ARGS__
       // expansion.
       if (NonEmptyPasteBefore && ResultToks.size() >= 2 &&
           ResultToks[ResultToks.size()-2].is(tok::comma) &&
@@ -525,6 +567,9 @@ void TokenLexer::ExpandFunctionArguments() {
       continue;
     }
 
+    if (RParenAfter)
+      VCtx.hasPlaceholderBeforeRParen();
+
     // If this is on the RHS of a paste operator, we've already copied the
     // paste operator to the ResultToks list, unless the LHS was empty too.
     // Remove it.
@@ -538,6 +583,8 @@ void TokenLexer::ExpandFunctionArguments() {
       if (!VCtx.isInVAOpt() ||
           ResultToks.size() > VCtx.getNumberOfTokensPriorToVAOpt())
         ResultToks.pop_back();
+      else
+        VCtx.hasPlaceholderAfterHashhashAtStart();
     }
 
     // If this is the __VA_ARGS__ token, and if the argument wasn't provided,
@@ -564,7 +611,7 @@ void TokenLexer::ExpandFunctionArguments() {
   }
 }
 
-/// \brief Checks if two tokens form wide string literal.
+/// Checks if two tokens form wide string literal.
 static bool isWideStringLiteralFromMacro(const Token &FirstTok,
                                          const Token &SecondTok) {
   return FirstTok.is(tok::identifier) &&
@@ -573,7 +620,6 @@ static bool isWideStringLiteralFromMacro(const Token &FirstTok,
 }
 
 /// Lex - Lex and return a token from this macro stream.
-///
 bool TokenLexer::Lex(Token &Tok) {
   // Lexing off the end of the macro, pop this macro off the expansion stack.
   if (isAtEnd()) {
@@ -597,6 +643,8 @@ bool TokenLexer::Lex(Token &Tok) {
 
   // Get the next token to return.
   Tok = Tokens[CurTokenIdx++];
+  if (IsReinject)
+    Tok.setFlag(Token::IsReinjected);
 
   bool TokenIsFromPaste = false;
 
@@ -677,6 +725,7 @@ bool TokenLexer::Lex(Token &Tok) {
 bool TokenLexer::pasteTokens(Token &Tok) {
   return pasteTokens(Tok, llvm::makeArrayRef(Tokens, NumTokens), CurTokenIdx);
 }
+
 /// LHSTok is the LHS of a ## operator, and CurTokenIdx is the ##
 /// operator.  Read the ## and RHS, and paste the LHS/RHS together.  If there
 /// are more ## after it, chomp them iteratively.  Return the result as LHSTok.
@@ -696,7 +745,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
   if (PP.getLangOpts().MicrosoftExt && (CurIdx >= 2) &&
       TokenStream[CurIdx - 2].is(tok::hashhash))
     LHSTok.clearFlag(Token::LeadingSpace);
-  
+
   SmallString<128> Buffer;
   const char *ResultTokStrPtr = nullptr;
   SourceLocation StartLoc = LHSTok.getLocation();
@@ -835,7 +884,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
     // Transfer properties of the LHS over the Result.
     Result.setFlagValue(Token::StartOfLine , LHSTok.isAtStartOfLine());
     Result.setFlagValue(Token::LeadingSpace, LHSTok.hasLeadingSpace());
-    
+
     // Finally, replace LHS with the result, consume the RHS, and iterate.
     ++CurIdx;
     LHSTok = Result;
@@ -855,10 +904,10 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
     EndLoc = getExpansionLocForMacroDefLoc(EndLoc);
   FileID MacroFID = SM.getFileID(MacroExpansionStart);
   while (SM.getFileID(StartLoc) != MacroFID)
-    StartLoc = SM.getImmediateExpansionRange(StartLoc).first;
+    StartLoc = SM.getImmediateExpansionRange(StartLoc).getBegin();
   while (SM.getFileID(EndLoc) != MacroFID)
-    EndLoc = SM.getImmediateExpansionRange(EndLoc).second;
-    
+    EndLoc = SM.getImmediateExpansionRange(EndLoc).getEnd();
+
   LHSTok.setLocation(SM.createExpansionLoc(LHSTok.getLocation(), StartLoc, EndLoc,
                                         LHSTok.getLength()));
 
@@ -908,7 +957,7 @@ void TokenLexer::HandleMicrosoftCommentPaste(Token &Tok, SourceLocation OpLoc) {
   PP.HandleMicrosoftCommentPaste(Tok);
 }
 
-/// \brief If \arg loc is a file ID and points inside the current macro
+/// If \arg loc is a file ID and points inside the current macro
 /// definition, returns the appropriate source location pointing at the
 /// macro expansion source location entry, otherwise it returns an invalid
 /// SourceLocation.
@@ -917,7 +966,7 @@ TokenLexer::getExpansionLocForMacroDefLoc(SourceLocation loc) const {
   assert(ExpandLocStart.isValid() && MacroExpansionStart.isValid() &&
          "Not appropriate for token streams");
   assert(loc.isValid() && loc.isFileID());
-  
+
   SourceManager &SM = PP.getSourceManager();
   assert(SM.isInSLocAddrSpace(loc, MacroDefStart, MacroDefLength) &&
          "Expected loc to come from the macro definition");
@@ -927,7 +976,7 @@ TokenLexer::getExpansionLocForMacroDefLoc(SourceLocation loc) const {
   return MacroExpansionStart.getLocWithOffset(relativeOffset);
 }
 
-/// \brief Finds the tokens that are consecutive (from the same FileID)
+/// Finds the tokens that are consecutive (from the same FileID)
 /// creates a single SLocEntry, and assigns SourceLocations to each token that
 /// point to that SLocEntry. e.g for
 ///   assert(foo == bar);
@@ -997,7 +1046,7 @@ static void updateConsecutiveMacroArgTokens(SourceManager &SM,
   }
 }
 
-/// \brief Creates SLocEntries and updates the locations of macro argument
+/// Creates SLocEntries and updates the locations of macro argument
 /// tokens to their new expanded locations.
 ///
 /// \param ArgIdSpellLoc the location of the macro argument id inside the macro
@@ -1009,7 +1058,7 @@ void TokenLexer::updateLocForMacroArgTokens(SourceLocation ArgIdSpellLoc,
 
   SourceLocation InstLoc =
       getExpansionLocForMacroDefLoc(ArgIdSpellLoc);
-  
+
   while (begin_tokens < end_tokens) {
     // If there's only one token just create a SLocEntry for it.
     if (end_tokens - begin_tokens == 1) {

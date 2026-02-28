@@ -1,9 +1,8 @@
 //===--- RewriterTestContext.h ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -39,15 +38,15 @@ class RewriterTestContext {
          Diagnostics(IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
                      &*DiagOpts),
          DiagnosticPrinter(llvm::outs(), &*DiagOpts),
-         InMemoryFileSystem(new vfs::InMemoryFileSystem),
+         InMemoryFileSystem(new llvm::vfs::InMemoryFileSystem),
          OverlayFileSystem(
-             new vfs::OverlayFileSystem(vfs::getRealFileSystem())),
+             new llvm::vfs::OverlayFileSystem(llvm::vfs::getRealFileSystem())),
          Files(FileSystemOptions(), OverlayFileSystem),
          Sources(Diagnostics, Files), Rewrite(Sources, Options) {
-    Diagnostics.setClient(&DiagnosticPrinter, false);
-    // FIXME: To make these tests truly in-memory, we need to overlay the
-    // builtin headers.
-    OverlayFileSystem->pushOverlay(InMemoryFileSystem);
+     Diagnostics.setClient(&DiagnosticPrinter, false);
+     // FIXME: To make these tests truly in-memory, we need to overlay the
+     // builtin headers.
+     OverlayFileSystem->pushOverlay(InMemoryFileSystem);
   }
 
   ~RewriterTestContext() {}
@@ -57,9 +56,9 @@ class RewriterTestContext {
         llvm::MemoryBuffer::getMemBuffer(Content);
     InMemoryFileSystem->addFile(Name, 0, std::move(Source));
 
-    const FileEntry *Entry = Files.getFile(Name);
-    assert(Entry != nullptr);
-    return Sources.createFileID(Entry, SourceLocation(), SrcMgr::C_User);
+    auto Entry = Files.getFile(Name);
+    assert(Entry);
+    return Sources.createFileID(*Entry, SourceLocation(), SrcMgr::C_User);
   }
 
   // FIXME: this code is mostly a duplicate of
@@ -74,14 +73,14 @@ class RewriterTestContext {
     llvm::raw_fd_ostream OutStream(FD, true);
     OutStream << Content;
     OutStream.close();
-    const FileEntry *File = Files.getFile(Path);
-    assert(File != nullptr);
+    auto File = Files.getFile(Path);
+    assert(File);
 
     StringRef Found =
         TemporaryFiles.insert(std::make_pair(Name, Path.str())).first->second;
     assert(Found == Path);
     (void)Found;
-    return Sources.createFileID(File, SourceLocation(), SrcMgr::C_User);
+    return Sources.createFileID(*File, SourceLocation(), SrcMgr::C_User);
   }
 
   SourceLocation getLocation(FileID ID, unsigned Line, unsigned Column) {
@@ -114,8 +113,8 @@ class RewriterTestContext {
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts;
   DiagnosticsEngine Diagnostics;
   TextDiagnosticPrinter DiagnosticPrinter;
-  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem;
-  IntrusiveRefCntPtr<vfs::OverlayFileSystem> OverlayFileSystem;
+  IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem;
+  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> OverlayFileSystem;
   FileManager Files;
   SourceManager Sources;
   LangOptions Options;

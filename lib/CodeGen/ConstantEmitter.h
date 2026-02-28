@@ -1,9 +1,8 @@
 //===--- ConstantEmitter.h - IR constant emission ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -38,6 +37,9 @@ private:
   /// Whether the constant-emission failed.
   bool Failed = false;
 
+  /// Whether we're in a constant context.
+  bool InConstantContext = false;
+
   /// The AST address space where this (non-abstract) initializer is going.
   /// Used for generating appropriate placeholders.
   LangAS DestAddressSpace;
@@ -50,7 +52,7 @@ public:
     : CGM(CGM), CGF(CGF) {}
 
   /// Initialize this emission in the context of the given function.
-  /// Use this if the expression might contain contextaul references like
+  /// Use this if the expression might contain contextual references like
   /// block addresses or PredefinedExprs.
   ConstantEmitter(CodeGenFunction &CGF)
     : CGM(CGF.CGM), CGF(&CGF) {}

@@ -1,4 +1,13 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -verify %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp for simd
+  for (int i = 0; i < 10; ++i)
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp for simd'}}
 #pragma omp for simd
@@ -372,10 +381,10 @@ void test_collapse() {
     ;
 #pragma omp parallel
 #pragma omp for simd collapse(2)
-  for (i = 0; i < 16; ++i)
+  for (i = 0; i < 16; ++i) // expected-note {{defined as lastprivate}}
 // expected-note@+1 {{variable with automatic storage duration is predetermined as private; perhaps you forget to enclose 'omp for simd' directive into a parallel or another task region?}}
     for (int j = 0; j < 16; ++j)
-// expected-error@+2 {{reduction variable must be shared}}
+// expected-error@+2 2 {{reduction variable must be shared}}
 // expected-error@+1 {{OpenMP constructs may not be nested inside a simd region}}
 #pragma omp for simd reduction(+ : i, j)
       for (int k = 0; k < 16; ++k)

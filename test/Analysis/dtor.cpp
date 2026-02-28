@@ -1,4 +1,4 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=core,unix.Malloc,debug.ExprInspection,cplusplus -analyzer-config c++-inlining=destructors,cfg-temporary-dtors=true -Wno-null-dereference -Wno-inaccessible-base -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,unix.Malloc,debug.ExprInspection,cplusplus -analyzer-config c++-inlining=destructors -Wno-null-dereference -Wno-inaccessible-base -verify -analyzer-config eagerly-assume=false %s
 
 void clang_analyzer_eval(bool);
 void clang_analyzer_checkInlined(bool);
@@ -540,3 +540,33 @@ void f() {
   clang_analyzer_eval(__alignof(NonTrivial) > 0); // expected-warning{{TRUE}}
 }
 }
+
+namespace dtor_over_loc_concrete_int {
+struct A {
+  ~A() {}
+};
+
+struct B {
+  A a;
+  ~B() {}
+};
+
+struct C : A {
+  ~C() {}
+};
+
+void testB() {
+  B *b = (B *)-1;
+  b->~B(); // no-crash
+}
+
+void testC() {
+  C *c = (C *)-1;
+  c->~C(); // no-crash
+}
+
+void testAutoDtor() {
+  const A &a = *(A *)-1;
+  // no-crash
+}
+} // namespace dtor_over_loc_concrete_int

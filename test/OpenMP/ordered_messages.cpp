@@ -1,6 +1,19 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -o - %s
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++98 -o - %s
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++11 -o - %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++98 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++11 -o - %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 -std=c++98 -o - %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 -std=c++11 -o - %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp for ordered
+  for (int i = 0; i < 10; ++i) {
+#pragma omp ordered
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+  }
+}
 
 int foo();
 
@@ -134,6 +147,8 @@ T foo() {
 #pragma omp ordered depend(source) depend(sink : i-0, j+sizeof(T)) // expected-error {{'depend(sink:vec)' clauses cannot be mixed with 'depend(source)' clause}}
     }
   }
+#pragma omp ordered depend(source) // expected-error {{'ordered' directive with 'depend' clause cannot be closely nested inside ordered region without specified parameter}}
+#pragma omp ordered depend(sink:k) // expected-error {{'ordered' directive with 'depend' clause cannot be closely nested inside ordered region without specified parameter}}
   return T();
 }
 
@@ -256,7 +271,7 @@ int k;
 #pragma omp ordered simd depend(source) // expected-error {{'depend' clauses cannot be mixed with 'simd' clause}}
 #pragma omp ordered depend(source) depend(source) // expected-error {{directive '#pragma omp ordered' cannot contain more than one 'depend' clause with 'source' dependence}}
 #pragma omp ordered depend(in : i) // expected-error {{expected 'source' or 'sink' in OpenMP clause 'depend'}} expected-error {{'ordered' directive without any clauses cannot be closely nested inside ordered region with specified parameter}}
-#pragma omp ordered depend(sink : i, j)
+#pragma omp ordered depend(sink : i, j) allocate(i) // expected-error {{unexpected OpenMP clause 'allocate' in directive '#pragma omp ordered'}}
 #pragma omp ordered depend(sink : j, i) // expected-error {{expected 'i' loop iteration variable}} expected-error {{expected 'j' loop iteration variable}}
 #pragma omp ordered depend(sink : i, j, k) // expected-error {{unexpected expression: number of expressions is larger than the number of associated loops}}
 #pragma omp ordered depend(sink : i+foo(), j/4) // expected-error {{expression is not an integral constant expression}} expected-error {{expected '+' or '-' operation}}

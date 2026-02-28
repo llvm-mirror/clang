@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple armv7-ios5.0 -std=c++11 -fobjc-arc -Os -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple armv7-ios5.0 -std=c++11 -fmerge-all-constants -fobjc-arc -Os -emit-llvm -o - %s | FileCheck %s
 
 // CHECK: @[[STR0:.*]] = private unnamed_addr constant [5 x i8] c"str0\00", section "__TEXT,__cstring,cstring_literals"
 // CHECK: @[[UNNAMED_CFSTRING0:.*]] = private global %struct.__NSConstantString_tag { i32* getelementptr inbounds ([0 x i32], [0 x i32]* @__CFConstantStringClassReference, i32 0, i32 0), i32 1992, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @[[STR0]], i32 0, i32 0), i32 4 }, section "__DATA,__cfstring"
@@ -29,14 +29,14 @@ extern "C" void single() { function({ [I new] }); }
 // CHECK: [[INSTANCE:%.*]] = {{.*}} call i8* bitcast (i8* (i8*, i8*, ...)* @objc_msgSend to i8* (i8*, i8*)*)(i8* {{.*}}, i8* {{.*}})
 // CHECK-NEXT: [[CAST:%.*]] = bitcast [{{[0-9]+}} x %0*]* %{{.*}} to i8**
 // CHECK-NEXT: store i8* [[INSTANCE]], i8** [[CAST]],
-// CHECK: call void @objc_release(i8* {{.*}})
+// CHECK: call void @llvm.objc.release(i8* {{.*}})
 
 extern "C" void multiple() { function({ [I new], [I new] }); }
 
 // CHECK: [[INSTANCE:%.*]] = {{.*}} call i8* bitcast (i8* (i8*, i8*, ...)* @objc_msgSend to i8* (i8*, i8*)*)(i8* {{.*}}, i8* {{.*}})
 // CHECK-NEXT: [[CAST:%.*]] = bitcast [{{[0-9]+}} x %0*]* %{{.*}} to i8**
 // CHECK-NEXT: store i8* [[INSTANCE]], i8** [[CAST]],
-// CHECK: call void @objc_release(i8* {{.*}})
+// CHECK: call void @llvm.objc.release(i8* {{.*}})
 
 std::initializer_list<id> foo1() {
   return {@"str0", @"str1"};
@@ -58,11 +58,11 @@ extern "C" void extended() {
 
 // CHECK: [[INSTANCE:%.*]] = {{.*}} call i8* bitcast (i8* (i8*, i8*, ...)* @objc_msgSend to i8* (i8*, i8*)*)(i8* {{.*}}, i8* {{.*}})
 // CHECK: {{.*}} call void @_Z8externalv()
-// CHECK: {{.*}} call void @objc_release(i8* {{.*}})
+// CHECK: {{.*}} call void @llvm.objc.release(i8* {{.*}})
 
 std::initializer_list<I *> il = { [I new] };
 
-// CHECK: [[POOL:%.*]] = {{.*}} call i8* @objc_autoreleasePoolPush()
+// CHECK: [[POOL:%.*]] = {{.*}} call i8* @llvm.objc.autoreleasePoolPush()
 // CHECK: [[INSTANCE:%.*]] = {{.*}} call i8* bitcast (i8* (i8*, i8*, ...)* @objc_msgSend to i8* (i8*, i8*)*)(i8* {{.*}}, i8* {{.*}})
 // CHECK-NEXT: store i8* [[INSTANCE]], i8** bitcast ([1 x %0*]* @_ZGR2il_ to i8**)
-// CHECK: {{.*}} call void @objc_autoreleasePoolPop(i8* [[POOL]])
+// CHECK: {{.*}} call void @llvm.objc.autoreleasePoolPop(i8* [[POOL]])

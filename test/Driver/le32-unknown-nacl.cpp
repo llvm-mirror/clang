@@ -1,5 +1,6 @@
 // RUN: %clang -target le32-unknown-nacl -### %s -emit-llvm-only -c 2>&1 | FileCheck %s -check-prefix=ECHO
 // RUN: %clang -target le32-unknown-nacl %s -emit-llvm -S -c -o - | FileCheck %s
+// RUN: %clang -target le32-unknown-nacl -fexperimental-new-pass-manager %s -emit-llvm -S -c -o - | FileCheck %s
 // RUN: %clang -target le32-unknown-nacl %s -emit-llvm -S -c -pthread -o - | FileCheck %s -check-prefix=THREADS
 
 // ECHO: {{.*}} "-cc1" {{.*}}le32-unknown-nacl.c
@@ -10,34 +11,34 @@ typedef __PTRDIFF_TYPE__ ptrdiff_t;
 
 extern "C" {
 
-// CHECK: @align_c = global i32 1
+// CHECK: @align_c = dso_local global i32 1
 int align_c = __alignof(char);
 
-// CHECK: @align_s = global i32 2
+// CHECK: @align_s = dso_local global i32 2
 int align_s = __alignof(short);
 
-// CHECK: @align_i = global i32 4
+// CHECK: @align_i = dso_local global i32 4
 int align_i = __alignof(int);
 
-// CHECK: @align_l = global i32 4
+// CHECK: @align_l = dso_local global i32 4
 int align_l = __alignof(long);
 
-// CHECK: @align_ll = global i32 8
+// CHECK: @align_ll = dso_local global i32 8
 int align_ll = __alignof(long long);
 
-// CHECK: @align_p = global i32 4
+// CHECK: @align_p = dso_local global i32 4
 int align_p = __alignof(void*);
 
-// CHECK: @align_f = global i32 4
+// CHECK: @align_f = dso_local global i32 4
 int align_f = __alignof(float);
 
-// CHECK: @align_d = global i32 8
+// CHECK: @align_d = dso_local global i32 8
 int align_d = __alignof(double);
 
-// CHECK: @align_ld = global i32 8
+// CHECK: @align_ld = dso_local global i32 8
 int align_ld = __alignof(long double);
 
-// CHECK: @align_vl = global i32 4
+// CHECK: @align_vl = dso_local global i32 4
 int align_vl = __alignof(va_list);
 
 // CHECK: __LITTLE_ENDIAN__defined

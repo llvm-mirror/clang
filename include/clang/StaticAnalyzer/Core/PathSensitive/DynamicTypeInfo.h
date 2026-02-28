@@ -1,11 +1,11 @@
-//== DynamicTypeInfo.h - Runtime type information ----------------*- C++ -*--=//
+//===- DynamicTypeInfo.h - Runtime type information -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+
 #ifndef LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_DYNAMICTYPEINFO_H
 #define LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_DYNAMICTYPEINFO_H
 
@@ -14,39 +14,40 @@
 namespace clang {
 namespace ento {
 
-/// \brief Stores the currently inferred strictest bound on the runtime type
+/// Stores the currently inferred strictest bound on the runtime type
 /// of a region in a given state along the analysis path.
 class DynamicTypeInfo {
-private:
-  QualType T;
-  bool CanBeASubClass;
-
 public:
+  DynamicTypeInfo() : DynTy(QualType()) {}
 
-  DynamicTypeInfo() : T(QualType()) {}
-  DynamicTypeInfo(QualType WithType, bool CanBeSub = true)
-    : T(WithType), CanBeASubClass(CanBeSub) {}
+  DynamicTypeInfo(QualType Ty, bool CanBeSub = true)
+      : DynTy(Ty), CanBeASubClass(CanBeSub) {}
 
-  /// \brief Return false if no dynamic type info is available.
-  bool isValid() const { return !T.isNull(); }
-
-  /// \brief Returns the currently inferred upper bound on the runtime type.
-  QualType getType() const { return T; }
-
-  /// \brief Returns false if the type information is precise (the type T is
+  /// Returns false if the type information is precise (the type 'DynTy' is
   /// the only type in the lattice), true otherwise.
   bool canBeASubClass() const { return CanBeASubClass; }
 
+  /// Returns true if the dynamic type info is available.
+  bool isValid() const { return !DynTy.isNull(); }
+
+  /// Returns the currently inferred upper bound on the runtime type.
+  QualType getType() const { return DynTy; }
+
+  bool operator==(const DynamicTypeInfo &RHS) const {
+    return DynTy == RHS.DynTy && CanBeASubClass == RHS.CanBeASubClass;
+  }
+
   void Profile(llvm::FoldingSetNodeID &ID) const {
-    ID.Add(T);
-    ID.AddInteger((unsigned)CanBeASubClass);
+    ID.Add(DynTy);
+    ID.AddBoolean(CanBeASubClass);
   }
-  bool operator==(const DynamicTypeInfo &X) const {
-    return T == X.T && CanBeASubClass == X.CanBeASubClass;
-  }
+
+private:
+  QualType DynTy;
+  bool CanBeASubClass;
 };
 
-} // end ento
-} // end clang
+} // namespace ento
+} // namespace clang
 
-#endif
+#endif // LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_DYNAMICTYPEINFO_H

@@ -1,5 +1,8 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+extern int omp_default_mem_alloc;
 void foo() {
 }
 
@@ -106,7 +109,7 @@ template <class I, class C>
 int foomain(I argc, C **argv) {
   I e(4);
   I g(5);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp parallel sections private // expected-error {{expected '(' after 'private'}}
   {
@@ -132,7 +135,7 @@ int foomain(I argc, C **argv) {
   {
     foo();
   }
-#pragma omp parallel sections private(argc)
+#pragma omp parallel sections private(argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   {
     foo();
   }
@@ -148,7 +151,7 @@ int foomain(I argc, C **argv) {
   {
     foo();
   }
-#pragma omp parallel sections private(e, g)
+#pragma omp parallel sections private(e, g, z)
   {
     foo();
   }
@@ -196,7 +199,7 @@ int main(int argc, char **argv) {
   S5 g(5);
   S6<float> s6(0.0) , s6_0(1.0);
   S7<S6<float> > s7(0.0) , s7_0(1.0);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp parallel sections private // expected-error {{expected '(' after 'private'}}
   {
@@ -222,7 +225,7 @@ int main(int argc, char **argv) {
   {
     foo();
   }
-#pragma omp parallel sections private(argc)
+#pragma omp parallel sections private(argc, z)
   {
     foo();
   }

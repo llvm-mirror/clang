@@ -2,6 +2,7 @@
 // RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++14 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++17 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++2a %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 // PR13819 -- __SIZE_TYPE__ is incompatible.
 typedef __SIZE_TYPE__ size_t; // expected-error 0-1 {{extension}}
@@ -434,7 +435,7 @@ namespace dr239 { // dr239: yes
 namespace dr241 { // dr241: yes
   namespace A {
     struct B {};
-    template <int X> void f(); // expected-note 2{{candidate}}
+    template <int X> void f(); // expected-note 3{{candidate}}
     template <int X> void g(B);
   }
   namespace C {
@@ -442,8 +443,8 @@ namespace dr241 { // dr241: yes
     template <class T> void g(T t); // expected-note {{candidate}}
   }
   void h(A::B b) {
-    f<3>(b); // expected-error {{undeclared identifier}}
-    g<3>(b); // expected-error {{undeclared identifier}}
+    f<3>(b); // expected-error 0-1{{C++2a extension}} expected-error {{no matching}}
+    g<3>(b); // expected-error 0-1{{C++2a extension}}
     A::f<3>(b); // expected-error {{no matching}}
     A::g<3>(b);
     C::f<3>(b); // expected-error {{no matching}}
@@ -718,7 +719,7 @@ namespace dr261 { // dr261: no
     A() {}
   };
 
-  // FIXME: These are ill-formed, with a required diagnostic, for the same
+  // FIXME: This is ill-formed, with a required diagnostic, for the same
   // reason.
   struct B {
     inline void operator delete(void*) __attribute__((unused));
@@ -726,7 +727,7 @@ namespace dr261 { // dr261: no
   };
   struct C {
     inline void operator delete(void*) __attribute__((unused));
-    virtual ~C() {}
+    virtual ~C() {} // expected-warning {{'operator delete' was marked unused but was used}}
   };
 
   struct D {
@@ -750,9 +751,12 @@ namespace dr263 { // dr263: yes
 #if __cplusplus < 201103L
     friend X::X() throw();
     friend X::~X() throw();
-#else
+#elif __cplusplus <= 201703L
     friend constexpr X::X() noexcept;
     friend X::~X();
+#else
+    friend constexpr X::X() noexcept;
+    friend constexpr X::~X();
 #endif
     Y::Y(); // expected-error {{extra qualification}}
     Y::~Y(); // expected-error {{extra qualification}}

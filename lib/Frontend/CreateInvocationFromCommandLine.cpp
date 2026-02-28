@@ -1,9 +1,8 @@
 //===--- CreateInvocationFromCommandLine.cpp - CompilerInvocation from Args ==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -25,14 +24,9 @@
 using namespace clang;
 using namespace llvm::opt;
 
-/// createInvocationFromCommandLine - Construct a compiler invocation object for
-/// a command line argument vector.
-///
-/// \return A CompilerInvocation, or 0 if none was built for the given
-/// argument vector.
 std::unique_ptr<CompilerInvocation> clang::createInvocationFromCommandLine(
     ArrayRef<const char *> ArgList, IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
-    IntrusiveRefCntPtr<vfs::FileSystem> VFS) {
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS, bool ShouldRecoverOnErorrs) {
   if (!Diags.get()) {
     // No diagnostics engine was provided, so create our own diagnostics object
     // with the default options.
@@ -95,12 +89,9 @@ std::unique_ptr<CompilerInvocation> clang::createInvocationFromCommandLine(
   }
 
   const ArgStringList &CCArgs = Cmd.getArguments();
-  auto CI = llvm::make_unique<CompilerInvocation>();
-  if (!CompilerInvocation::CreateFromArgs(*CI,
-                                     const_cast<const char **>(CCArgs.data()),
-                                     const_cast<const char **>(CCArgs.data()) +
-                                     CCArgs.size(),
-                                     *Diags))
+  auto CI = std::make_unique<CompilerInvocation>();
+  if (!CompilerInvocation::CreateFromArgs(*CI, CCArgs, *Diags) &&
+      !ShouldRecoverOnErorrs)
     return nullptr;
   return CI;
 }

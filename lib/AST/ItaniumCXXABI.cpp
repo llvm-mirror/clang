@@ -1,9 +1,8 @@
 //===------- ItaniumCXXABI.cpp - AST support for the Itanium C++ ABI ------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,10 +19,13 @@
 #include "CXXABI.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/MangleNumberingContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/TargetInfo.h"
+#include "llvm/ADT/FoldingSet.h"
+#include "llvm/ADT/iterator.h"
 
 using namespace clang;
 
@@ -50,30 +52,108 @@ static const IdentifierInfo *findAnonymousUnionVarDeclName(const VarDecl& VD) {
   return nullptr;
 }
 
-/// \brief Keeps track of the mangled names of lambda expressions and block
+/// The name of a decomposition declaration.
+struct DecompositionDeclName {
+  using BindingArray = ArrayRef<const BindingDecl*>;
+
+  /// Representative example of a set of bindings with these names.
+  BindingArray Bindings;
+
+  /// Iterators over the sequence of identifiers in the name.
+  struct Iterator
+      : llvm::iterator_adaptor_base<Iterator, BindingArray::const_iterator,
+                                    std::random_access_iterator_tag,
+                                    const IdentifierInfo *> {
+    Iterator(BindingArray::const_iterator It) : iterator_adaptor_base(It) {}
+    const IdentifierInfo *operator*() const {
+      return (*this->I)->getIdentifier();
+    }
+  };
+  Iterator begin() const { return Iterator(Bindings.begin()); }
+  Iterator end() const { return Iterator(Bindings.end()); }
+};
+}
+
+namespace llvm {
+template<typename T> bool isDenseMapKeyEmpty(T V) {
+  return llvm::DenseMapInfo<T>::isEqual(
+      V, llvm::DenseMapInfo<T>::getEmptyKey());
+}
+template<typename T> bool isDenseMapKeyTombstone(T V) {
+  return llvm::DenseMapInfo<T>::isEqual(
+      V, llvm::DenseMapInfo<T>::getTombstoneKey());
+}
+
+template<typename T>
+Optional<bool> areDenseMapKeysEqualSpecialValues(T LHS, T RHS) {
+  bool LHSEmpty = isDenseMapKeyEmpty(LHS);
+  bool RHSEmpty = isDenseMapKeyEmpty(RHS);
+  if (LHSEmpty || RHSEmpty)
+    return LHSEmpty && RHSEmpty;
+
+  bool LHSTombstone = isDenseMapKeyTombstone(LHS);
+  bool RHSTombstone = isDenseMapKeyTombstone(RHS);
+  if (LHSTombstone || RHSTombstone)
+    return LHSTombstone && RHSTombstone;
+
+  return None;
+}
+
+template<>
+struct DenseMapInfo<DecompositionDeclName> {
+  using ArrayInfo = llvm::DenseMapInfo<ArrayRef<const BindingDecl*>>;
+  static DecompositionDeclName getEmptyKey() {
+    return {ArrayInfo::getEmptyKey()};
+  }
+  static DecompositionDeclName getTombstoneKey() {
+    return {ArrayInfo::getTombstoneKey()};
+  }
+  static unsigned getHashValue(DecompositionDeclName Key) {
+    assert(!isEqual(Key, getEmptyKey()) && !isEqual(Key, getTombstoneKey()));
+    return llvm::hash_combine_range(Key.begin(), Key.end());
+  }
+  static bool isEqual(DecompositionDeclName LHS, DecompositionDeclName RHS) {
+    if (Optional<bool> Result = areDenseMapKeysEqualSpecialValues(
+            LHS.Bindings, RHS.Bindings))
+      return *Result;
+
+    return LHS.Bindings.size() == RHS.Bindings.size() &&
+           std::equal(LHS.begin(), LHS.end(), RHS.begin());
+  }
+};
+}
+
+namespace {
+
+/// Keeps track of the mangled names of lambda expressions and block
 /// literals within a particular context.
 class ItaniumNumberingContext : public MangleNumberingContext {
-  llvm::DenseMap<const Type *, unsigned> ManglingNumbers;
+  ItaniumMangleContext *Mangler;
+  llvm::StringMap<unsigned> LambdaManglingNumbers;
+  unsigned BlockManglingNumber = 0;
   llvm::DenseMap<const IdentifierInfo *, unsigned> VarManglingNumbers;
   llvm::DenseMap<const IdentifierInfo *, unsigned> TagManglingNumbers;
+  llvm::DenseMap<DecompositionDeclName, unsigned>
+      DecompsitionDeclManglingNumbers;
 
 public:
-  unsigned getManglingNumber(const CXXMethodDecl *CallOperator) override {
-    const FunctionProtoType *Proto =
-        CallOperator->getType()->getAs<FunctionProtoType>();
-    ASTContext &Context = CallOperator->getASTContext();
+  ItaniumNumberingContext(ItaniumMangleContext *Mangler) : Mangler(Mangler) {}
 
-    FunctionProtoType::ExtProtoInfo EPI;
-    EPI.Variadic = Proto->isVariadic();
-    QualType Key =
-        Context.getFunctionType(Context.VoidTy, Proto->getParamTypes(), EPI);
-    Key = Context.getCanonicalType(Key);
-    return ++ManglingNumbers[Key->castAs<FunctionProtoType>()];
+  unsigned getManglingNumber(const CXXMethodDecl *CallOperator) override {
+    const CXXRecordDecl *Lambda = CallOperator->getParent();
+    assert(Lambda->isLambda());
+
+    // Computation of the <lambda-sig> is non-trivial and subtle. Rather than
+    // duplicating it here, just mangle the <lambda-sig> directly.
+    llvm::SmallString<128> LambdaSig;
+    llvm::raw_svector_ostream Out(LambdaSig);
+    Mangler->mangleLambdaSig(Lambda, Out);
+
+    return ++LambdaManglingNumbers[LambdaSig];
   }
 
   unsigned getManglingNumber(const BlockDecl *BD) override {
-    const Type *Ty = nullptr;
-    return ++ManglingNumbers[Ty];
+    return ++BlockManglingNumber;
   }
 
   unsigned getStaticLocalNumber(const VarDecl *VD) override {
@@ -82,9 +162,15 @@ public:
 
   /// Variable decls are numbered by identifier.
   unsigned getManglingNumber(const VarDecl *VD, unsigned) override {
+    if (auto *DD = dyn_cast<DecompositionDecl>(VD)) {
+      DecompositionDeclName Name{DD->bindings()};
+      return ++DecompsitionDeclManglingNumbers[Name];
+    }
+
     const IdentifierInfo *Identifier = VD->getIdentifier();
     if (!Identifier) {
-      // VarDecl without an identifier represents an anonymous union declaration.
+      // VarDecl without an identifier represents an anonymous union
+      // declaration.
       Identifier = findAnonymousUnionVarDeclName(*VD);
     }
     return ++VarManglingNumbers[Identifier];
@@ -96,20 +182,25 @@ public:
 };
 
 class ItaniumCXXABI : public CXXABI {
+private:
+  std::unique_ptr<MangleContext> Mangler;
 protected:
   ASTContext &Context;
 public:
-  ItaniumCXXABI(ASTContext &Ctx) : Context(Ctx) { }
+  ItaniumCXXABI(ASTContext &Ctx)
+      : Mangler(Ctx.createMangleContext()), Context(Ctx) {}
 
-  std::pair<uint64_t, unsigned>
-  getMemberPointerWidthAndAlign(const MemberPointerType *MPT) const override {
+  MemberPointerInfo
+  getMemberPointerInfo(const MemberPointerType *MPT) const override {
     const TargetInfo &Target = Context.getTargetInfo();
     TargetInfo::IntType PtrDiff = Target.getPtrDiffType(0);
-    uint64_t Width = Target.getTypeWidth(PtrDiff);
-    unsigned Align = Target.getTypeAlign(PtrDiff);
+    MemberPointerInfo MPI;
+    MPI.Width = Target.getTypeWidth(PtrDiff);
+    MPI.Align = Target.getTypeAlign(PtrDiff);
+    MPI.HasPadding = false;
     if (MPT->isMemberFunctionPointer())
-      Width = 2 * Width;
-    return std::make_pair(Width, Align);
+      MPI.Width *= 2;
+    return MPI;
   }
 
   CallingConv getDefaultMethodCallConv(bool isVariadic) const override {
@@ -117,7 +208,7 @@ public:
     if (!isVariadic && T.isWindowsGNUEnvironment() &&
         T.getArch() == llvm::Triple::x86)
       return CC_X86ThisCall;
-    return CC_C;
+    return Context.getTargetInfo().getDefaultCallingConv();
   }
 
   // We cheat and just check that the class has a vtable pointer, and that it's
@@ -129,7 +220,7 @@ public:
       return false;
 
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
-    CharUnits PointerSize = 
+    CharUnits PointerSize =
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
     return Layout.getNonVirtualSize() == PointerSize;
   }
@@ -158,7 +249,8 @@ public:
 
   std::unique_ptr<MangleNumberingContext>
   createMangleNumberingContext() const override {
-    return llvm::make_unique<ItaniumNumberingContext>();
+    return std::make_unique<ItaniumNumberingContext>(
+        cast<ItaniumMangleContext>(Mangler.get()));
   }
 };
 }

@@ -115,8 +115,10 @@ namespace PR13064 {
   struct A { explicit A(int); }; // expected-note{{here}}
   template<typename T> struct B { T a { 0 }; };
   B<A> b;
-  template<typename T> struct C { T a = { 0 }; }; // expected-error{{explicit}}
-  C<A> c; // expected-note {{in instantiation of default member initializer}}
+  template <typename T> struct C { // expected-note {{in instantiation of default member initializer}}
+    T a = {0}; // expected-error{{explicit}}
+  };
+  C<A> c; // expected-note {{in evaluation of exception spec}}
 }
 
 namespace PR16903 {
@@ -141,4 +143,18 @@ namespace ReturnStmtIsInitialization {
   };
   template<typename T> X f() { return {}; }
   auto &&x = f<void>();
+}
+
+namespace InitListUpdate {
+  struct A { int n; };
+  using AA = A[1];
+
+  // Check that an init list update doesn't "lose" the pack-ness of an expression.
+  template <int... N> void f() {
+    g(AA{0, [0].n = N} ...); // expected-warning 3{{extension}} expected-note {{here}} expected-warning 3{{overrides prior init}} expected-note 3{{previous init}}
+    g(AA{N, [0].n = 0} ...); // expected-warning 3{{extension}} expected-note {{here}} expected-warning 3{{overrides prior init}} expected-note 3{{previous init}}
+  };
+
+  void g(AA, AA);
+  void h() { f<1, 2>(); } // expected-note {{instantiation of}}
 }

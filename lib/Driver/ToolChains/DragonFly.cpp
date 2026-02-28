@@ -1,9 +1,8 @@
 //===--- DragonFly.cpp - DragonFly ToolChain Implementations ----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,7 +45,7 @@ void dragonfly::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(II.getFilename());
 
   const char *Exec = Args.MakeArgString(getToolChain().GetProgramPath("as"));
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
+  C.addCommand(std::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
 }
 
 void dragonfly::Linker::ConstructJob(Compilation &C, const JobAction &JA,
@@ -170,7 +169,7 @@ void dragonfly::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   getToolChain().addProfileRTLibs(Args, CmdArgs);
 
   const char *Exec = Args.MakeArgString(getToolChain().GetLinkerPath());
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
+  C.addCommand(std::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
 }
 
 /// DragonFly - DragonFly tool chain which can call as(1) and ld(1) directly.

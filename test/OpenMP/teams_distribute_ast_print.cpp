@@ -1,10 +1,24 @@
-// RUN: %clang_cc1 -verify -fopenmp -ast-print %s | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -ast-print %s -Wno-openmp-target | FileCheck %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
 #define HEADER
+
+typedef void **omp_allocator_handle_t;
+extern const omp_allocator_handle_t omp_default_mem_alloc;
+extern const omp_allocator_handle_t omp_large_cap_mem_alloc;
+extern const omp_allocator_handle_t omp_const_mem_alloc;
+extern const omp_allocator_handle_t omp_high_bw_mem_alloc;
+extern const omp_allocator_handle_t omp_low_lat_mem_alloc;
+extern const omp_allocator_handle_t omp_cgroup_mem_alloc;
+extern const omp_allocator_handle_t omp_pteam_mem_alloc;
+extern const omp_allocator_handle_t omp_thread_mem_alloc;
 
 void foo() {}
 
@@ -74,7 +88,7 @@ public:
   void bar() {
     int b, argv, d, c, e, f;
 #pragma omp target
-#pragma omp teams distribute default(none), private(b) firstprivate(argv) shared(d) reduction(+:c) reduction(max:e) num_teams(f) thread_limit(d)
+#pragma omp teams distribute allocate(omp_thread_mem_alloc:argv) default(none), private(b) firstprivate(argv) shared(d) reduction(+:c) reduction(max:e) num_teams(f) thread_limit(d) allocate(omp_default_mem_alloc:c)
     for (int k = 0; k < a.a; ++k)
       ++a.a;
   }
@@ -84,7 +98,7 @@ public:
 // CHECK: #pragma omp target
 // CHECK-NEXT: #pragma omp teams distribute private(this->a) private(this->a)
 // CHECK: #pragma omp target
-// CHECK-NEXT: #pragma omp teams distribute default(none) private(b) firstprivate(argv) shared(d) reduction(+: c) reduction(max: e) num_teams(f) thread_limit(d)
+// CHECK-NEXT: #pragma omp teams distribute allocate(omp_thread_mem_alloc: argv) default(none) private(b) firstprivate(argv) shared(d) reduction(+: c) reduction(max: e) num_teams(f) thread_limit(d) allocate(omp_default_mem_alloc: c)
 
 template <class T, int N>
 T tmain(T argc) {
@@ -96,7 +110,7 @@ T tmain(T argc) {
   for (int i=0; i < 2; ++i)
     a = 2;
 // CHECK: #pragma omp target
-// CHECK-NEXT: #pragma omp teams distribute
+// CHECK-NEXT: #pragma omp teams distribute{{$}}
 // CHECK-NEXT: for (int i = 0; i < 2; ++i)
 // CHECK-NEXT: a = 2;
 #pragma omp target

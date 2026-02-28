@@ -2,7 +2,7 @@
 // RUN: | %python -c 'import json, sys; json.dump(json.loads(sys.stdin.read()), sys.stdout, sort_keys=True, indent=2)' \
 // RUN: | FileCheck %s
 
-// CHECK: "begin": 299,
+// CHECK: "begin": 311,
 // CHECK: "type": "FieldDecl",
 // CHECK: "end": 319,
 // CHECK: "type": "CXXRecordDecl",

@@ -1,6 +1,10 @@
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -ast-print %s | FileCheck %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -ast-print %s | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -16,6 +20,15 @@ void add_1(float *d) __attribute__((cold));
 // CHECK-NEXT: #pragma omp declare simd linear(val(d): 8)
 // CHECK-NEXT: void add_1(float *d) __attribute__((cold));
 //
+
+#pragma omp declare simd aligned(hp, hp2:V)
+#pragma omp declare simd aligned(hp, hp2:V)
+template <class C, int V> void h(C *hp, C *hp2, C *hq, C *lin) {
+}
+// CHECK-NEXT: #pragma omp declare simd aligned(hp: V) aligned(hp2: V)
+// CHECK-NEXT: #pragma omp declare simd aligned(hp: V) aligned(hp2: V)
+// CHECK-NEXT: template <class C, int V> void h(C *hp, C *hp2, C *hq, C *lin) {
+// CHECK-NEXT: }
 
 #pragma omp declare simd aligned(hp, hp2)
 template <class C> void h(C *hp, C *hp2, C *hq, C *lin) {
@@ -80,8 +93,8 @@ private:
 // CHECK-NEXT: float taddpf(float *a, T *&b) {
 // CHECK-NEXT: return *a + *b;
 // CHECK-NEXT: }
-// CHECK: #pragma omp declare simd
-// CHECK-NEXT: #pragma omp declare simd
+// CHECK: #pragma omp declare simd uniform(this, b)
+// CHECK-NEXT: #pragma omp declare simd{{$}}
 // CHECK-NEXT: int tadd(int b) {
 // CHECK-NEXT: return this->x[b] + b;
 // CHECK-NEXT: }

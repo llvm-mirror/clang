@@ -1,11 +1,8 @@
 //===------- QualTypeNames.cpp - Generate Complete QualType Names ---------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-//===----------------------------------------------------------------------===//
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,7 +19,7 @@ namespace clang {
 
 namespace TypeName {
 
-/// \brief Create a NestedNameSpecifier for Namesp and its enclosing
+/// Create a NestedNameSpecifier for Namesp and its enclosing
 /// scopes.
 ///
 /// \param[in] Ctx - the AST Context to be used.
@@ -35,7 +32,7 @@ static NestedNameSpecifier *createNestedNameSpecifier(
     const NamespaceDecl *Namesp,
     bool WithGlobalNsPrefix);
 
-/// \brief Create a NestedNameSpecifier for TagDecl and its enclosing
+/// Create a NestedNameSpecifier for TagDecl and its enclosing
 /// scopes.
 ///
 /// \param[in] Ctx - the AST Context to be used.
@@ -210,7 +207,7 @@ static NestedNameSpecifier *createOuterNNS(const ASTContext &Ctx, const Decl *D,
   return nullptr;  // no starting '::' if |WithGlobalNsPrefix| is false
 }
 
-/// \brief Return a fully qualified version of this name specifier.
+/// Return a fully qualified version of this name specifier.
 static NestedNameSpecifier *getFullyQualifiedNestedNameSpecifier(
     const ASTContext &Ctx, NestedNameSpecifier *Scope,
     bool WithGlobalNsPrefix) {
@@ -262,7 +259,7 @@ static NestedNameSpecifier *getFullyQualifiedNestedNameSpecifier(
   llvm_unreachable("bad NNS kind");
 }
 
-/// \brief Create a nested name specifier for the declaring context of
+/// Create a nested name specifier for the declaring context of
 /// the type.
 static NestedNameSpecifier *createNestedNameSpecifierForScopeOf(
     const ASTContext &Ctx, const Decl *Decl,
@@ -314,7 +311,7 @@ static NestedNameSpecifier *createNestedNameSpecifierForScopeOf(
   return nullptr;
 }
 
-/// \brief Create a nested name specifier for the declaring context of
+/// Create a nested name specifier for the declaring context of
 /// the type.
 static NestedNameSpecifier *createNestedNameSpecifierForScopeOf(
     const ASTContext &Ctx, const Type *TypePtr,
@@ -366,7 +363,7 @@ NestedNameSpecifier *createNestedNameSpecifier(const ASTContext &Ctx,
       TD->getTypeForDecl());
 }
 
-/// \brief Return the fully qualified type, including fully-qualified
+/// Return the fully qualified type, including fully-qualified
 /// versions of any template parameters.
 QualType getFullyQualifiedType(QualType QT, const ASTContext &Ctx,
                                bool WithGlobalNsPrefix) {
@@ -377,6 +374,19 @@ QualType getFullyQualifiedType(QualType QT, const ASTContext &Ctx,
     Qualifiers Quals = QT.getQualifiers();
     QT = getFullyQualifiedType(QT->getPointeeType(), Ctx, WithGlobalNsPrefix);
     QT = Ctx.getPointerType(QT);
+    // Add back the qualifiers.
+    QT = Ctx.getQualifiedType(QT, Quals);
+    return QT;
+  }
+
+  if (auto *MPT = dyn_cast<MemberPointerType>(QT.getTypePtr())) {
+    // Get the qualifiers.
+    Qualifiers Quals = QT.getQualifiers();
+    // Fully qualify the pointee and class types.
+    QT = getFullyQualifiedType(QT->getPointeeType(), Ctx, WithGlobalNsPrefix);
+    QualType Class = getFullyQualifiedType(QualType(MPT->getClass(), 0), Ctx,
+                                           WithGlobalNsPrefix);
+    QT = Ctx.getMemberPointerType(QT, Class.getTypePtr());
     // Add back the qualifiers.
     QT = Ctx.getQualifiedType(QT, Quals);
     return QT;
@@ -408,7 +418,7 @@ QualType getFullyQualifiedType(QualType QT, const ASTContext &Ctx,
     // Get the qualifiers.
     Qualifiers Quals = QT.getQualifiers();
 
-    QT = dyn_cast<SubstTemplateTypeParmType>(QT.getTypePtr())->desugar();
+    QT = cast<SubstTemplateTypeParmType>(QT.getTypePtr())->desugar();
 
     // Add back the qualifiers.
     QT = Ctx.getQualifiedType(QT, Quals);
@@ -452,12 +462,8 @@ QualType getFullyQualifiedType(QualType QT, const ASTContext &Ctx,
 
 std::string getFullyQualifiedName(QualType QT,
                                   const ASTContext &Ctx,
+                                  const PrintingPolicy &Policy,
                                   bool WithGlobalNsPrefix) {
-  PrintingPolicy Policy(Ctx.getPrintingPolicy());
-  Policy.SuppressScope = false;
-  Policy.AnonymousTagLocations = false;
-  Policy.PolishForDeclaration = true;
-  Policy.SuppressUnwrittenScope = true;
   QualType FQQT = getFullyQualifiedType(QT, Ctx, WithGlobalNsPrefix);
   return FQQT.getAsString(Policy);
 }

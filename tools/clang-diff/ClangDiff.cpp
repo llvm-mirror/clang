@@ -1,9 +1,8 @@
 //===- ClangDiff.cpp - compare source files by AST nodes ------*- C++ -*- -===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -75,7 +74,7 @@ static void addExtraArgs(std::unique_ptr<CompilationDatabase> &Compilations) {
   if (!Compilations)
     return;
   auto AdjustingCompilations =
-      llvm::make_unique<ArgumentsAdjustingCompilations>(
+      std::make_unique<ArgumentsAdjustingCompilations>(
           std::move(Compilations));
   AdjustingCompilations->appendArgumentsAdjuster(
       getInsertArgumentAdjuster(ArgsBefore, ArgumentInsertPosition::BEGIN));
@@ -98,7 +97,7 @@ getAST(const std::unique_ptr<CompilationDatabase> &CommonCompilations,
              "without flags.\n"
           << ErrorMessage;
       Compilations =
-          llvm::make_unique<clang::tooling::FixedCompilationDatabase>(
+          std::make_unique<clang::tooling::FixedCompilationDatabase>(
               ".", std::vector<std::string>());
     }
   }

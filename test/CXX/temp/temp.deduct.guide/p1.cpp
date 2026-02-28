@@ -71,7 +71,7 @@ extern A(int(&)[26]) -> A<int>;
 #endif
 mutable A(int(&)[27]) -> A<int>; // expected-error-re {{{{'mutable' cannot be applied to|illegal storage class on}} function}}
 virtual A(int(&)[28]) -> A<int>; // expected-error {{'virtual' can only appear on non-static member functions}}
-const A(int(&)[28]) -> A<int>; // expected-error {{deduction guide cannot be declared 'const'}}
+const A(int(&)[31]) -> A<int>; // expected-error {{deduction guide cannot be declared 'const'}}
 
 const volatile static constexpr inline A(int(&)[29]) -> A<int>; // expected-error {{deduction guide cannot be declared 'static inline constexpr const volatile'}}
 
@@ -101,7 +101,7 @@ namespace ExplicitInst {
   struct X {
     template<typename T> struct C {};
     template<typename T> C(T) -> C<T>;
-    template<> C(int) -> C<int>; // expected-error {{explicit specialization of '<deduction guide for C>' in class scope}}
+    template<> C(int) -> C<int>; // expected-error {{deduction guide cannot be explicitly specialized}}
     extern template C(float) -> C<float>; // expected-error {{expected member name or ';'}}
     template C(char) -> C<char>; // expected-error {{expected '<' after 'template'}}
   };

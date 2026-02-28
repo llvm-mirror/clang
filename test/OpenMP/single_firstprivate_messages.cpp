@@ -1,5 +1,8 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+extern int omp_default_mem_alloc;
 void foo() {
 }
 
@@ -64,7 +67,7 @@ template <class I, class C>
 int foomain(int argc, char **argv) {
   I e(4);
   C g(5);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp parallel
 #pragma omp single firstprivate // expected-error {{expected '(' after 'firstprivate'}}
@@ -85,13 +88,13 @@ int foomain(int argc, char **argv) {
 #pragma omp single firstprivate(argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   foo();
 #pragma omp parallel
-#pragma omp single firstprivate(argc)
+#pragma omp single firstprivate(argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   foo();
 #pragma omp parallel
 #pragma omp single firstprivate(S1) // expected-error {{'S1' does not refer to a value}}
   foo();
 #pragma omp parallel
-#pragma omp single firstprivate(a, b) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+#pragma omp single firstprivate(z, a, b) // expected-error {{firstprivate variable with incomplete type 'S1'}}
   foo();
 #pragma omp parallel
 #pragma omp single firstprivate(argv[1]) // expected-error {{expected variable name}}
@@ -147,7 +150,7 @@ int main(int argc, char **argv) {
   S5 g(5);
   S3 m;
   S6 n(2);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp parallel
 #pragma omp single firstprivate // expected-error {{expected '(' after 'firstprivate'}}
@@ -168,7 +171,7 @@ int main(int argc, char **argv) {
 #pragma omp single firstprivate(argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   foo();
 #pragma omp parallel
-#pragma omp single firstprivate(argc)
+#pragma omp single firstprivate(argc, z)
   foo();
 #pragma omp parallel
 #pragma omp single firstprivate(S1) // expected-error {{'S1' does not refer to a value}}

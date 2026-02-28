@@ -1,9 +1,8 @@
 #===- llvm/tools/clang/tools/clang-fuzzer ---------------------------------===//
 #
-#                     The LLVM Compiler Infrastructure
-#
-# This file is distributed under the University of Illinois Open Source
-# License. See LICENSE.TXT for details.
+# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 #===----------------------------------------------------------------------===//
 # Produces an image that builds clang-proto-fuzzer
@@ -33,5 +32,10 @@ RUN mkdir build1 && cd build1 && cmake -GNinja -DCMAKE_BUILD_TYPE=Release ../llv
     -DLLVM_USE_SANITIZER=Address -DCLANG_ENABLE_PROTO_FUZZER=ON
 # Build the fuzzers
 RUN cd build1 && ninja clang-fuzzer
+RUN cd build1 && ninja clang-objc-fuzzer
 RUN cd build1 && ninja clang-proto-fuzzer
 RUN cd build1 && ninja clang-proto-to-cxx
+RUN cd build1 && ninja clang-loop-proto-to-cxx
+RUN cd build1 && ninja clang-loop-proto-to-llvm
+RUN cd build1 && ninja clang-loop-proto-fuzzer
+RUN cd build1 && ninja clang-llvm-proto-fuzzer

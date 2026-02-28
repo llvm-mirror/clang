@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -emit-llvm -triple=i386-pc-win32 -fms-compatibility %s -o - | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm -triple=i386-pc-win32 -fms-extensions %s -o - | FileCheck %s
 
 enum Enum { zero, one, two };
 
@@ -17,6 +17,6 @@ struct __declspec(dllexport) S {
   };
 };
 
-// CHECK: @"\01?x@S@@2FB" = weak_odr dllexport constant i16 42, comdat, align 2
-// CHECK: @"\01?y@S@@2W4Enum@@B" = weak_odr dllexport constant i32 2, comdat, align 4
+// CHECK: @"?x@S@@2FB" = weak_odr dso_local dllexport constant i16 42, comdat, align 2
+// CHECK: @"?y@S@@2W4Enum@@B" = weak_odr dso_local dllexport constant i32 2, comdat, align 4
 // CHECK-NOT: NonExported

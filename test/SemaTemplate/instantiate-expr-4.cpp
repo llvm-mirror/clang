@@ -106,12 +106,12 @@ template struct New2<X, int, int*>; // expected-note{{instantiation}}
 struct New3 {
   New3();
 
-  void *operator new[](__SIZE_TYPE__) __attribute__((unavailable)); // expected-note{{explicitly made unavailable}}
+  void *operator new[](__SIZE_TYPE__) __attribute__((unavailable)); // expected-note{{explicitly marked unavailable here}}
 };
 
 template<class C>
 void* object_creator() {
-  return new C(); // expected-error{{call to unavailable function 'operator new[]'}}
+  return new C(); // expected-error{{'operator new[]' is unavailable}}
 }
 
 template void *object_creator<New3[4]>(); // expected-note{{instantiation}}
@@ -192,6 +192,13 @@ struct TypeId0 {
   }
 };
 
+template<typename T>
+struct TypeId1 {
+  const std::type_info &f() {
+    return typeid(T); // expected-error-re 2{{type operand 'void () {{const|&}}' of 'typeid' cannot have '{{const|&}}' qualifier}}
+  }
+};
+
 struct Abstract {
   virtual void f() = 0;
 };
@@ -199,6 +206,8 @@ struct Abstract {
 template struct TypeId0<int>;
 template struct TypeId0<Incomplete>; // expected-note{{instantiation of member function}}
 template struct TypeId0<Abstract>;
+template struct TypeId1<void() const>; // expected-note{{instantiation of}}
+template struct TypeId1<void() &>; // expected-warning 0-1{{C++11}} expected-note{{instantiation of}}
 
 // ---------------------------------------------------------------------
 // type traits

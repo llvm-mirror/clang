@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -std=c++98 -verify -fsyntax-only %s -Wno-c++11-extensions -Wno-c++1y-extensions -DPRECXX11
-// RUN: %clang_cc1 -std=c++11 -verify -fsyntax-only -Wno-c++1y-extensions %s
-// RUN: %clang_cc1 -std=c++1y -verify -fsyntax-only %s -DCPP1Y
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++98 -verify -fsyntax-only %s -Wno-c++11-extensions -Wno-c++1y-extensions -DPRECXX11
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++11 -verify -fsyntax-only -Wno-c++1y-extensions %s
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++1y -verify -fsyntax-only %s -DCPP1Y
 
 #define CONST const
 
@@ -15,8 +15,8 @@ class A {
   template<typename T> static CONST T right<T,int> = 5;
   template<typename T> CONST int right<int,T>;  // expected-error {{member 'right' declared as a template}}
   template<typename T> CONST float right<float,T> = 5;  // expected-error {{member 'right' declared as a template}}
-  template<> static CONST int right<int,int> = 7;       // expected-error {{explicit specialization of 'right' in class scope}}
-  template<> static CONST float right<float,int>;       // expected-error {{explicit specialization of 'right' in class scope}}
+  template<> static CONST int right<int,int> = 7;
+  template<> static CONST float right<float,int>;
   template static CONST int right<int,int>;     // expected-error {{expected '<' after 'template'}}
 };
 
@@ -163,8 +163,8 @@ namespace constexpred {
     template<typename T> constexpr int right<int,T>;  // expected-error {{member 'right' declared as a template}} \
                                                       // expected-error {{non-static data member cannot be constexpr; did you intend to make it const?}}
     template<typename T> constexpr float right<float,T> = 5;  // expected-error {{non-static data member cannot be constexpr; did you intend to make it static?}}
-    template<> static constexpr int right<int,int> = 7;       // expected-error {{explicit specialization of 'right' in class scope}}
-    template<> static constexpr float right<float,int>;       // expected-error {{explicit specialization of 'right' in class scope}}
+    template<> static constexpr int right<int,int> = 7;
+    template<> static constexpr float right<float,int>; // expected-error {{requires an initializer}}
     template static constexpr int right<int,int>;     // expected-error {{expected '<' after 'template'}}
   };
 }
@@ -296,17 +296,17 @@ namespace in_class_template {
     };
 
     template<typename T> void f() {
-      typename T::template A<int> a; // expected-error {{template name refers to non-type template 'S::A'}}
+      typename T::template A<int> a; // expected-error {{template name refers to non-type template 'S::template A'}}
     }
     template<typename T> void g() {
-      T::template A<int>::B = 0; // expected-error {{template name refers to non-type template 'S::A'}}
+      T::template A<int>::B = 0; // expected-error {{template name refers to non-type template 'S::template A'}}
     }
     template<typename T> void h() {
-      class T::template A<int> c; // expected-error {{template name refers to non-type template 'S::A'}}
+      class T::template A<int> c; // expected-error {{template name refers to non-type template 'S::template A'}}
     }
 
     template<typename T>
-    struct X : T::template A<int> {}; // expected-error {{template name refers to non-type template 'S::A'}}
+    struct X : T::template A<int> {}; // expected-error {{template name refers to non-type template 'S::template A'}}
 
     template void f<S>(); // expected-note {{in instantiation of}}
     template void g<S>(); // expected-note {{in instantiation of}}
@@ -380,3 +380,47 @@ int main() {
 } // end ns PR24473
 #endif // CPP1Y
 
+namespace dependent_static_var_template {
+  struct A {
+    template<int = 0> static int n; // expected-note 2{{here}}
+  };
+  int &r = A::template n; // expected-error {{use of variable template 'n' requires template arguments}}
+
+  template<typename T>
+  int &f() { return T::template n; } // expected-error {{use of variable template 'n' requires template arguments}}
+  int &s = f<A>(); // expected-note {{instantiation of}}
+
+  namespace B {
+    template<int = 0> static int n; // expected-note {{here}}
+  }
+  int &t = B::template n; // expected-error {{use of variable template 'n' requires template arguments}}
+}
+
+#ifndef PRECXX11
+namespace template_vars_in_template {
+template <int> struct TakesInt {};
+
+template <class T2>
+struct S {
+  template <class T1>
+  static constexpr int v = 42;
+
+  template <class T>
+  void mf() {
+    constexpr int val = v<T>;
+  }
+
+  void mf2() {
+    constexpr int val = v<char>;
+    TakesInt<val> ti;
+    (void)ti.x; // expected-error{{no member named 'x' in 'template_vars_in_template::TakesInt<42>'}}
+  }
+};
+
+void useit() {
+  S<int> x;
+  x.mf<double>();
+  x.mf2(); // expected-note{{in instantiation of member function 'template_vars_in_template::S<int>::mf2' requested here}}
+}
+}
+#endif

@@ -1,3 +1,4 @@
+// RUN: %clang_cc1 -fsyntax-only -verify %s
 // RUN: %clang_cc1 -Wparentheses -fsyntax-only -verify %s
 // RUN: %clang_cc1 -Wparentheses -fsyntax-only -fdiagnostics-parseable-fixits %s 2>&1 | FileCheck %s
 
@@ -44,58 +45,6 @@ void bitwise_rel(unsigned i) {
   // Eager logical op
   (void)(i == 1 | i == 2 | i == 3);
   (void)(i != 1 & i != 2 & i != 3);
-
-  (void)(i & i | i); // expected-warning {{'&' within '|'}} \
-                     // expected-note {{place parentheses around the '&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:10-[[@LINE-2]]:10}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:15-[[@LINE-3]]:15}:")"
-
-  (void)(i | i & i); // expected-warning {{'&' within '|'}} \
-                     // expected-note {{place parentheses around the '&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:14-[[@LINE-2]]:14}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:19-[[@LINE-3]]:19}:")"
-
-  (void)(i ^ i | i); // expected-warning {{'^' within '|'}} \
-                     // expected-note {{place parentheses around the '^' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:10-[[@LINE-2]]:10}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:15-[[@LINE-3]]:15}:")"
-
-  (void)(i | i ^ i); // expected-warning {{'^' within '|'}} \
-                     // expected-note {{place parentheses around the '^' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:14-[[@LINE-2]]:14}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:19-[[@LINE-3]]:19}:")"
-
-  (void)(i & i ^ i); // expected-warning {{'&' within '^'}} \
-                     // expected-note {{place parentheses around the '&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:10-[[@LINE-2]]:10}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:15-[[@LINE-3]]:15}:")"
-
-  (void)(i ^ i & i); // expected-warning {{'&' within '^'}} \
-                     // expected-note {{place parentheses around the '&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:14-[[@LINE-2]]:14}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:19-[[@LINE-3]]:19}:")"
-
-  (void)(i ||
-             i && i); // expected-warning {{'&&' within '||'}} \
-                      // expected-note {{place parentheses around the '&&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:14-[[@LINE-2]]:14}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:20-[[@LINE-3]]:20}:")"
-
-  (void)(i || i && "w00t"); // no warning.
-  (void)("w00t" && i || i); // no warning.
-
-  (void)(i || i && "w00t" || i); // expected-warning {{'&&' within '||'}} \
-                                 // expected-note {{place parentheses around the '&&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:15-[[@LINE-2]]:15}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:26-[[@LINE-3]]:26}:")"
-
-  (void)(i || "w00t" && i || i); // expected-warning {{'&&' within '||'}} \
-                                 // expected-note {{place parentheses around the '&&' expression to silence this warning}}
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:15-[[@LINE-2]]:15}:"("
-  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:26-[[@LINE-3]]:26}:")"
-
-  (void)(i && i || 0); // no warning.
-  (void)(0 || i && i); // no warning.
 }
 
 _Bool someConditionFunc();
@@ -144,6 +93,28 @@ void conditional_op(int x, int y, _Bool b, void* p) {
 
   (void)(x + y > 0 ? 1 : 2); // no warning
   (void)(x + (y > 0) ? 1 : 2); // expected-warning {{operator '?:' has lower precedence than '+'}} expected-note 2{{place parentheses}}
+
+  (void)(b ? 0xf0 : 0x10 | b ? 0x5 : 0x2); // expected-warning {{operator '?:' has lower precedence than '|'}} expected-note 2{{place parentheses}}
+
+  (void)((b ? 0xf0 : 0x10) | (b ? 0x5 : 0x2));  // no warning, has parentheses
+  (void)(b ? 0xf0 : (0x10 | b) ? 0x5 : 0x2);  // no warning, has parentheses
+
+  (void)(x | b ? 1 : 2); // expected-warning {{operator '?:' has lower precedence than '|'}} expected-note 2{{place parentheses}}
+  (void)(x & b ? 1 : 2); // expected-warning {{operator '?:' has lower precedence than '&'}} expected-note 2{{place parentheses}}
+
+  (void)((x | b) ? 1 : 2);  // no warning, has parentheses
+  (void)(x | (b ? 1 : 2));  // no warning, has parentheses
+  (void)((x & b) ? 1 : 2);  // no warning, has parentheses
+  (void)(x & (b ? 1 : 2));  // no warning, has parentheses
+
+  // Only warn on uses of the bitwise operators, and not the logical operators.
+  // The bitwise operators are more likely to be bugs while the logical
+  // operators are more likely to be used correctly.  Since there is no
+  // explicit logical-xor operator, the bitwise-xor is commonly used instead.
+  // For this warning, treat the bitwise-xor as if it were a logical operator.
+  (void)(x ^ b ? 1 : 2);  // no warning, ^ is often used as logical xor
+  (void)(x || b ? 1 : 2);  // no warning, logical operator
+  (void)(x && b ? 1 : 2);  // no warning, logical operator
 }
 
 // RUN: not %clang_cc1 -fsyntax-only -Wparentheses -Werror -fdiagnostics-show-option %s 2>&1 | FileCheck %s -check-prefix=CHECK-FLAG

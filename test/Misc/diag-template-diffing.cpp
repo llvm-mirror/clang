@@ -394,7 +394,7 @@ template<double* ...A> class class_ptrs {};
 void set13(class_ptrs<&a13, &b13>) {}
 void test13() {
   set13(class_ptrs<&c13>());
-  set13(class_ptrss<&a13, &b13, &d13>());
+  set13(class_ptrs<&a13, &b13, &d13>());
 }
 // CHECK-ELIDE-NOTREE: no matching function for call to 'set13'
 // CHECK-ELIDE-NOTREE: candidate function not viable: no known conversion from 'class_ptrs<&c13, (no argument)>' to 'class_ptrs<&a13, &b13>' for 1st argument
@@ -1252,7 +1252,7 @@ using T = condition<(is_const())>;
 void foo(const T &t) {
   T &t2 = t;
 }
-// CHECK-ELIDE-NOTREE: binding value of type 'const condition<...>' to reference to type 'condition<...>' drops 'const' qualifier
+// CHECK-ELIDE-NOTREE: binding reference of type 'condition<...>' to value of type 'const condition<...>' drops 'const' qualifier
 }
 
 namespace BoolArgumentBitExtended {
@@ -1265,7 +1265,7 @@ void test() {
   foo<BoolT<true>>(X);
 }
 // CHECK-ELIDE-NOTREE: no matching function for call to 'foo'
-// CHECK-ELIDE-NOTREE: candidate function not viable: no known conversion from 'BoolT<false>' to 'BoolT<true>' for 1st argument
+// CHECK-ELIDE-NOTREE: candidate function template not viable: no known conversion from 'BoolT<false>' to 'BoolT<true>' for 1st argument
 }
 
 namespace DifferentIntegralTypes {
@@ -1401,7 +1401,7 @@ void run() {
   f(1, integral_constant<bool, true>{});
 }
 // CHECK-ELIDE-NOTREE: error: no matching function for call to 'f'
-// CHECK-ELIDE-NOTREE: note: candidate function not viable: no known conversion from 'integral_constant<[...], true>' to 'integral_constant<[...], false>' for 2nd argument
+// CHECK-ELIDE-NOTREE: note: candidate function template not viable: no known conversion from 'integral_constant<[...], true>' to 'integral_constant<[...], false>' for 2nd argument
 }
 
 namespace ZeroArgs {
@@ -1454,7 +1454,7 @@ void run() {
   D<X::X1>(VectorType<X::X2>());
 }
 // CHECK-ELIDE-NOTREE: error: no matching function for call to 'D'
-// CHECK-ELIDE-NOTREE: note: candidate function not viable: no known conversion from 'VectorType<X::X2>' to 'const VectorType<(TypeAlias::X)0>' for 1st argument
+// CHECK-ELIDE-NOTREE: note: candidate function template not viable: no known conversion from 'VectorType<X::X2>' to 'const VectorType<(TypeAlias::X)0>' for 1st argument
 }
 
 namespace TypeAlias2 {

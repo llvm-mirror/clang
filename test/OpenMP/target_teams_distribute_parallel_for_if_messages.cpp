@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 -ferror-limit 100 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -fopenmp-version=45 -ferror-limit 100 %s -Wuninitialized
 
 void foo() {
 }
@@ -7,11 +9,18 @@ bool foobool(int argc) {
   return argc;
 }
 
+void xxx(int argc) {
+  int cond; // expected-note {{initialize the variable 'cond' to silence this warning}}
+#pragma omp target teams distribute parallel for if(cond) // expected-warning {{variable 'cond' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
+}
+
 struct S1; // expected-note {{declared here}}
 
 template <class T, class S> // expected-note {{declared here}}
 int tmain(T argc, S **argv) {
-  T i;
+  T i, z;
 #pragma omp target teams distribute parallel for if // expected-error {{expected '(' after 'if'}}
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
@@ -32,7 +41,7 @@ int tmain(T argc, S **argv) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if (argc argc) // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target teams distribute parallel for if(argc)
+#pragma omp target teams distribute parallel for if(argc -z)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if(parallel // expected-error {{use of undeclared identifier 'parallel'}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
@@ -59,7 +68,7 @@ int tmain(T argc, S **argv) {
 }
 
 int main(int argc, char **argv) {
-  int i;
+  int i, z;
 #pragma omp target teams distribute parallel for if // expected-error {{expected '(' after 'if'}}
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
@@ -90,7 +99,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if(parallel : argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
-#pragma omp target teams distribute parallel for if(parallel : argc)
+#pragma omp target teams distribute parallel for if(parallel : argc / z)
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if(parallel : argc) if (for:argc) // expected-error {{directive name modifier 'for' is not allowed for '#pragma omp target teams distribute parallel for'}}
   for (i = 0; i < argc; ++i) foo();
@@ -103,6 +112,8 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute parallel for if(target: argc) if (argc) // expected-note {{previous clause with directive name modifier specified here}} expected-error {{expected  'parallel' directive name modifier}}
   for (i = 0; i < argc; ++i) foo();
 #pragma omp target teams distribute parallel for if(distribute : argc) // expected-error {{directive name modifier 'distribute' is not allowed for '#pragma omp target teams distribute parallel for'}}
+  for (i = 0; i < argc; ++i) foo();
+#pragma omp target teams distribute parallel for default(none) if(argc+argv[0][0]) // expected-error {{variable 'argv' must have explicitly specified data sharing attributes}} expected-error {{variable 'argc' must have explicitly specified data sharing attributes}} expected-note 2 {{explicit data sharing attribute requested here}}
   for (i = 0; i < argc; ++i) foo();
 
   return tmain(argc, argv);

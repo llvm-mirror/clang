@@ -1,9 +1,8 @@
 //===- unittests/Lex/PPCallbacksTest.cpp - PPCallbacks tests ------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===--------------------------------------------------------------===//
 
@@ -14,7 +13,6 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
-#include "clang/Basic/MemoryBufferCache.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
@@ -39,16 +37,18 @@ public:
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange, const FileEntry *File,
                           StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported) override {
-      this->HashLoc = HashLoc;
-      this->IncludeTok = IncludeTok;
-      this->FileName = FileName.str();
-      this->IsAngled = IsAngled;
-      this->FilenameRange = FilenameRange;
-      this->File = File;
-      this->SearchPath = SearchPath.str();
-      this->RelativePath = RelativePath.str();
-      this->Imported = Imported;
+                          const Module *Imported,
+                          SrcMgr::CharacteristicKind FileType) override {
+    this->HashLoc = HashLoc;
+    this->IncludeTok = IncludeTok;
+    this->FileName = FileName.str();
+    this->IsAngled = IsAngled;
+    this->FilenameRange = FilenameRange;
+    this->File = File;
+    this->SearchPath = SearchPath.str();
+    this->RelativePath = RelativePath.str();
+    this->Imported = Imported;
+    this->FileType = FileType;
   }
 
   SourceLocation HashLoc;
@@ -60,6 +60,30 @@ public:
   SmallString<16> SearchPath;
   SmallString<16> RelativePath;
   const Module* Imported;
+  SrcMgr::CharacteristicKind FileType;
+};
+
+class CondDirectiveCallbacks : public PPCallbacks {
+public:
+  struct Result {
+    SourceRange ConditionRange;
+    ConditionValueKind ConditionValue;
+
+    Result(SourceRange R, ConditionValueKind K)
+        : ConditionRange(R), ConditionValue(K) {}
+  };
+
+  std::vector<Result> Results;
+
+  void If(SourceLocation Loc, SourceRange ConditionRange,
+          ConditionValueKind ConditionValue) override {
+    Results.emplace_back(ConditionRange, ConditionValue);
+  }
+
+  void Elif(SourceLocation Loc, SourceRange ConditionRange,
+            ConditionValueKind ConditionValue, SourceLocation IfLoc) override {
+    Results.emplace_back(ConditionRange, ConditionValue);
+  }
 };
 
 // Stub to collect data from PragmaOpenCLExtension callbacks.
@@ -92,7 +116,7 @@ public:
 class PPCallbacksTest : public ::testing::Test {
 protected:
   PPCallbacksTest()
-      : InMemoryFileSystem(new vfs::InMemoryFileSystem),
+      : InMemoryFileSystem(new llvm::vfs::InMemoryFileSystem),
         FileMgr(FileSystemOptions(), InMemoryFileSystem),
         DiagID(new DiagnosticIDs()), DiagOpts(new DiagnosticOptions()),
         Diags(DiagID, DiagOpts.get(), new IgnoringDiagConsumer()),
@@ -101,7 +125,7 @@ protected:
     Target = TargetInfo::CreateTargetInfo(Diags, TargetOpts);
   }
 
-  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem;
+  IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem;
   FileManager FileMgr;
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID;
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts;
@@ -113,17 +137,17 @@ protected:
 
   // Register a header path as a known file and add its location
   // to search path.
-  void AddFakeHeader(HeaderSearch& HeaderInfo, const char* HeaderPath, 
-    bool IsSystemHeader) {
-      // Tell FileMgr about header.
-      InMemoryFileSystem->addFile(HeaderPath, 0,
-                                  llvm::MemoryBuffer::getMemBuffer("\n"));
+  void AddFakeHeader(HeaderSearch &HeaderInfo, const char *HeaderPath,
+                     bool IsSystemHeader) {
+    // Tell FileMgr about header.
+    InMemoryFileSystem->addFile(HeaderPath, 0,
+                                llvm::MemoryBuffer::getMemBuffer("\n"));
 
-      // Add header's parent path to search path.
-      StringRef SearchPath = llvm::sys::path::parent_path(HeaderPath);
-      const DirectoryEntry *DE = FileMgr.getDirectory(SearchPath);
-      DirectoryLookup DL(DE, SrcMgr::C_User, false);
-      HeaderInfo.AddSearchPath(DL, IsSystemHeader);
+    // Add header's parent path to search path.
+    StringRef SearchPath = llvm::sys::path::parent_path(HeaderPath);
+    auto DE = FileMgr.getOptionalDirectoryRef(SearchPath);
+    DirectoryLookup DL(*DE, SrcMgr::C_User, false);
+    HeaderInfo.AddSearchPath(DL, IsSystemHeader);
   }
 
   // Get the raw source string of the range.
@@ -134,25 +158,57 @@ protected:
     return StringRef(B, E - B);
   }
 
+  StringRef GetSourceStringToEnd(CharSourceRange Range) {
+    const char *B = SourceMgr.getCharacterData(Range.getBegin());
+    const char *E = SourceMgr.getCharacterData(Range.getEnd());
+
+    return StringRef(
+        B,
+        E - B + Lexer::MeasureTokenLength(Range.getEnd(), SourceMgr, LangOpts));
+  }
+
   // Run lexer over SourceText and collect FilenameRange from
   // the InclusionDirective callback.
-  CharSourceRange InclusionDirectiveFilenameRange(const char* SourceText, 
-      const char* HeaderPath, bool SystemHeader) {
+  CharSourceRange InclusionDirectiveFilenameRange(const char *SourceText,
+                                                  const char *HeaderPath,
+                                                  bool SystemHeader) {
     std::unique_ptr<llvm::MemoryBuffer> Buf =
         llvm::MemoryBuffer::getMemBuffer(SourceText);
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
 
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
 
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, LangOpts, Target.get());
     AddFakeHeader(HeaderInfo, HeaderPath, SystemHeader);
 
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
-                    SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
+    return InclusionDirectiveCallback(PP)->FilenameRange;
+  }
+
+  SrcMgr::CharacteristicKind InclusionDirectiveCharacteristicKind(
+      const char *SourceText, const char *HeaderPath, bool SystemHeader) {
+    std::unique_ptr<llvm::MemoryBuffer> Buf =
+        llvm::MemoryBuffer::getMemBuffer(SourceText);
+    SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
+
+    TrivialModuleLoader ModLoader;
+
+    HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
+                            Diags, LangOpts, Target.get());
+    AddFakeHeader(HeaderInfo, HeaderPath, SystemHeader);
+
+    Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
+                    SourceMgr, HeaderInfo, ModLoader,
+                    /*IILookup =*/nullptr,
+                    /*OwnsHeaderSearch =*/false);
+    return InclusionDirectiveCallback(PP)->FileType;
+  }
+
+  InclusionDirectiveCallbacks *InclusionDirectiveCallback(Preprocessor &PP) {
     PP.Initialize(*Target);
     InclusionDirectiveCallbacks* Callbacks = new InclusionDirectiveCallbacks;
     PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
@@ -168,11 +224,40 @@ protected:
     }
 
     // Callbacks have been executed at this point -- return filename range.
-    return Callbacks->FilenameRange;
+    return Callbacks;
   }
 
-  PragmaOpenCLExtensionCallbacks::CallbackParameters 
-  PragmaOpenCLExtensionCall(const char* SourceText) {
+  std::vector<CondDirectiveCallbacks::Result>
+  DirectiveExprRange(StringRef SourceText) {
+    TrivialModuleLoader ModLoader;
+    std::unique_ptr<llvm::MemoryBuffer> Buf =
+        llvm::MemoryBuffer::getMemBuffer(SourceText);
+    SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
+    HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
+                            Diags, LangOpts, Target.get());
+    Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags, LangOpts,
+                    SourceMgr, HeaderInfo, ModLoader,
+                    /*IILookup =*/nullptr,
+                    /*OwnsHeaderSearch =*/false);
+    PP.Initialize(*Target);
+    auto *Callbacks = new CondDirectiveCallbacks;
+    PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
+
+    // Lex source text.
+    PP.EnterMainSourceFile();
+
+    while (true) {
+      Token Tok;
+      PP.Lex(Tok);
+      if (Tok.is(tok::eof))
+        break;
+    }
+
+    return Callbacks->Results;
+  }
+
+  PragmaOpenCLExtensionCallbacks::CallbackParameters
+  PragmaOpenCLExtensionCall(const char *SourceText) {
     LangOptions OpenCLLangOpts;
     OpenCLLangOpts.OpenCL = 1;
 
@@ -181,12 +266,11 @@ protected:
     SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(SourceBuf)));
 
     TrivialModuleLoader ModLoader;
-    MemoryBufferCache PCMCache;
     HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                             Diags, OpenCLLangOpts, Target.get());
 
     Preprocessor PP(std::make_shared<PreprocessorOptions>(), Diags,
-                    OpenCLLangOpts, SourceMgr, PCMCache, HeaderInfo, ModLoader,
+                    OpenCLLangOpts, SourceMgr, HeaderInfo, ModLoader,
                     /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
@@ -194,9 +278,8 @@ protected:
     // parser actually sets correct pragma handlers for preprocessor
     // according to LangOptions, so we init Parser to register opencl
     // pragma handlers
-    ASTContext Context(OpenCLLangOpts, SourceMgr,
-                       PP.getIdentifierTable(), PP.getSelectorTable(), 
-                       PP.getBuiltinInfo());
+    ASTContext Context(OpenCLLangOpts, SourceMgr, PP.getIdentifierTable(),
+                       PP.getSelectorTable(), PP.getBuiltinInfo());
     Context.InitBuiltinTypes(*Target);
 
     ASTConsumer Consumer;
@@ -218,9 +301,18 @@ protected:
       Callbacks->Name,
       Callbacks->State
     };
-    return RetVal;    
+    return RetVal;
   }
 };
+
+TEST_F(PPCallbacksTest, UserFileCharacteristics) {
+  const char *Source = "#include \"quoted.h\"\n";
+
+  SrcMgr::CharacteristicKind Kind =
+      InclusionDirectiveCharacteristicKind(Source, "/quoted.h", false);
+
+  ASSERT_EQ(SrcMgr::CharacteristicKind::C_User, Kind);
+}
 
 TEST_F(PPCallbacksTest, QuotedFilename) {
   const char* Source =
@@ -332,4 +424,70 @@ TEST_F(PPCallbacksTest, OpenCLExtensionPragmaDisabled) {
   ASSERT_EQ(ExpectedState, Parameters.State);
 }
 
-} // anonoymous namespace
+TEST_F(PPCallbacksTest, DirectiveExprRanges) {
+  const auto &Results1 = DirectiveExprRange("#if FLUZZY_FLOOF\n#endif\n");
+  EXPECT_EQ(Results1.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results1[0].ConditionRange, false)),
+      "FLUZZY_FLOOF");
+
+  const auto &Results2 = DirectiveExprRange("#if 1 + 4 < 7\n#endif\n");
+  EXPECT_EQ(Results2.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results2[0].ConditionRange, false)),
+      "1 + 4 < 7");
+
+  const auto &Results3 = DirectiveExprRange("#if 1 + \\\n  2\n#endif\n");
+  EXPECT_EQ(Results3.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results3[0].ConditionRange, false)),
+      "1 + \\\n  2");
+
+  const auto &Results4 = DirectiveExprRange("#if 0\n#elif FLOOFY\n#endif\n");
+  EXPECT_EQ(Results4.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results4[0].ConditionRange, false)),
+      "0");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results4[1].ConditionRange, false)),
+      "FLOOFY");
+
+  const auto &Results5 = DirectiveExprRange("#if 1\n#elif FLOOFY\n#endif\n");
+  EXPECT_EQ(Results5.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results5[0].ConditionRange, false)),
+      "1");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results5[1].ConditionRange, false)),
+      "FLOOFY");
+
+  const auto &Results6 =
+      DirectiveExprRange("#if defined(FLUZZY_FLOOF)\n#endif\n");
+  EXPECT_EQ(Results6.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results6[0].ConditionRange, false)),
+      "defined(FLUZZY_FLOOF)");
+
+  const auto &Results7 =
+      DirectiveExprRange("#if 1\n#elif defined(FLOOFY)\n#endif\n");
+  EXPECT_EQ(Results7.size(), 2U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results7[0].ConditionRange, false)),
+      "1");
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results7[1].ConditionRange, false)),
+      "defined(FLOOFY)");
+
+  const auto &Results8 =
+      DirectiveExprRange("#define FLOOFY 0\n#if __FILE__ > FLOOFY\n#endif\n");
+  EXPECT_EQ(Results8.size(), 1U);
+  EXPECT_EQ(
+      GetSourceStringToEnd(CharSourceRange(Results8[0].ConditionRange, false)),
+      "__FILE__ > FLOOFY");
+  EXPECT_EQ(
+      Lexer::getSourceText(CharSourceRange(Results8[0].ConditionRange, false),
+                           SourceMgr, LangOpts),
+      "__FILE__ > FLOOFY");
+}
+
+} // namespace

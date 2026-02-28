@@ -1,10 +1,29 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 %s -Wuninitialized
+
+typedef void **omp_allocator_handle_t;
+extern const omp_allocator_handle_t omp_default_mem_alloc;
+extern const omp_allocator_handle_t omp_large_cap_mem_alloc;
+extern const omp_allocator_handle_t omp_const_mem_alloc;
+extern const omp_allocator_handle_t omp_high_bw_mem_alloc;
+extern const omp_allocator_handle_t omp_low_lat_mem_alloc;
+extern const omp_allocator_handle_t omp_cgroup_mem_alloc;
+extern const omp_allocator_handle_t omp_pteam_mem_alloc;
+extern const omp_allocator_handle_t omp_thread_mem_alloc;
 
 void foo() {
 }
 
 bool foobool(int argc) {
   return argc;
+}
+
+void xxx(int argc) {
+  int fp; // expected-note {{initialize the variable 'fp' to silence this warning}}
+#pragma omp target parallel firstprivate(fp) // expected-warning {{variable 'fp' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
 }
 
 struct S1; // expected-note {{declared here}} expected-note{{forward declaration of 'S1'}}
@@ -60,7 +79,7 @@ int main(int argc, char **argv) {
   const int da[5] = { 0 };
   S4 e(4);
   S5 g(5);
-  int i;
+  int i, z;
   int &j = i;
   static int m;
   #pragma omp target parallel firstprivate // expected-error {{expected '(' after 'firstprivate'}}
@@ -75,7 +94,7 @@ int main(int argc, char **argv) {
   foo();
   #pragma omp target parallel firstprivate (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   foo();
-  #pragma omp target parallel firstprivate (argc)
+  #pragma omp target parallel firstprivate (argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   foo();
   #pragma omp target parallel firstprivate (S1) // expected-error {{'S1' does not refer to a value}}
   foo();
@@ -83,9 +102,9 @@ int main(int argc, char **argv) {
   foo();
   #pragma omp target parallel firstprivate (argv[1]) // expected-error {{expected variable name}}
   foo();
-  #pragma omp target parallel firstprivate(ba)
+  #pragma omp target parallel firstprivate(ba) allocate(omp_thread_mem_alloc: ba) // expected-warning {{allocator with the 'thread' trait access has unspecified behavior on 'target parallel' directive}}
   foo();
-  #pragma omp target parallel firstprivate(ca)
+  #pragma omp target parallel firstprivate(ca, z)
   foo();
   #pragma omp target parallel firstprivate(da)
   foo();

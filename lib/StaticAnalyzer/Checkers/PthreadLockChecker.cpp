@@ -1,9 +1,8 @@
 //===--- PthreadLockChecker.cpp - Check for locking problems ---*- C++ -*--===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -109,8 +108,6 @@ REGISTER_MAP_WITH_PROGRAMSTATE(DestroyRetVal, const MemRegion *, SymbolRef)
 
 void PthreadLockChecker::checkPostStmt(const CallExpr *CE,
                                        CheckerContext &C) const {
-  ProgramStateRef state = C.getState();
-  const LocationContext *LCtx = C.getLocationContext();
   StringRef FName = C.getCalleeName(CE);
   if (FName.empty())
     return;
@@ -121,34 +118,31 @@ void PthreadLockChecker::checkPostStmt(const CallExpr *CE,
   if (FName == "pthread_mutex_lock" ||
       FName == "pthread_rwlock_rdlock" ||
       FName == "pthread_rwlock_wrlock")
-    AcquireLock(C, CE, state->getSVal(CE->getArg(0), LCtx),
-                false, PthreadSemantics);
+    AcquireLock(C, CE, C.getSVal(CE->getArg(0)), false, PthreadSemantics);
   else if (FName == "lck_mtx_lock" ||
            FName == "lck_rw_lock_exclusive" ||
            FName == "lck_rw_lock_shared")
-    AcquireLock(C, CE, state->getSVal(CE->getArg(0), LCtx),
-                false, XNUSemantics);
+    AcquireLock(C, CE, C.getSVal(CE->getArg(0)), false, XNUSemantics);
   else if (FName == "pthread_mutex_trylock" ||
            FName == "pthread_rwlock_tryrdlock" ||
            FName == "pthread_rwlock_trywrlock")
-    AcquireLock(C, CE, state->getSVal(CE->getArg(0), LCtx),
+    AcquireLock(C, CE, C.getSVal(CE->getArg(0)),
                 true, PthreadSemantics);
   else if (FName == "lck_mtx_try_lock" ||
            FName == "lck_rw_try_lock_exclusive" ||
            FName == "lck_rw_try_lock_shared")
-    AcquireLock(C, CE, state->getSVal(CE->getArg(0), LCtx),
-                true, XNUSemantics);
+    AcquireLock(C, CE, C.getSVal(CE->getArg(0)), true, XNUSemantics);
   else if (FName == "pthread_mutex_unlock" ||
            FName == "pthread_rwlock_unlock" ||
            FName == "lck_mtx_unlock" ||
            FName == "lck_rw_done")
-    ReleaseLock(C, CE, state->getSVal(CE->getArg(0), LCtx));
+    ReleaseLock(C, CE, C.getSVal(CE->getArg(0)));
   else if (FName == "pthread_mutex_destroy")
-    DestroyLock(C, CE, state->getSVal(CE->getArg(0), LCtx), PthreadSemantics);
+    DestroyLock(C, CE, C.getSVal(CE->getArg(0)), PthreadSemantics);
   else if (FName == "lck_mtx_destroy")
-    DestroyLock(C, CE, state->getSVal(CE->getArg(0), LCtx), XNUSemantics);
+    DestroyLock(C, CE, C.getSVal(CE->getArg(0)), XNUSemantics);
   else if (FName == "pthread_mutex_init")
-    InitLock(C, CE, state->getSVal(CE->getArg(0), LCtx));
+    InitLock(C, CE, C.getSVal(CE->getArg(0)));
 }
 
 // When a lock is destroyed, in some semantics(like PthreadSemantics) we are not
@@ -232,7 +226,7 @@ void PthreadLockChecker::AcquireLock(CheckerContext &C, const CallExpr *CE,
   if (sym)
     state = resolvePossiblyDestroyedMutex(state, lockR, sym);
 
-  SVal X = state->getSVal(CE, C.getLocationContext());
+  SVal X = C.getSVal(CE);
   if (X.isUnknownOrUndef())
     return;
 
@@ -246,7 +240,7 @@ void PthreadLockChecker::AcquireLock(CheckerContext &C, const CallExpr *CE,
       ExplodedNode *N = C.generateErrorNode();
       if (!N)
         return;
-      auto report = llvm::make_unique<BugReport>(
+      auto report = std::make_unique<PathSensitiveBugReport>(
           *BT_doublelock, "This lock has already been acquired", N);
       report->addRange(CE->getArg(0)->getSourceRange());
       C.emitReport(std::move(report));
@@ -311,7 +305,7 @@ void PthreadLockChecker::ReleaseLock(CheckerContext &C, const CallExpr *CE,
       ExplodedNode *N = C.generateErrorNode();
       if (!N)
         return;
-      auto Report = llvm::make_unique<BugReport>(
+      auto Report = std::make_unique<PathSensitiveBugReport>(
           *BT_doubleunlock, "This lock has already been unlocked", N);
       Report->addRange(CE->getArg(0)->getSourceRange());
       C.emitReport(std::move(Report));
@@ -334,7 +328,7 @@ void PthreadLockChecker::ReleaseLock(CheckerContext &C, const CallExpr *CE,
       ExplodedNode *N = C.generateErrorNode();
       if (!N)
         return;
-      auto report = llvm::make_unique<BugReport>(
+      auto report = std::make_unique<PathSensitiveBugReport>(
           *BT_lor, "This was not the most recently acquired lock. Possible "
                    "lock order reversal", N);
       report->addRange(CE->getArg(0)->getSourceRange());
@@ -405,7 +399,8 @@ void PthreadLockChecker::DestroyLock(CheckerContext &C, const CallExpr *CE,
   ExplodedNode *N = C.generateErrorNode();
   if (!N)
     return;
-  auto Report = llvm::make_unique<BugReport>(*BT_destroylock, Message, N);
+  auto Report =
+      std::make_unique<PathSensitiveBugReport>(*BT_destroylock, Message, N);
   Report->addRange(CE->getArg(0)->getSourceRange());
   C.emitReport(std::move(Report));
 }
@@ -444,7 +439,8 @@ void PthreadLockChecker::InitLock(CheckerContext &C, const CallExpr *CE,
   ExplodedNode *N = C.generateErrorNode();
   if (!N)
     return;
-  auto Report = llvm::make_unique<BugReport>(*BT_initlock, Message, N);
+  auto Report =
+      std::make_unique<PathSensitiveBugReport>(*BT_initlock, Message, N);
   Report->addRange(CE->getArg(0)->getSourceRange());
   C.emitReport(std::move(Report));
 }
@@ -457,7 +453,7 @@ void PthreadLockChecker::reportUseDestroyedBug(CheckerContext &C,
   ExplodedNode *N = C.generateErrorNode();
   if (!N)
     return;
-  auto Report = llvm::make_unique<BugReport>(
+  auto Report = std::make_unique<PathSensitiveBugReport>(
       *BT_destroylock, "This lock has already been destroyed", N);
   Report->addRange(CE->getArg(0)->getSourceRange());
   C.emitReport(std::move(Report));
@@ -485,4 +481,8 @@ void PthreadLockChecker::checkDeadSymbols(SymbolReaper &SymReaper,
 
 void ento::registerPthreadLockChecker(CheckerManager &mgr) {
   mgr.registerChecker<PthreadLockChecker>();
+}
+
+bool ento::shouldRegisterPthreadLockChecker(const LangOptions &LO) {
+  return true;
 }

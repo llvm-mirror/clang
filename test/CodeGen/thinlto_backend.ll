@@ -20,8 +20,27 @@
 ; CHECK-OBJ-IGNORE-EMPTY: T f1
 ; CHECK-OBJ-IGNORE-EMPTY: U f2
 
-; Ensure f2 was imported
-; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t3.o -x ir %t1.o -c -fthinlto-index=%t.thinlto.bc
+; Ensure we don't fail with index and non-ThinLTO object file, and output must
+; be empty file.
+; RUN: opt -o %t5.o %s
+; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t4.o -x ir %t5.o -c -fthinlto-index=%t.thinlto.bc
+; RUN: llvm-nm %t4.o 2>&1 | FileCheck %s -check-prefix=NO-SYMBOLS
+; NO-SYMBOLS: no symbols
+
+; Ensure f2 was imported. Check for all 3 flavors of -save-temps[=cwd|obj].
+; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t3.o -x ir %t1.o -c -fthinlto-index=%t.thinlto.bc -save-temps=obj
+; RUN: llvm-dis %t1.s.3.import.bc -o - | FileCheck --check-prefix=CHECK-IMPORT %s
+; RUN: mkdir -p %T/dir1
+; RUN: cd %T/dir1
+; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t3.o -x ir %t1.o -c -fthinlto-index=%t.thinlto.bc -save-temps=cwd
+; RUN: cd ../..
+; RUN: llvm-dis %T/dir1/*1.s.3.import.bc -o - | FileCheck --check-prefix=CHECK-IMPORT %s
+; RUN: mkdir -p %T/dir2
+; RUN: cd %T/dir2
+; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t3.o -x ir %t1.o -c -fthinlto-index=%t.thinlto.bc -save-temps
+; RUN: cd ../..
+; RUN: llvm-dis %T/dir2/*1.s.3.import.bc -o - | FileCheck --check-prefix=CHECK-IMPORT %s
+; CHECK-IMPORT: define available_externally void @f2()
 ; RUN: llvm-nm %t3.o | FileCheck --check-prefix=CHECK-OBJ %s
 ; CHECK-OBJ: T f1
 ; CHECK-OBJ-NOT: U f2
@@ -31,7 +50,7 @@
 ; RUN: %clang -target x86_64-unknown-linux-gnu -O2 -o %t3.o -x ir %t1.o -c -fthinlto-index=%t.thinlto.bc 2>&1 | FileCheck %s -check-prefix=CHECK-ERROR2
 ; CHECK-ERROR2: Error loading imported file '{{.*}}': Could not find module summary
 
-target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
 declare void @f2()

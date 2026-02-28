@@ -356,6 +356,14 @@ namespace compound_assign {
     if (a != 13) return false;
     a &= 14;
     if (a != 12) return false;
+    a += -1.2;
+    if (a != 10) return false;
+    a -= 3.1;
+    if (a != 6) return false;
+    a *= 2.2;
+    if (a != 13) return false;
+    if (&(a /= 1.5) != &a) return false;
+    if (a != 8) return false;
     return true;
   }
   static_assert(test_int(), "");
@@ -373,6 +381,30 @@ namespace compound_assign {
     return true;
   }
   static_assert(test_float(), "");
+
+  constexpr bool test_bool() {
+    bool b = false;
+    b |= 2;
+    if (b != true) return false;
+    b <<= 1;
+    if (b != true) return false;
+    b *= 2;
+    if (b != true) return false;
+    b -= 1;
+    if (b != false) return false;
+    b -= 1;
+    if (b != true) return false;
+    b += -1;
+    if (b != false) return false;
+    b += 1;
+    if (b != true) return false;
+    b += 1;
+    if (b != true) return false;
+    b ^= b;
+    if (b != false) return false;
+    return true;
+  }
+  static_assert(test_bool(), "");
 
   constexpr bool test_ptr() {
     int arr[123] = {};
@@ -393,7 +425,7 @@ namespace compound_assign {
   constexpr bool test_overflow() {
     T a = 1;
     while (a != a / 2)
-      a *= 2; // expected-note {{value 2147483648 is outside the range}} expected-note {{ 9223372036854775808 }} expected-note {{floating point arithmetic produces an infinity}}
+      a *= 2; // expected-note {{value 2147483648 is outside the range}} expected-note {{ 9223372036854775808 }}
     return true;
   }
 
@@ -403,7 +435,8 @@ namespace compound_assign {
   static_assert(test_overflow<unsigned short>(), ""); // ok
   static_assert(test_overflow<unsigned long long>(), ""); // ok
   static_assert(test_overflow<long long>(), ""); // expected-error {{constant}} expected-note {{call}}
-  static_assert(test_overflow<float>(), ""); // expected-error {{constant}} expected-note {{call}}
+  static_assert(test_overflow<float>(), ""); // ok
+  static_assert(test_overflow<double>(), ""); // ok
 
   constexpr short test_promotion(short k) {
     short s = k;
@@ -420,7 +453,7 @@ namespace compound_assign {
   static_assert(test_bounds("foo", 0)[0] == 'f', "");
   static_assert(test_bounds("foo", 3)[0] == 0, "");
   static_assert(test_bounds("foo", 4)[-3] == 'o', "");
-  static_assert(test_bounds("foo" + 4, -4)[0] == 'f', "");
+  static_assert(test_bounds(&"foo"[4], -4)[0] == 'f', "");
   static_assert(test_bounds("foo", 5) != 0, ""); // expected-error {{constant}} expected-note {{call}}
   static_assert(test_bounds("foo", -1) != 0, ""); // expected-error {{constant}} expected-note {{call}}
   static_assert(test_bounds("foo", 1000) != 0, ""); // expected-error {{constant}} expected-note {{call}}
@@ -594,6 +627,12 @@ namespace assignment_op {
 }
 
 namespace switch_stmt {
+  constexpr bool no_such_case(int n) {
+    switch (n) { case 1: return false; }
+    return true;
+  }
+  static_assert(no_such_case(0), "");
+
   constexpr int f(char k) {
     bool b = false;
     int z = 6;
@@ -777,9 +816,10 @@ namespace StmtExpr {
   }
   static_assert(f(1) == 1, ""); // expected-error {{constant expression}} expected-note {{in call}}
 
-  constexpr int g() { // expected-error {{never produces a constant}}
-    return ({ int n; n; }); // expected-note {{object of type 'int' is not initialized}}
+  constexpr int g() {
+    return ({ int n; n; }); // expected-note {{read of uninitialized object}}
   }
+  static_assert(g() == 0, ""); // expected-error {{constant expression}} expected-note {{in call}}
 
   // FIXME: We should handle the void statement expression case.
   constexpr int h() { // expected-error {{never produces a constant}}
@@ -809,7 +849,7 @@ namespace VirtualFromBase {
   // Virtual f(), not OK.
   constexpr X<X<S2>> xxs2;
   constexpr X<S2> *q = const_cast<X<X<S2>>*>(&xxs2);
-  static_assert(q->f() == sizeof(X<S2>), ""); // expected-error {{constant expression}} expected-note {{virtual function call}}
+  static_assert(q->f() == sizeof(X<S2>), ""); // expected-error {{constant expression}} expected-note {{virtual function}}
 }
 
 namespace Lifetime {
@@ -852,7 +892,6 @@ namespace Lifetime {
   static_assert(h(2) == 0, ""); // expected-error {{constant expression}} expected-note {{in call}}
   static_assert(h(3) == 0, ""); // expected-error {{constant expression}} expected-note {{in call}}
 
-  // FIXME: This function should be treated as non-constant.
   constexpr void lifetime_versus_loops() {
     int *p = 0;
     for (int i = 0; i != 2; ++i) {
@@ -862,10 +901,10 @@ namespace Lifetime {
       if (i)
         // This modifies the 'n' from the previous iteration of the loop outside
         // its lifetime.
-        ++*q;
+        ++*q; // expected-note {{increment of object outside its lifetime}}
     }
   }
-  static_assert((lifetime_versus_loops(), true), "");
+  static_assert((lifetime_versus_loops(), true), ""); // expected-error {{constant expression}} expected-note {{in call}}
 }
 
 namespace Bitfields {
@@ -880,7 +919,7 @@ namespace Bitfields {
     --a.n;
     --a.u;
     a.n = -a.n * 3;
-    return a.b == false && a.n == 3 && a.u == 31;
+    return a.b == true && a.n == 3 && a.u == 31;
   }
   static_assert(test(), "");
 }
@@ -1021,3 +1060,191 @@ constexpr bool evalNested() {
 }
 static_assert(evalNested(), "");
 } // namespace PR19741
+
+namespace Mutable {
+  struct A { mutable int n; }; // expected-note 2{{here}}
+  constexpr int k = A{123}.n; // ok
+  static_assert(k == 123, "");
+
+  struct Q { A &&a; int b = a.n; };
+  constexpr Q q = { A{456} }; // expected-note {{temporary}}
+  static_assert(q.b == 456, "");
+  static_assert(q.a.n == 456, ""); // expected-error {{constant expression}} expected-note {{outside the expression that created the temporary}}
+
+  constexpr A a = {123};
+  constexpr int m = a.n; // expected-error {{constant expression}} expected-note {{mutable}}
+
+  constexpr Q r = { static_cast<A&&>(const_cast<A&>(a)) }; // expected-error {{constant expression}} expected-note@-8 {{mutable}}
+
+  struct B {
+    mutable int n; // expected-note {{here}}
+    int m;
+    constexpr B() : n(1), m(n) {} // ok
+  };
+  constexpr B b;
+  constexpr int p = b.n; // expected-error {{constant expression}} expected-note {{mutable}}
+}
+
+namespace IndirectFields {
+
+// Reference indirect field.
+struct A {
+  struct {
+    union {
+      int x = x = 3; // expected-note {{outside its lifetime}}
+    };
+  };
+  constexpr A() {}
+};
+static_assert(A().x == 3, ""); // expected-error{{not an integral constant expression}} expected-note{{in call to 'A()'}}
+
+// Reference another indirect field, with different 'this'.
+struct B {
+  struct {
+    union {
+      int x = 3;
+    };
+    int y = x;
+  };
+  constexpr B() {}
+};
+static_assert(B().y == 3, "");
+
+// Nested evaluation of indirect field initializers.
+struct C {
+  union {
+    int x = 1;
+  };
+};
+struct D {
+  struct {
+    C c;
+    int y = c.x + 1;
+  };
+};
+static_assert(D().y == 2, "");
+
+// Explicit 'this'.
+struct E {
+  int n = 0;
+  struct {
+    void *x = this;
+  };
+  void *y = this;
+};
+constexpr E e1 = E();
+static_assert(e1.x != e1.y, "");
+constexpr E e2 = E{0};
+static_assert(e2.x != e2.y, "");
+
+} // namespace IndirectFields
+
+constexpr bool indirect_builtin_constant_p(const char *__s) {
+  return __builtin_constant_p(*__s);
+}
+constexpr bool n = indirect_builtin_constant_p("a");
+
+__attribute__((enable_if(indirect_builtin_constant_p("a") == n, "OK")))
+int test_in_enable_if() { return 0; }
+int n2 = test_in_enable_if();
+
+template <bool n = indirect_builtin_constant_p("a")>
+int test_in_template_param() { return 0; }
+int n3 = test_in_template_param();
+
+void test_in_case(int n) {
+  switch (n) {
+    case indirect_builtin_constant_p("abc"):
+    break;
+  }
+}
+enum InEnum1 {
+  ONE = indirect_builtin_constant_p("abc")
+};
+enum InEnum2 : int {
+  TWO = indirect_builtin_constant_p("abc")
+};
+enum class InEnum3 {
+  THREE = indirect_builtin_constant_p("abc")
+};
+
+// [class.ctor]p4:
+//   A constructor can be invoked for a const, volatile or const volatile
+//   object. const and volatile semantics are not applied on an object under
+//   construction. They come into effect when the constructor for the most
+//   derived object ends.
+namespace ObjectsUnderConstruction {
+  struct A {
+    int n;
+    constexpr A() : n(1) { n = 2; }
+  };
+  struct B {
+    const A a;
+    constexpr B(bool mutate) {
+      if (mutate)
+        const_cast<A &>(a).n = 3; // expected-note {{modification of object of const-qualified type 'const int'}}
+    }
+  };
+  constexpr B b(false);
+  static_assert(b.a.n == 2, "");
+  constexpr B bad(true); // expected-error {{must be initialized by a constant expression}} expected-note {{in call to 'B(true)'}}
+
+  struct C {
+    int n;
+    constexpr C() : n(1) { n = 2; }
+  };
+  constexpr int f(bool get) {
+    volatile C c; // expected-note {{here}}
+    return get ? const_cast<int&>(c.n) : 0; // expected-note {{read of volatile object 'c'}}
+  }
+  static_assert(f(false) == 0, ""); // ok, can modify volatile c.n during c's initialization: it's not volatile then
+  static_assert(f(true) == 2, ""); // expected-error {{constant}} expected-note {{in call}}
+
+  struct Aggregate {
+    int x = 0;
+    int y = ++x;
+  };
+  constexpr Aggregate aggr1;
+  static_assert(aggr1.x == 1 && aggr1.y == 1, "");
+  // FIXME: This is not specified by the standard, but sanity requires it.
+  constexpr Aggregate aggr2 = {};
+  static_assert(aggr2.x == 1 && aggr2.y == 1, "");
+
+  // The lifetime of 'n' begins at the initialization, not before.
+  constexpr int n = ++const_cast<int&>(n); // expected-error {{constant expression}} expected-note {{modification}}
+}
+
+namespace PR39728 {
+  struct Comment0 {
+    Comment0 &operator=(const Comment0 &) = default;
+    ~Comment0() = default;
+  };
+  constexpr void f() {
+    Comment0 a;
+    a = a;
+  }
+  static_assert((f(), true), "");
+  struct Comment1 {
+    constexpr Comment1 &operator=(const Comment1 &) = default; // OK
+    ~Comment1() = default;
+  };
+}
+
+namespace TemporaryWithBadPointer {
+  constexpr int *get_bad_pointer() {
+    int n = 0; // expected-note 2{{here}}
+    return &n; // expected-warning {{stack}}
+  }
+  constexpr int *bad_pointer = get_bad_pointer(); // expected-error {{constant expression}} expected-note {{pointer to 'n' is not a constant expression}}
+
+  struct DoBadThings { int *&&wp; int n; };
+  constexpr DoBadThings dbt = { // expected-error {{constant expression}}
+    nullptr, // expected-note {{pointer to 'n' is not a constant expression}}
+    (dbt.wp = get_bad_pointer(), 0)
+  };
+
+  constexpr DoBadThings dbt2 = { // ok
+    get_bad_pointer(),
+    (dbt2.wp = nullptr, 0)
+  };
+}

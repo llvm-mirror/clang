@@ -1,10 +1,19 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
 
 void foo() {
 }
 
 bool foobool(int argc) {
   return argc;
+}
+
+void xxx(int argc) {
+  int map; // expected-note {{initialize the variable 'map' to silence this warning}}
+#pragma omp target parallel map(tofrom: map) // expected-warning {{variable 'map' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
 }
 
 struct S1; // expected-note 2 {{declared here}}
@@ -59,7 +68,7 @@ T tmain(T argc) {
   T &j = i;
   T *k = &j;
   T x;
-  T y;
+  T y, z;
   T to, tofrom, always;
   const T (&l)[5] = da;
 
@@ -84,7 +93,9 @@ T tmain(T argc) {
   foo();
 #pragma omp target parallel map(l[:-1]) // expected-error 2 {{section length is evaluated to a negative value -1}}
   foo();
-#pragma omp target parallel map(x)
+#pragma omp target parallel map(l[true:true])
+  foo();
+#pragma omp target parallel map(x, z)
   foo();
 #pragma omp target parallel map(tofrom: t[:I])
   foo();
@@ -161,7 +172,7 @@ T tmain(T argc) {
   foo();
 #pragma omp target parallel map(always: x) // expected-error {{missing map type}}
   foo();
-#pragma omp target parallel map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always'}} expected-error {{incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'}}
+#pragma omp target parallel map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always', 'close', or 'mapper'}} expected-error {{missing map type}}
   foo();
 #pragma omp target parallel map(always, tofrom: always, tofrom, x)
   foo();
@@ -202,6 +213,8 @@ int main(int argc, char **argv) {
 #pragma omp target parallel map(l[-1:]) // expected-error {{array section must be a subset of the original array}}
   foo();
 #pragma omp target parallel map(l[:-1]) // expected-error {{section length is evaluated to a negative value -1}}
+  foo();
+#pragma omp target parallel map(l[true:true])
   foo();
 #pragma omp target parallel map(x)
   foo();
@@ -268,7 +281,7 @@ int main(int argc, char **argv) {
   foo();
 #pragma omp target parallel map(always: x) // expected-error {{missing map type}}
   foo();
-#pragma omp target parallel map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always'}} expected-error {{incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'}}
+#pragma omp target parallel map(tofrom, always: x) // expected-error {{incorrect map type modifier, expected 'always', 'close', or 'mapper'}} expected-error {{missing map type}}
   foo();
 #pragma omp target parallel map(always, tofrom: always, tofrom, x)
   foo();

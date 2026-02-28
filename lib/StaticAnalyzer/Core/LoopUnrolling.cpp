@@ -1,9 +1,8 @@
 //===--- LoopUnrolling.cpp - Unroll loops -----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
@@ -97,9 +96,7 @@ changeIntBoundNode(internal::Matcher<Decl> VarNodeMatcher) {
       unaryOperator(anyOf(hasOperatorName("--"), hasOperatorName("++")),
                     hasUnaryOperand(ignoringParenImpCasts(
                         declRefExpr(to(varDecl(VarNodeMatcher)))))),
-      binaryOperator(anyOf(hasOperatorName("="), hasOperatorName("+="),
-                           hasOperatorName("/="), hasOperatorName("*="),
-                           hasOperatorName("-=")),
+      binaryOperator(isAssignmentOperator(),
                      hasLHS(ignoringParenImpCasts(
                          declRefExpr(to(varDecl(VarNodeMatcher)))))));
 }
@@ -143,13 +140,15 @@ static internal::Matcher<Stmt> forLoopMatcher() {
   return forStmt(
              hasCondition(simpleCondition("initVarName")),
              // Initialization should match the form: 'int i = 6' or 'i = 42'.
-             hasLoopInit(anyOf(
-                 declStmt(hasSingleDecl(varDecl(
-                     allOf(hasInitializer(integerLiteral().bind("initNum")),
-                           equalsBoundNode("initVarName"))))),
-                 binaryOperator(hasLHS(declRefExpr(to(
-                                    varDecl(equalsBoundNode("initVarName"))))),
-                                hasRHS(integerLiteral().bind("initNum"))))),
+             hasLoopInit(
+                 anyOf(declStmt(hasSingleDecl(
+                           varDecl(allOf(hasInitializer(ignoringParenImpCasts(
+                                             integerLiteral().bind("initNum"))),
+                                         equalsBoundNode("initVarName"))))),
+                       binaryOperator(hasLHS(declRefExpr(to(varDecl(
+                                          equalsBoundNode("initVarName"))))),
+                                      hasRHS(ignoringParenImpCasts(
+                                          integerLiteral().bind("initNum")))))),
              // Incrementation should be a simple increment or decrement
              // operator call.
              hasIncrement(unaryOperator(
@@ -166,7 +165,9 @@ static bool isPossiblyEscaped(const VarDecl *VD, ExplodedNode *N) {
     return true;
 
   while (!N->pred_empty()) {
-    const Stmt *S = PathDiagnosticLocation::getStmt(N);
+    // FIXME: getStmtForDiagnostics() does nasty things in order to provide
+    // a valid statement for body farms, do we need this behavior here?
+    const Stmt *S = N->getStmtForDiagnostics();
     if (!S) {
       N = N->getFirstPred();
       continue;
@@ -235,7 +236,7 @@ bool madeNewBranch(ExplodedNode *N, const Stmt *LoopStmt) {
 
     ProgramPoint P = N->getLocation();
     if (Optional<BlockEntrance> BE = P.getAs<BlockEntrance>())
-      S = BE->getBlock()->getTerminator();
+      S = BE->getBlock()->getTerminatorStmt();
 
     if (S == LoopStmt)
       return false;

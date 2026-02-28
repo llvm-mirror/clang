@@ -1,6 +1,9 @@
 // RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -fnoopenmp-use-tls -ferror-limit 100 -emit-llvm -o - %s
 // RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp -ferror-limit 100 -emit-llvm -o - %s
 
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp-simd -fnoopenmp-use-tls -ferror-limit 100 -emit-llvm -o - %s
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify -fopenmp-simd -ferror-limit 100 -emit-llvm -o - %s
+
 #pragma omp threadprivate // expected-error {{expected '(' after 'threadprivate'}}
 #pragma omp threadprivate( // expected-error {{expected identifier}} expected-error {{expected ')'}} expected-note {{to match this '('}}
 #pragma omp threadprivate() // expected-error {{expected identifier}}
@@ -16,7 +19,7 @@ struct CompleteSt1{
 
 int a; // expected-note {{'a' defined here}}
 
-#pragma omp threadprivate(a)
+#pragma omp threadprivate(a) allocate(a) // expected-warning {{extra tokens at the end of '#pragma omp threadprivate' are ignored}}
 #pragma omp threadprivate(u) // expected-error {{use of undeclared identifier 'u'}}
 #pragma omp threadprivate(d, a)
 int foo() { // expected-note {{declared here}}

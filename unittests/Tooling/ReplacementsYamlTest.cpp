@@ -1,9 +1,8 @@
 //===- unittests/Tooling/ReplacementsYamlTest.cpp - Serialization tests ---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -33,16 +32,40 @@ TEST(ReplacementsYamlTest, serializesReplacements) {
 
   // NOTE: If this test starts to fail for no obvious reason, check whitespace.
   ASSERT_STREQ("---\n"
-               "MainSourceFile:  /path/to/source.cpp\n"
-               "Replacements:    \n" // Extra whitespace here!
-               "  - FilePath:        /path/to/file1.h\n"
+               "MainSourceFile:  '/path/to/source.cpp'\n"
+               "Replacements:\n"
+               "  - FilePath:        '/path/to/file1.h'\n"
                "    Offset:          232\n"
                "    Length:          56\n"
                "    ReplacementText: 'replacement #1'\n"
-               "  - FilePath:        /path/to/file2.h\n"
+               "  - FilePath:        '/path/to/file2.h'\n"
                "    Offset:          301\n"
                "    Length:          2\n"
                "    ReplacementText: 'replacement #2'\n"
+               "...\n",
+               YamlContentStream.str().c_str());
+}
+
+TEST(ReplacementsYamlTest, serializesNewLines) {
+  TranslationUnitReplacements Doc;
+
+  Doc.MainSourceFile = "/path/to/source.cpp";
+  Doc.Replacements.emplace_back("/path/to/file1.h", 0, 0, "#include <utility>\n");
+
+  std::string YamlContent;
+  llvm::raw_string_ostream YamlContentStream(YamlContent);
+
+  yaml::Output YAML(YamlContentStream);
+  YAML << Doc;
+
+  // NOTE: If this test starts to fail for no obvious reason, check whitespace.
+  ASSERT_STREQ("---\n"
+               "MainSourceFile:  '/path/to/source.cpp'\n"
+               "Replacements:\n"
+               "  - FilePath:        '/path/to/file1.h'\n"
+               "    Offset:          0\n"
+               "    Length:          0\n"
+               "    ReplacementText: '#include <utility>\n\n'\n"
                "...\n",
                YamlContentStream.str().c_str());
 }

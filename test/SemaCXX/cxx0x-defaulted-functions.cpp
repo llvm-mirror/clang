@@ -99,8 +99,6 @@ namespace DefaultedFnExceptionSpec {
 
   Error<char> c; // expected-note 2{{instantiation of}}
   struct DelayImplicit {
-    // FIXME: The location of this note is terrible. The instantiation was
-    // triggered by the uses of the functions in the decltype expressions below.
     Error<int> e; // expected-note 6{{instantiation of}}
   };
   Error<float> *e;
@@ -109,9 +107,9 @@ namespace DefaultedFnExceptionSpec {
   // a defaulted special member function that calls the function is needed.
   // Use in an unevaluated operand still results in the exception spec being
   // needed.
-  void test1(decltype(declval<DelayImplicit>() = DelayImplicit(DelayImplicit())));
-  void test2(decltype(declval<DelayImplicit>() = declval<const DelayImplicit>()));
-  void test3(decltype(DelayImplicit(declval<const DelayImplicit>())));
+  void test1(decltype(declval<DelayImplicit>() = DelayImplicit(DelayImplicit()))); // expected-note 4{{in evaluation of exception specification}}
+  void test2(decltype(declval<DelayImplicit>() = declval<const DelayImplicit>())); // expected-note {{in evaluation of exception specification}}
+  void test3(decltype(DelayImplicit(declval<const DelayImplicit>()))); // expected-note {{in evaluation of exception specification}}
 
   // Any odr-use needs the exception specification.
   void f(Error<double> *p) {
@@ -191,11 +189,11 @@ namespace PR15597 {
     ~A() noexcept(true) = default;
   };
   template<typename T> struct B {
-    B() noexcept(false) = default; // expected-error {{does not match the calculated one}}
-    ~B() noexcept(false) = default; // expected-error {{does not match the calculated one}}
+    B() noexcept(false) = default;
+    ~B() noexcept(false) = default;
   };
   A<int> a;
-  B<int> b; // expected-note {{here}}
+  B<int> b;
 }
 
 namespace PR27941 {
@@ -243,4 +241,21 @@ class E {
 template <typename Type>
 E<Type>::E(const int&) {}  // expected-error {{definition of explicitly defaulted function}}
 
+}
+
+namespace P1286R2 {
+  struct X {
+    X();
+  };
+  struct A {
+    struct B {
+      B() noexcept(A::value) = default;
+      X x;
+    };
+    decltype(B()) b;
+    static constexpr bool value = true;
+  };
+  A::B b;
+
+  static_assert(noexcept(A::B()), "");
 }

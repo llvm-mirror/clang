@@ -1,9 +1,25 @@
 // RUN: %clang_analyze_cc1 -std=c++11 -analyzer-checker=core,deadcode,debug.ExprInspection -analyzer-config inline-lambdas=true -verify %s
+// RUN: %clang_analyze_cc1 -std=c++11 -analyzer-checker=core -analyzer-config inline-lambdas=false -DNO_INLINING=1 -verify %s
 // RUN: %clang_analyze_cc1 -std=c++11 -analyzer-checker=core,debug.DumpCFG -analyzer-config inline-lambdas=true %s > %t 2>&1
 // RUN: FileCheck --input-file=%t %s
 
 void clang_analyzer_warnIfReached();
 void clang_analyzer_eval(int);
+
+#ifdef NO_INLINING
+
+// expected-no-diagnostics
+
+int& invalidate_static_on_unknown_lambda() {
+  static int* z;
+  auto f = [] {
+    z = nullptr;
+  }; // should invalidate "z" when inlining is disabled.
+  f();
+  return *z; // no-warning
+}
+
+#else
 
 struct X { X(const X&); };
 void f(X x) { (void) [x]{}; }
@@ -337,6 +353,47 @@ void captureByReference() {
   lambda2();
 }
 
+void testCapturedConstExprFloat() {
+  constexpr float localConstant = 4.0;
+  auto lambda = []{
+    // Don't treat localConstant as containing a garbage value
+    float copy = localConstant; // no-warning
+    (void)copy;
+  };
+
+  lambda();
+}
+
+void escape(void*);
+
+int& invalidate_static_on_unknown_lambda() {
+  static int* z;
+  auto lambda = [] {
+    static float zz;
+    z = new int(120);
+  };
+  escape(&lambda);
+  return *z; // no-warning
+}
+
+
+static int b = 0;
+
+int f() {
+  b = 0;
+  auto &bm = b;
+  [&] {
+    bm++;
+    bm++;
+  }();
+  if (bm != 2) {
+    int *y = 0;
+    return *y; // no-warning
+  }
+  return 0;
+}
+
+#endif
 
 // CHECK: [B2 (ENTRY)]
 // CHECK:   Succs (1): B1

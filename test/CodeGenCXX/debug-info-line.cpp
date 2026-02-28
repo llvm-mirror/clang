@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -w -debug-info-kind=line-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -mllvm -no-discriminators -emit-llvm %s -o - -triple %itanium_abi_triple | FileCheck %s
 // RUN: %clang_cc1 -w -debug-info-kind=line-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -mllvm -no-discriminators -emit-llvm %s -o - -triple i686-linux-gnu | FileCheck %s
+// RUN: %clang_cc1 -w -debug-info-kind=line-directives-only -std=c++11 -fexceptions -fcxx-exceptions -S -mllvm -no-discriminators -emit-llvm %s -o - -triple %itanium_abi_triple | FileCheck %s
+// RUN: %clang_cc1 -w -debug-info-kind=line-directives-only -std=c++11 -fexceptions -fcxx-exceptions -S -mllvm -no-discriminators -emit-llvm %s -o - -triple i686-linux-gnu | FileCheck %s
 
 int &src();
 int *sink();
@@ -291,6 +293,13 @@ void f24() {
   f24_a();
 }
 
+// CHECK-LABEL: define
+void f25_a(int x = __builtin_LINE()) {}
+void f25() {
+  // CHECK: call void @_Z5f25_ai(i32 {{(signext )?}}2700)
+#line 2700
+  f25_a();
+}
 // CHECK: [[DBG_F1]] = !DILocation(line: 100,
 // CHECK: [[DBG_FOO_VALUE]] = !DILocation(line: 200,
 // CHECK: [[DBG_FOO_REF]] = !DILocation(line: 202,

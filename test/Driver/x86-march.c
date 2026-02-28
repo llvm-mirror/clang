@@ -48,6 +48,14 @@
 // RUN:   | FileCheck %s -check-prefix=skx
 // skx: "-target-cpu" "skx"
 //
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=cascadelake 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=cascadelake
+// cascadelake: "-target-cpu" "cascadelake"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=cooperlake 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=cooperlake
+// cooperlake: "-target-cpu" "cooperlake"
+//
 // RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=knl 2>&1 \
 // RUN:   | FileCheck %s -check-prefix=knl
 // knl: "-target-cpu" "knl"
@@ -60,6 +68,18 @@
 // RUN:   | FileCheck %s -check-prefix=cannonlake
 // cannonlake: "-target-cpu" "cannonlake"
 //
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=icelake-client 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=icelake-client
+// icelake-client: "-target-cpu" "icelake-client"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=icelake-server 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=icelake-server
+// icelake-server: "-target-cpu" "icelake-server"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=tigerlake 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=tigerlake
+// tigerlake: "-target-cpu" "tigerlake"
+//
 // RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=lakemont 2>&1 \
 // RUN:   | FileCheck %s -check-prefix=lakemont
 // lakemont: "-target-cpu" "lakemont"
@@ -71,6 +91,18 @@
 // RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=silvermont 2>&1 \
 // RUN:   | FileCheck %s -check-prefix=silvermont
 // silvermont: "-target-cpu" "silvermont"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=goldmont 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=goldmont
+// goldmont: "-target-cpu" "goldmont"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=goldmont-plus 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=goldmont-plus
+// goldmont-plus: "-target-cpu" "goldmont-plus"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=tremont 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=tremont
+// tremont: "-target-cpu" "tremont"
 //
 // RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=k8 2>&1 \
 // RUN:   | FileCheck %s -check-prefix=k8
@@ -135,3 +167,7 @@
 // RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=znver1 2>&1 \
 // RUN:   | FileCheck %s -check-prefix=znver1
 // znver1: "-target-cpu" "znver1"
+//
+// RUN: %clang -target x86_64-unknown-unknown -c -### %s -march=znver2 2>&1 \
+// RUN:   | FileCheck %s -check-prefix=znver2
+// znver2: "-target-cpu" "znver2"

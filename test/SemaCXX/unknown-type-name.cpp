@@ -72,9 +72,7 @@ void f(int, T::type x, char) { } // expected-error{{missing 'typename'}}
 
 int *p;
 
-// FIXME: We should assume that 'undeclared' is a type, not a parameter name
-//        here, and produce an 'unknown type name' diagnostic instead.
-int f1(undeclared, int); // expected-error{{requires a type specifier}}
+int f1(undeclared, int); // expected-error{{unknown type name 'undeclared'}}
 
 int f2(undeclared, 0); // expected-error{{undeclared identifier}}
 
@@ -95,7 +93,10 @@ template<typename T> int A<T>::h(T::type x, char) {} // expected-error{{missing 
 template<typename T> int h(T::type, int); // expected-error{{missing 'typename'}}
 template<typename T> int h(T::type x, char); // expected-error{{missing 'typename'}}
 
-template<typename T> int junk1(T::junk); // expected-warning{{variable templates are a C++14 extension}}
+template<typename T> int junk1(T::junk);
+#if __cplusplus <= 201103L
+// expected-warning@-2 {{variable templates are a C++14 extension}}
+#endif
 template<typename T> int junk2(T::junk) throw(); // expected-error{{missing 'typename'}}
 template<typename T> int junk3(T::junk) = delete; // expected-error{{missing 'typename'}}
 #if __cplusplus <= 199711L
@@ -106,7 +107,11 @@ template<typename T> int junk4(T::junk j); // expected-error{{missing 'typename'
 
 // FIXME: We can tell this was intended to be a function because it does not
 //        have a dependent nested name specifier.
-template<typename T> int i(T::type, int()); // expected-warning{{variable templates are a C++14 extension}}
+template<typename T> int i(T::type, int());
+#if __cplusplus <= 201103L
+// expected-warning@-2 {{variable templates are a C++14 extension}}
+#endif
+
 
 // FIXME: We know which type specifier should have been specified here. Provide
 //        a fix-it to add 'typename A<T>::type'

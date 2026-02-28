@@ -1,9 +1,8 @@
 //===--- Hexagon.cpp - Implement Hexagon target feature support -----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -25,14 +24,7 @@ void HexagonTargetInfo::getTargetDefines(const LangOptions &Opts,
   Builder.defineMacro("__qdsp6__", "1");
   Builder.defineMacro("__hexagon__", "1");
 
-  if (CPU == "hexagonv4") {
-    Builder.defineMacro("__HEXAGON_V4__");
-    Builder.defineMacro("__HEXAGON_ARCH__", "4");
-    if (Opts.HexagonQdsp6Compat) {
-      Builder.defineMacro("__QDSP6_V4__");
-      Builder.defineMacro("__QDSP6_ARCH__", "4");
-    }
-  } else if (CPU == "hexagonv5") {
+  if (CPU == "hexagonv5") {
     Builder.defineMacro("__HEXAGON_V5__");
     Builder.defineMacro("__HEXAGON_ARCH__", "5");
     if (Opts.HexagonQdsp6Compat) {
@@ -52,6 +44,12 @@ void HexagonTargetInfo::getTargetDefines(const LangOptions &Opts,
   } else if (CPU == "hexagonv62") {
     Builder.defineMacro("__HEXAGON_V62__");
     Builder.defineMacro("__HEXAGON_ARCH__", "62");
+  } else if (CPU == "hexagonv65") {
+    Builder.defineMacro("__HEXAGON_V65__");
+    Builder.defineMacro("__HEXAGON_ARCH__", "65");
+  } else if (CPU == "hexagonv66") {
+    Builder.defineMacro("__HEXAGON_V66__");
+    Builder.defineMacro("__HEXAGON_ARCH__", "66");
   }
 
   if (hasFeature("hvx-length64b")) {
@@ -72,7 +70,6 @@ void HexagonTargetInfo::getTargetDefines(const LangOptions &Opts,
 bool HexagonTargetInfo::initFeatureMap(
     llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags, StringRef CPU,
     const std::vector<std::string> &FeaturesVec) const {
-  Features["hvx-double"] = false;
   Features["long-calls"] = false;
 
   return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
@@ -129,6 +126,10 @@ const Builtin::Info HexagonTargetInfo::BuiltinInfo[] = {
 };
 
 bool HexagonTargetInfo::hasFeature(StringRef Feature) const {
+  std::string VS = "hvxv" + HVXVersion;
+  if (Feature == VS)
+    return true;
+
   return llvm::StringSwitch<bool>(Feature)
       .Case("hexagon", true)
       .Case("hvx", HasHVX)
@@ -138,14 +139,29 @@ bool HexagonTargetInfo::hasFeature(StringRef Feature) const {
       .Default(false);
 }
 
+struct CPUSuffix {
+  llvm::StringLiteral Name;
+  llvm::StringLiteral Suffix;
+};
+
+static constexpr CPUSuffix Suffixes[] = {
+    {{"hexagonv5"},  {"5"}},  {{"hexagonv55"}, {"55"}},
+    {{"hexagonv60"}, {"60"}}, {{"hexagonv62"}, {"62"}},
+    {{"hexagonv65"}, {"65"}}, {{"hexagonv66"}, {"66"}},
+};
+
 const char *HexagonTargetInfo::getHexagonCPUSuffix(StringRef Name) {
-  return llvm::StringSwitch<const char *>(Name)
-      .Case("hexagonv4", "4")
-      .Case("hexagonv5", "5")
-      .Case("hexagonv55", "55")
-      .Case("hexagonv60", "60")
-      .Case("hexagonv62", "62")
-      .Default(nullptr);
+  const CPUSuffix *Item = llvm::find_if(
+      Suffixes, [Name](const CPUSuffix &S) { return S.Name == Name; });
+  if (Item == std::end(Suffixes))
+    return nullptr;
+  return Item->Suffix.data();
+}
+
+void HexagonTargetInfo::fillValidCPUList(
+    SmallVectorImpl<StringRef> &Values) const {
+  for (const CPUSuffix &Suffix : Suffixes)
+    Values.push_back(Suffix.Name);
 }
 
 ArrayRef<Builtin::Info> HexagonTargetInfo::getTargetBuiltins() const {

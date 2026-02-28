@@ -45,7 +45,7 @@ Experimental support for :ref:`cross-DSO control flow integrity
 <cfi-cross-dso>` exists that does not require classes to have hidden LTO
 visibility. This cross-DSO support has unstable ABI at this time.
 
-.. _gold plugin: http://llvm.org/docs/GoldPlugin.html
+.. _gold plugin: https://llvm.org/docs/GoldPlugin.html
 
 .. _cfi-schemes:
 
@@ -66,6 +66,8 @@ Available schemes are:
      wrong dynamic type.
   -  ``-fsanitize=cfi-icall``: Indirect call of a function with wrong dynamic
      type.
+  -  ``-fsanitize=cfi-mfcall``: Indirect call via a member function pointer with
+     wrong dynamic type.
 
 You can use ``-fsanitize=cfi`` to enable all the schemes and use
 ``-fno-sanitize`` flag to narrow down the set of schemes as desired.
@@ -106,8 +108,9 @@ This CFI scheme can be enabled on its own using ``-fsanitize=cfi-vcall``.
 
 For this scheme to work, all translation units containing the definition
 of a virtual member function (whether inline or not), other than members
-of :ref:`blacklisted <cfi-blacklist>` types, must be compiled with
-``-fsanitize=cfi-vcall`` enabled and be statically linked into the program.
+of :ref:`blacklisted <cfi-blacklist>` types or types with public :doc:`LTO
+visibility <LTOVisibility>`, must be compiled with ``-flto`` or ``-flto=thin``
+enabled and be statically linked into the program.
 
 Performance
 -----------
@@ -152,9 +155,9 @@ functions may be :ref:`blacklisted <cfi-blacklist>`.
 
 For this scheme to work, all translation units containing the definition
 of a virtual member function (whether inline or not), other than members
-of :ref:`blacklisted <cfi-blacklist>` types, must be compiled with
-``-fsanitize=cfi-derived-cast`` or ``-fsanitize=cfi-unrelated-cast`` enabled
-and be statically linked into the program.
+of :ref:`blacklisted <cfi-blacklist>` types or types with public :doc:`LTO
+visibility <LTOVisibility>`, must be compiled with ``-flto`` or ``-flto=thin``
+enabled and be statically linked into the program.
 
 Non-Virtual Member Function Call Checking
 =========================================
@@ -168,8 +171,9 @@ polymorphic class type.  This CFI scheme can be enabled on its own using
 
 For this scheme to work, all translation units containing the definition
 of a virtual member function (whether inline or not), other than members
-of :ref:`blacklisted <cfi-blacklist>` types, must be compiled with
-``-fsanitize=cfi-nvcall`` enabled and be statically linked into the program.
+of :ref:`blacklisted <cfi-blacklist>` types or types with public :doc:`LTO
+visibility <LTOVisibility>`, must be compiled with ``-flto`` or ``-flto=thin``
+enabled and be statically linked into the program.
 
 .. _cfi-strictness:
 
@@ -224,13 +228,61 @@ flag relax pointer type checking for call sites in that translation unit,
 applied across all functions compiled with ``-fsanitize=cfi-icall``.
 
 Specifically, pointers in return and argument types are treated as equivalent as
-long as the qualifiers for the type they point to match. For example, ``char*``
-``char**`, and ``int*`` are considered equivalent types. However, ``char*`` and
+long as the qualifiers for the type they point to match. For example, ``char*``,
+``char**``, and ``int*`` are considered equivalent types. However, ``char*`` and
 ``const char*`` are considered separate types.
 
 ``-fsanitize-cfi-icall-generalize-pointers`` is not compatible with
 ``-fsanitize-cfi-cross-dso``.
 
+.. _cfi-canonical-jump-tables:
+
+``-fsanitize-cfi-canonical-jump-tables``
+----------------------------------------
+
+The default behavior of Clang's indirect function call checker will replace
+the address of each CFI-checked function in the output file's symbol table
+with the address of a jump table entry which will pass CFI checks. We refer
+to this as making the jump table `canonical`. This property allows code that
+was not compiled with ``-fsanitize=cfi-icall`` to take a CFI-valid address
+of a function, but it comes with a couple of caveats that are especially
+relevant for users of cross-DSO CFI:
+
+- There is a performance and code size overhead associated with each
+  exported function, because each such function must have an associated
+  jump table entry, which must be emitted even in the common case where the
+  function is never address-taken anywhere in the program, and must be used
+  even for direct calls between DSOs, in addition to the PLT overhead.
+
+- There is no good way to take a CFI-valid address of a function written in
+  assembly or a language not supported by Clang. The reason is that the code
+  generator would need to insert a jump table in order to form a CFI-valid
+  address for assembly functions, but there is no way in general for the
+  code generator to determine the language of the function. This may be
+  possible with LTO in the intra-DSO case, but in the cross-DSO case the only
+  information available is the function declaration. One possible solution
+  is to add a C wrapper for each assembly function, but these wrappers can
+  present a significant maintenance burden for heavy users of assembly in
+  addition to adding runtime overhead.
+
+For these reasons, we provide the option of making the jump table non-canonical
+with the flag ``-fno-sanitize-cfi-canonical-jump-tables``. When the jump
+table is made non-canonical, symbol table entries point directly to the
+function body. Any instances of a function's address being taken in C will
+be replaced with a jump table address.
+
+This scheme does have its own caveats, however. It does end up breaking
+function address equality more aggressively than the default behavior,
+especially in cross-DSO mode which normally preserves function address
+equality entirely.
+
+Furthermore, it is occasionally necessary for code not compiled with
+``-fsanitize=cfi-icall`` to take a function address that is valid
+for CFI. For example, this is necessary when a function's address
+is taken by assembly code and then called by CFI-checking C code. The
+``__attribute__((cfi_canonical_jump_table))`` attribute may be used to make
+the jump table entry of a specific function canonical so that the external
+code will end up taking a address for the function that will pass CFI checks.
 
 ``-fsanitize=cfi-icall`` and ``-fsanitize=function``
 ----------------------------------------------------
@@ -252,6 +304,34 @@ standard and user expectations around interaction with shared libraries;
 the identity of function pointers is maintained, and calls across shared
 library boundaries are no different from calls within a single program or
 shared library.
+
+Member Function Pointer Call Checking
+=====================================
+
+This scheme checks that indirect calls via a member function pointer
+take place using an object of the correct dynamic type. Specifically, we
+check that the dynamic type of the member function referenced by the member
+function pointer matches the "function pointer" part of the member function
+pointer, and that the member function's class type is related to the base
+type of the member function. This CFI scheme can be enabled on its own using
+``-fsanitize=cfi-mfcall``.
+
+The compiler will only emit a full CFI check if the member function pointer's
+base type is complete. This is because the complete definition of the base
+type contains information that is necessary to correctly compile the CFI
+check. To ensure that the compiler always emits a full CFI check, it is
+recommended to also pass the flag ``-fcomplete-member-pointers``, which
+enables a non-conforming language extension that requires member pointer
+base types to be complete if they may be used for a call.
+
+For this scheme to work, all translation units containing the definition
+of a virtual member function (whether inline or not), other than members
+of :ref:`blacklisted <cfi-blacklist>` types or types with public :doc:`LTO
+visibility <LTOVisibility>`, must be compiled with ``-flto`` or ``-flto=thin``
+enabled and be statically linked into the program.
+
+This scheme is currently not compatible with cross-DSO CFI or the
+Microsoft ABI.
 
 .. _cfi-blacklist:
 
@@ -303,7 +383,7 @@ Please refer to the :doc:`design document<ControlFlowIntegrityDesign>`.
 Publications
 ============
 
-`Control-Flow Integrity: Principles, Implementations, and Applications <http://research.microsoft.com/pubs/64250/ccs05.pdf>`_.
+`Control-Flow Integrity: Principles, Implementations, and Applications <https://research.microsoft.com/pubs/64250/ccs05.pdf>`_.
 Martin Abadi, Mihai Budiu, Úlfar Erlingsson, Jay Ligatti.
 
 `Enforcing Forward-Edge Control-Flow Integrity in GCC & LLVM <http://www.pcc.me.uk/~peter/acad/usenix14.pdf>`_.

@@ -225,6 +225,16 @@ Command-line parameters
 ``-fprebuilt-module-path=<directory>``
   Specify the path to the prebuilt modules. If specified, we will look for modules in this directory for a given top-level module name. We don't need a module map for loading prebuilt modules in this directory and the compiler will not try to rebuild these modules. This can be specified multiple times.
 
+-cc1 Options
+~~~~~~~~~~~~
+
+``-fmodules-strict-context-hash``
+  Enables hashing of all compiler options that could impact the semantics of a
+  module in an implicit build. This includes things such as header search paths
+  and diagnostics. Using this option may lead to an excessive number of modules
+  being built if the command line arguments are not homogeneous across your
+  build.
+
 Module Semantics
 ================
 
@@ -360,7 +370,7 @@ The *module-id* should consist of only a single *identifier*, which provides the
 
 The ``explicit`` qualifier can only be applied to a submodule, i.e., a module that is nested within another module. The contents of explicit submodules are only made available when the submodule itself was explicitly named in an import declaration or was re-exported from an imported module.
 
-The ``framework`` qualifier specifies that this module corresponds to a Darwin-style framework. A Darwin-style framework (used primarily on Mac OS X and iOS) is contained entirely in directory ``Name.framework``, where ``Name`` is the name of the framework (and, therefore, the name of the module). That directory has the following layout:
+The ``framework`` qualifier specifies that this module corresponds to a Darwin-style framework. A Darwin-style framework (used primarily on macOS and iOS) is contained entirely in directory ``Name.framework``, where ``Name`` is the name of the framework (and, therefore, the name of the module). That directory has the following layout:
 
 .. parsed-literal::
 
@@ -411,7 +421,7 @@ A *requires-declaration* specifies the requirements that an importing translatio
   *feature*:
     ``!``:sub:`opt` *identifier*
 
-The requirements clause allows specific modules or submodules to specify that they are only accessible with certain language dialects or on certain platforms. The feature list is a set of identifiers, defined below. If any of the features is not available in a given translation unit, that translation unit shall not import the module. When building a module for use by a compilation, submodules requiring unavailable features are ignored. The optional ``!`` indicates that a feature is incompatible with the module.
+The requirements clause allows specific modules or submodules to specify that they are only accessible with certain language dialects, platforms, environments and target specific features. The feature list is a set of identifiers, defined below. If any of the features is not available in a given translation unit, that translation unit shall not import the module. When building a module for use by a compilation, submodules requiring unavailable features are ignored. The optional ``!`` indicates that a feature is incompatible with the module.
 
 The following features are defined:
 
@@ -429,6 +439,21 @@ cplusplus
 
 cplusplus11
   C++11 support is available.
+
+cplusplus14
+  C++14 support is available.
+
+cplusplus17
+  C++17 support is available.
+
+c99
+  C99 support is available.
+
+c11
+  C11 support is available.
+
+c17
+  C17 support is available.
 
 freestanding
   A freestanding environment is available.
@@ -451,6 +476,11 @@ tls
 *target feature*
   A specific target feature (e.g., ``sse4``, ``avx``, ``neon``) is available.
 
+*platform/os*
+  A os/platform variant (e.g. ``freebsd``, ``win32``, ``windows``, ``linux``, ``ios``, ``macos``, ``iossimulator``) is available.
+
+*environment*
+  A environment variant (e.g. ``gnu``, ``gnueabi``, ``android``, ``msvc``) is available.
 
 **Example:** The ``std`` module can be extended to also include C++ and C++11 headers using a *requires-declaration*:
 
@@ -859,10 +889,12 @@ express this with a single module map file in the library:
 
   module Foo {
     header "Foo.h"
-    
-    explicit module Private {
-      header "Foo_Private.h"
-    }
+    ...
+  }
+
+  module Foo_Private {
+    header "Foo_Private.h"
+    ...
   }
 
 
@@ -873,7 +905,7 @@ build machinery.
 
 Private module map files, which are named ``module.private.modulemap``
 (or, for backward compatibility, ``module_private.map``), allow one to
-augment the primary module map file with an additional submodule. For
+augment the primary module map file with an additional modules. For
 example, we would split the module map file above into two module map
 files:
 
@@ -883,9 +915,9 @@ files:
   module Foo {
     header "Foo.h"
   }
-  
+
   /* module.private.modulemap */
-  explicit module Foo.Private {
+  module Foo_Private {
     header "Foo_Private.h"
   }
 
@@ -899,13 +931,12 @@ boundaries.
 
 When writing a private module as part of a *framework*, it's recommended that:
 
-* Headers for this module are present in the ``PrivateHeaders``
-  framework subdirectory.
-* The private module is defined as a *submodule* of the public framework (if
-  there's one), similar to how ``Foo.Private`` is defined in the example above.
-* The ``explicit`` keyword should be used to guarantee that its content will
-  only be available when the submodule itself is explicitly named (through a
-  ``@import`` for example).
+* Headers for this module are present in the ``PrivateHeaders`` framework
+  subdirectory.
+* The private module is defined as a *top level module* with the name of the
+  public framework prefixed, like ``Foo_Private`` above. Clang has extra logic
+  to work with this naming, using ``FooPrivate`` or ``Foo.Private`` (submodule)
+  trigger warnings and might not work as expected.
 
 Modularizing a Platform
 =======================

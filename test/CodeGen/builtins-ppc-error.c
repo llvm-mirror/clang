@@ -2,10 +2,19 @@
 
 // RUN: %clang_cc1 -target-feature +altivec -target-feature +power9-vector \
 // RUN:   -triple powerpc64-unknown-unknown -fsyntax-only   \
+// RUN: -flax-vector-conversions=integer \
 // RUN: -Wall -Werror -verify %s
 
 // RUN: %clang_cc1 -target-feature +altivec -target-feature +power9-vector  \
 // RUN: -triple powerpc64le-unknown-unknown -fsyntax-only    \
+// RUN: -flax-vector-conversions=integer \
+// RUN: -Wall -Werror -verify %s
+
+// FIXME: Fix <altivec.h> so this test also passes under
+// -flax-vector-conversions=none (this last test exists to produce an error if
+// we change the default to that without fixing <altivec.h>).
+// RUN: %clang_cc1 -target-feature +altivec -target-feature +power9-vector \
+// RUN:   -triple powerpc64-unknown-unknown -fsyntax-only   \
 // RUN: -Wall -Werror -verify %s
 
 #include <altivec.h>
@@ -14,6 +23,7 @@ extern vector signed int vsi;
 extern vector signed int vui;
 extern vector float vf;
 extern vector unsigned char vuc;
+extern vector signed __int128 vsllli;
 
 void testInsertWord(void) {
   int index = 5;
@@ -66,4 +76,25 @@ void testCTU(int index) {
 
 void testVCTUXS(int index) {
   vec_vctuxs(vf, index); //expected-error {{argument to '__builtin_altivec_vctuxs' must be a constant integer}}
+}
+
+void testUnpack128(int index) {
+  __builtin_unpack_vector_int128(vsllli, index); //expected-error {{argument to '__builtin_unpack_vector_int128' must be a constant integer}}
+  __builtin_unpack_vector_int128(vsllli, 5); //expected-error {{argument value 5 is outside the valid range [0, 1]}}
+}
+
+void testDSS(int index) {
+  vec_dss(index); //expected-error {{argument to '__builtin_altivec_dss' must be a constant integer}}
+  vec_dss(5); //expected-error {{argument value 5 is outside the valid range [0, 3]}}
+}
+
+void testDST(int index) {
+  vec_dst(&vsi, index, index); //expected-error {{argument to '__builtin_altivec_dst' must be a constant integer}}
+  vec_dst(&vsi, index, 5); //expected-error {{argument value 5 is outside the valid range [0, 3]}}
+  vec_dstt(&vsi, index, index); //expected-error {{argument to '__builtin_altivec_dstt' must be a constant integer}}
+  vec_dstt(&vsi, index, 5); //expected-error {{argument value 5 is outside the valid range [0, 3]}}
+  vec_dstst(&vsi, index, index); //expected-error {{argument to '__builtin_altivec_dstst' must be a constant integer}}
+  vec_dstst(&vsi, index, 5); //expected-error {{argument value 5 is outside the valid range [0, 3]}}
+  vec_dststt(&vsi, index, index); //expected-error {{argument to '__builtin_altivec_dststt' must be a constant integer}}
+  vec_dststt(&vsi, index, 5); //expected-error {{argument value 5 is outside the valid range [0, 3]}}
 }

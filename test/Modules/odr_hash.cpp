@@ -25,7 +25,9 @@
 // RUN: echo "}"                        >> %t/Inputs/module.map
 
 // Run test
-// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -fmodules-cache-path=%t/cache -x c++ -I%t/Inputs -verify %s -std=c++1z
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x c++ -std=c++1z \
+// RUN:   -fmodules -fimplicit-module-maps -fmodules-cache-path=%t/cache \
+// RUN:   -I%t/Inputs -verify %s
 
 #if !defined(FIRST) && !defined(SECOND)
 #include "first.h"
@@ -557,11 +559,11 @@ S10 s10;
 
 #if defined(FIRST)
 struct S11 {
-  void A(int x) {}
+  void A(int x);
 };
 #elif defined(SECOND)
 struct S11 {
-  void A(int y) {}
+  void A(int y);
 };
 #else
 S11 s11;
@@ -571,11 +573,11 @@ S11 s11;
 
 #if defined(FIRST)
 struct S12 {
-  void A(int x) {}
+  void A(int x);
 };
 #elif defined(SECOND)
 struct S12 {
-  void A(int x = 1) {}
+  void A(int x = 1);
 };
 #else
 S12 s12;
@@ -585,11 +587,11 @@ S12 s12;
 
 #if defined(FIRST)
 struct S13 {
-  void A(int x = 1 + 0) {}
+  void A(int x = 1 + 0);
 };
 #elif defined(SECOND)
 struct S13 {
-  void A(int x = 1) {}
+  void A(int x = 1);
 };
 #else
 S13 s13;
@@ -599,11 +601,11 @@ S13 s13;
 
 #if defined(FIRST)
 struct S14 {
-  void A(int x[2]) {}
+  void A(int x[2]);
 };
 #elif defined(SECOND)
 struct S14 {
-  void A(int x[3]) {}
+  void A(int x[3]);
 };
 #else
 S14 s14;
@@ -659,6 +661,202 @@ Invalid1* i1;
 #endif
 #undef DECLS
 }  // namespace Method
+
+namespace MethodBody {
+#if defined(FIRST)
+struct S1 {
+  int A() { return 0; }
+};
+#elif defined(SECOND)
+struct S1 {
+  int A() { return 0; }
+};
+#else
+S1 s1;
+#endif
+
+#if defined(FIRST)
+struct S2 {
+  int BothBodies() { return 0; }
+};
+#elif defined(SECOND)
+struct S2 {
+  int BothBodies() { return 1; }
+};
+#else
+S2 s2;
+// expected-error@first.h:* {{'MethodBody::S2' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'BothBodies' with body}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'BothBodies' with different body}}
+#endif
+
+#if defined(FIRST)
+struct S3 {
+  int FirstBody() { return 0; }
+};
+#elif defined(SECOND)
+struct S3 {
+  int FirstBody();
+};
+#else
+S3 s3;
+// expected-error@first.h:* {{'MethodBody::S3' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'FirstBody' with body}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'FirstBody' with no body}}
+#endif
+
+#if defined(FIRST)
+struct S4 {
+  int SecondBody();
+};
+#elif defined(SECOND)
+struct S4 {
+  int SecondBody() { return 0; }
+};
+#else
+S4 s4;
+// expected-error@first.h:* {{'MethodBody::S4' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'SecondBody' with no body}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'SecondBody' with body}}
+#endif
+
+#if defined(FIRST)
+struct S5 {
+  int FirstBodySecondOutOfLine() { return 0; }
+};
+#elif defined(SECOND)
+struct S5 {
+  int FirstBodySecondOutOfLine();
+};
+int S5::FirstBodySecondOutOfLine() { return 0; }
+#else
+S5 s5;
+// expected-error@second.h:* {{'MethodBody::S5' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'FirstBodySecondOutOfLine' with no body}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'FirstBodySecondOutOfLine' with body}}
+#endif
+
+#if defined(FIRST)
+struct S6 {
+  int FirstOutOfLineSecondBody();
+};
+int S6::FirstOutOfLineSecondBody() { return 0; }
+#elif defined(SECOND)
+struct S6 {
+  int FirstOutOfLineSecondBody() { return 0; }
+};
+#else
+S6 s6;
+// expected-error@first.h:* {{'MethodBody::S6' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'FirstOutOfLineSecondBody' with no body}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'FirstOutOfLineSecondBody' with body}}
+#endif
+
+#if defined(FIRST)
+struct S7 {
+  int BothOutOfLine();
+};
+int S7::BothOutOfLine() { return 1; }
+#elif defined(SECOND)
+struct S7 {
+  int BothOutOfLine();
+};
+int S7::BothOutOfLine() { return 0; }
+#else
+S7 s7;
+// expected-error@second.h:* {{'MethodBody::S7::BothOutOfLine' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+#endif
+
+#if defined(FIRST)
+struct S8 {
+  int FirstBodySecondOutOfLine() { return 0; }
+};
+#elif defined(SECOND)
+struct S8 {
+  int FirstBodySecondOutOfLine();
+};
+int S8::FirstBodySecondOutOfLine() { return 1; }
+#else
+S8 s8;
+// expected-error@second.h:* {{'MethodBody::S8' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'FirstBodySecondOutOfLine' with no body}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'FirstBodySecondOutOfLine' with body}}
+#endif
+
+#if defined(FIRST)
+struct S9 {
+  int FirstOutOfLineSecondBody();
+};
+int S9::FirstOutOfLineSecondBody() { return 1; }
+#elif defined(SECOND)
+struct S9 {
+  int FirstOutOfLineSecondBody() { return 0; }
+};
+#else
+S9 s9;
+// expected-error@first.h:* {{'MethodBody::S9' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'FirstOutOfLineSecondBody' with no body}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'FirstOutOfLineSecondBody' with body}}
+#endif
+
+#if defined(FIRST)
+struct S10 {
+  S10(int);
+  S10() = delete;
+};
+#elif defined(SECOND)
+struct S10 {
+  S10(int);
+  S10();
+};
+#else
+S10 s10(10);
+// expected-error@first.h:* {{'MethodBody::S10' has different definitions in different modules; first difference is definition in module 'FirstModule' found constructor is deleted}}
+// expected-note@second.h:* {{but in 'SecondModule' found constructor is not deleted}}
+#endif
+
+#if defined(FIRST)
+struct S11 {
+  S11() = default;
+};
+#elif defined(SECOND)
+struct S11 {
+  S11();
+};
+#else
+S11 s11;
+// expected-error@first.h:* {{'MethodBody::S11' has different definitions in different modules; first difference is definition in module 'FirstModule' found constructor is defaulted}}
+// expected-note@second.h:* {{but in 'SecondModule' found constructor is not defaulted}}
+#endif
+
+#define DECLS(CLASSNAME) \
+  CLASSNAME() = default; \
+  ~CLASSNAME() = delete; \
+  void A();              \
+  void B() { return; };  \
+  void C();              \
+  void D();
+
+#define OUTOFLINEDEFS(CLASSNAME) \
+  void CLASSNAME::C() {}         \
+  void CLASSNAME::D() { return; }
+
+#if defined(FIRST) || defined(SECOND)
+struct Valid1 {
+  DECLS(Valid1)
+};
+OUTOFLINEDEFS(Valid1)
+#else
+Valid1* v1;
+#endif
+
+#if defined(FIRST) || defined(SECOND)
+struct Invalid1 {
+  DECLS(Invalid1)
+  ACCESS
+};
+OUTOFLINEDEFS(Invalid1)
+#else
+Invalid1* i1;
+// expected-error@first.h:* {{'MethodBody::Invalid1' has different definitions in different modules; first difference is definition in module 'FirstModule' found public access specifier}}
+// expected-note@second.h:* {{but in 'SecondModule' found private access specifier}}
+#endif
+#undef DECLS
+}  // namespace MethodBody
 
 namespace Constructor {
 #if defined(FIRST)
@@ -1635,6 +1833,96 @@ S6 s6;
 // expected-note@first.h:* {{but in 'FirstModule' found field 'x'}}
 #endif
 
+#if defined(FIRST)
+struct S7 {
+  template<int> void run() {}
+  template<> void run<1>() {}
+};
+#elif defined(SECOND)
+struct S7 {
+  template<int> void run() {}
+  void run() {}
+};
+#else
+S7 s7;
+// expected-error@second.h:* {{'TemplateArgument::S7' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'run' with no template arguments}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'run' with template arguments}}
+#endif
+
+#if defined(FIRST)
+struct S8 {
+  static int a, b;
+  template<int&> void run() {}
+  template<int&, int&> void run() {}
+  template<> void run<a>() {}
+};
+#elif defined(SECOND)
+struct S8 {
+  static int a, b;
+  template<int&> void run() {}
+  template<int&, int&> void run() {}
+  template<> void run<a, b>() {}
+};
+#else
+S8 s8;
+// expected-error@second.h:* {{'TemplateArgument::S8' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'run' with 2 template arguments}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'run' with 1 template argument}}
+#endif
+
+#if defined(FIRST)
+struct S9 {
+  static int a, b;
+  template<int&> void run() {}
+  template<> void run<a>() {}
+};
+#elif defined(SECOND)
+struct S9 {
+  static int a, b;
+  template<int&> void run() {}
+  template<> void run<b>() {}
+};
+#else
+S9 s9;
+// expected-error@second.h:* {{'TemplateArgument::S9' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'run' with 'b' for 1st template argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'run' with 'a' for 1st template argument}}
+#endif
+
+#if defined(FIRST)
+struct S10 {
+  static int a, b;
+  template<int, int&...> void run() {}
+  template<> void run<1, a>() {}
+};
+#elif defined(SECOND)
+struct S10 {
+  static int a, b;
+  template<int, int&...> void run() {}
+  template<> void run<1, b>() {}
+};
+#else
+S10 s10;
+// expected-error@second.h:* {{'TemplateArgument::S10' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'run' with 'b' for 2nd template argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'run' with 'a' for 2nd template argument}}
+#endif
+
+#if defined(FIRST)
+struct S11 {
+  static int a, b;
+  template<int, int&...> void run() {}
+  template<> void run<1, a>() {}
+};
+#elif defined(SECOND)
+struct S11 {
+  static int a, b;
+  template<int, int&...> void run() {}
+  template<> void run<1, a, a>() {}
+};
+#else
+S11 s11;
+// expected-error@second.h:* {{'TemplateArgument::S11' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'run' with 3 template arguments}}
+// expected-note@first.h:* {{but in 'FirstModule' found method 'run' with 2 template arguments}}
+#endif
+
 #define DECLS                   \
   OneClass<int> a;              \
   OneInt<1> b;                  \
@@ -1642,7 +1930,20 @@ S6 s6;
   using d = OneInt<2>;          \
   using e = OneInt<2 + 2>;      \
   OneTemplateClass<OneClass> f; \
-  OneTemplateInt<OneInt> g;
+  OneTemplateInt<OneInt> g;     \
+  static int i1, i2;            \
+  template <int &>              \
+  void Function() {}            \
+  template <int &, int &>       \
+  void Function() {}            \
+  template <>                   \
+  void Function<i1>() {}        \
+  template <>                   \
+  void Function<i2>() {}        \
+  template <>                   \
+  void Function<i1, i2>() {}    \
+  template <>                   \
+  void Function<i2, i1>() {}
 
 #if defined(FIRST) || defined(SECOND)
 template <class> struct OneClass{};
@@ -1945,22 +2246,6 @@ S2 s2;
 #endif
 
 #if defined(FIRST)
-struct T3 {};
-struct S3 {
-  friend const T3;
-};
-#elif defined(SECOND)
-struct T3 {};
-struct S3 {
-  friend T3;
-};
-#else
-S3 s3;
-// expected-error@second.h:* {{'Friend::S3' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend 'Friend::T3'}}
-// expected-note@first.h:* {{but in 'FirstModule' found friend 'const Friend::T3'}}
-#endif
-
-#if defined(FIRST)
 struct T4 {};
 struct S4 {
   friend T4;
@@ -1993,14 +2278,12 @@ S5 s5;
   friend class FriendA;  \
   friend struct FriendB; \
   friend FriendC;        \
-  friend const FriendD;  \
   friend void Function();
 
 #if defined(FIRST) || defined(SECOND)
 class FriendA {};
 class FriendB {};
 class FriendC {};
-class FriendD {};
 #endif
 
 #if defined(FIRST) || defined(SECOND)
@@ -2286,6 +2569,1299 @@ Invalid1 i1;
 #undef DECLS
 }  // namespace BaseClass
 
+namespace PointersAndReferences {
+#if defined(FIRST) || defined(SECOND)
+template<typename> struct Wrapper{};
+#endif
+
+#if defined(FIRST)
+struct S1 {
+  Wrapper<int*> x;
+};
+#elif defined(SECOND)
+struct S1 {
+  Wrapper<float*> x;
+};
+#else
+S1 s1;
+// expected-error@first.h:* {{PointersAndReferences::S1::x' from module 'FirstModule' is not present in definition of 'PointersAndReferences::S1' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S2 {
+  Wrapper<int &&> x;
+};
+#elif defined(SECOND)
+struct S2 {
+  Wrapper<float &&> x;
+};
+#else
+S2 s2;
+// expected-error@first.h:* {{PointersAndReferences::S2::x' from module 'FirstModule' is not present in definition of 'PointersAndReferences::S2' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S3 {
+  Wrapper<int *> x;
+};
+#elif defined(SECOND)
+struct S3 {
+  Wrapper<float *> x;
+};
+#else
+S3 s3;
+// expected-error@first.h:* {{PointersAndReferences::S3::x' from module 'FirstModule' is not present in definition of 'PointersAndReferences::S3' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S4 {
+  Wrapper<int &> x;
+};
+#elif defined(SECOND)
+struct S4 {
+  Wrapper<float &> x;
+};
+#else
+S4 s4;
+// expected-error@first.h:* {{PointersAndReferences::S4::x' from module 'FirstModule' is not present in definition of 'PointersAndReferences::S4' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S5 {
+  Wrapper<S5 *> x;
+};
+#elif defined(SECOND)
+struct S5 {
+  Wrapper<const S5 *> x;
+};
+#else
+S5 s5;
+// expected-error@second.h:* {{'PointersAndReferences::S5::x' from module 'SecondModule' is not present in definition of 'PointersAndReferences::S5' in module 'FirstModule'}}
+// expected-note@first.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S6 {
+  Wrapper<int &> x;
+};
+#elif defined(SECOND)
+struct S6 {
+  Wrapper<const int &> x;
+};
+#else
+S6 s6;
+// expected-error@first.h:* {{PointersAndReferences::S6::x' from module 'FirstModule' is not present in definition of 'PointersAndReferences::S6' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#define DECLS                \
+  Wrapper<int *> x1;         \
+  Wrapper<float *> x2;       \
+  Wrapper<const float *> x3; \
+  Wrapper<int &> x4;         \
+  Wrapper<int &&> x5;        \
+  Wrapper<const int &> x6;   \
+  Wrapper<S1 *> x7;          \
+  Wrapper<S1 &> x8;          \
+  Wrapper<S1 &&> x9;
+
+#if defined(FIRST) || defined(SECOND)
+struct Valid1 {
+  DECLS
+};
+#else
+Valid1 v1;
+#endif
+
+#if defined(FIRST) || defined(SECOND)
+struct Invalid1 {
+  DECLS
+  ACCESS
+};
+#else
+Invalid1 i1;
+// expected-error@second.h:* {{'PointersAndReferences::Invalid1' has different definitions in different modules; first difference is definition in module 'SecondModule' found private access specifier}}
+// expected-note@first.h:* {{but in 'FirstModule' found public access specifier}}
+#endif
+#undef DECLS
+}  // namespace PointersAndReferences
+
+namespace FunctionTemplate {
+#if defined(FIRST)
+struct S1 {
+  template <int, int> void foo();
+};
+#elif defined(SECOND)
+struct S1 {
+  template <int> void foo();
+};
+#else
+S1 s1;
+// expected-error@first.h:* {{'FunctionTemplate::S1::foo' from module 'FirstModule' is not present in definition of 'FunctionTemplate::S1' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'foo' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S2 {
+  template <char> void foo();
+};
+#elif defined(SECOND)
+struct S2 {
+  template <int> void foo();
+};
+#else
+S2 s2;
+// expected-error@first.h:* {{'FunctionTemplate::S2::foo' from module 'FirstModule' is not present in definition of 'FunctionTemplate::S2' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'foo' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S3 {
+  template <int x> void foo();
+};
+#elif defined(SECOND)
+struct S3 {
+  template <int y> void foo();
+};
+#else
+S3 s3;
+// expected-error@second.h:* {{'FunctionTemplate::S3' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter named 'y'}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter named 'x'}}
+#endif
+
+#if defined(FIRST)
+struct S4 {
+  template <int x> void foo();
+};
+#elif defined(SECOND)
+struct S4 {
+  template <int x> void bar();
+};
+#else
+S4 s4;
+// expected-error@first.h:* {{'FunctionTemplate::S4::foo' from module 'FirstModule' is not present in definition of 'FunctionTemplate::S4' in module 'SecondModule'}}
+// expected-note@second.h:* {{definition has no member 'foo'}}
+#endif
+
+#if defined(FIRST)
+struct S5 {
+  template <int x> void foo();
+};
+#elif defined(SECOND)
+struct S5 {
+ public:
+  template <int x> void foo();
+};
+#else
+S5 s5;
+// expected-error@second.h:* {{'FunctionTemplate::S5' has different definitions in different modules; first difference is definition in module 'SecondModule' found public access specifier}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template}}
+#endif
+
+#if defined(FIRST)
+struct S6 {
+  template <typename x = int> void foo();
+};
+#elif defined(SECOND)
+struct S6 {
+  template <typename x> void foo();
+};
+#else
+S6 s6;
+// expected-error@second.h:* {{'FunctionTemplate::S6' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with no default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument}}
+#endif
+
+#if defined(FIRST)
+struct S7 {
+  template <typename x = void> void foo();
+};
+#elif defined(SECOND)
+struct S7 {
+  template <typename x = int> void foo();
+};
+#else
+S7 s7;
+// expected-error@second.h:* {{'FunctionTemplate::S7' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument 'int'}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument 'void'}}
+#endif
+
+#if defined(FIRST)
+template <int>
+struct U8 {};
+struct S8 {
+  template <template<int> class x = U8> void foo();
+};
+#elif defined(SECOND)
+template <int>
+struct T8 {};
+struct S8{
+  template <template<int> class x = T8> void foo();
+};
+#else
+S8 s8;
+// expected-error@second.h:* {{'FunctionTemplate::S8' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument 'T8'}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument 'U8'}}
+#endif
+
+#if defined(FIRST)
+template <int>
+struct U9 {};
+struct S9 { S9();
+  template <template<int> class x = U9> void foo();
+};
+#elif defined(SECOND)
+struct S9 { S9();
+  template <template<int> class x> void foo();
+};
+#else
+S9 s9;
+// expected-error@second.h:* {{'FunctionTemplate::S9' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with no default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument}}
+#endif
+
+#if defined(FIRST)
+struct S10 {
+  template <template<int> class x> void foo();
+  template <template<typename> class x> void foo();
+};
+#elif defined(SECOND)
+struct S10 {
+  template <template<typename> class x> void foo();
+  template <template<int> class x> void foo();
+};
+#else
+S10 s10;
+// expected-error@second.h:* {{'FunctionTemplate::S10' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with one type}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with different type}}
+#endif
+
+#if defined(FIRST)
+struct S11 {
+  template <template<int> class x> void foo();
+};
+#elif defined(SECOND)
+struct S11 {
+  template <template<int> class> void foo();
+};
+#else
+S11 s11;
+// expected-error@second.h:* {{'FunctionTemplate::S11' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with no name}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter named 'x'}}
+#endif
+
+#if defined(FIRST)
+struct S12 {
+  template <class> void foo();
+  template <class, class> void foo();
+};
+#elif defined(SECOND)
+struct S12 {
+  template <class, class> void foo();
+  template <class> void foo();
+};
+#else
+S12 s12;
+// expected-error@second.h:* {{'FunctionTemplate::S12' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 2 template parameters}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1 template parameter}}
+#endif
+
+#if defined(FIRST)
+struct S13 {
+  template <class = int> void foo();
+};
+#elif defined(SECOND)
+struct S13 {
+  template <class = void> void foo();
+};
+#else
+S13 s13;
+// expected-error@second.h:* {{'FunctionTemplate::S13' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument 'void'}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument 'int'}}
+#endif
+
+#if defined(FIRST)
+struct S14 {
+  template <class = void> void foo();
+};
+#elif defined(SECOND)
+struct S14 {
+  template <class> void foo();
+};
+#else
+S14 s14;
+// expected-error@second.h:* {{'FunctionTemplate::S14' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with no default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument}}
+#endif
+
+#if defined(FIRST)
+struct S15 {
+  template <class> void foo();
+};
+#elif defined(SECOND)
+struct S15 {
+  template <class = void> void foo();
+};
+#else
+S15 s15;
+// expected-error@second.h:* {{'FunctionTemplate::S15' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with no default argument}}
+#endif
+
+#if defined(FIRST)
+struct S16 {
+  template <short> void foo();
+};
+#elif defined(SECOND)
+struct S16 {
+  template <short = 1> void foo();
+};
+#else
+S16 s16;
+// expected-error@second.h:* {{'FunctionTemplate::S16' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with no default argument}}
+#endif
+
+#if defined(FIRST)
+struct S17 {
+  template <short = 2> void foo();
+};
+#elif defined(SECOND)
+struct S17 {
+  template <short = 1 + 1> void foo();
+};
+#else
+S17 s17;
+// expected-error@second.h:* {{'FunctionTemplate::S17' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with default argument 1 + 1}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with default argument 2}}
+#endif
+
+#if defined(FIRST)
+struct S18 {
+  template <short> void foo();
+  template <int> void foo();
+};
+#elif defined(SECOND)
+struct S18 {
+  template <int> void foo();
+  template <short> void foo();
+};
+#else
+S18 s18;
+// expected-error@second.h:* {{'FunctionTemplate::S18' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter with one type}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter with different type}}
+#endif
+
+#if defined(FIRST)
+struct S19 {
+  template <short> void foo();
+  template <short...> void foo();
+};
+#elif defined(SECOND)
+struct S19 {
+  template <short...> void foo();
+  template <short> void foo();
+};
+#else
+S19 s19;
+// expected-error@second.h:* {{'FunctionTemplate::S19' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter being a template parameter pack}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter not being a template parameter pack}}
+#endif
+
+#if defined(FIRST)
+struct S20 {
+  template <class> void foo();
+  template <class...> void foo();
+};
+#elif defined(SECOND)
+struct S20 {
+  template <class...> void foo();
+  template <class> void foo();
+};
+#else
+S20 s20;
+// expected-error@second.h:* {{'FunctionTemplate::S20' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter being a template parameter pack}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter not being a template parameter pack}}
+#endif
+
+#if defined(FIRST)
+struct S21 {
+  template <template<class> class...> void foo();
+  template <template<class> class> void foo();
+};
+#elif defined(SECOND)
+struct S21 {
+  template <template<class> class> void foo();
+  template <template<class> class...> void foo();
+};
+#else
+S21 s21;
+// expected-error@second.h:* {{'FunctionTemplate::S21' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter not being a template parameter pack}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template parameter being a template parameter pack}}
+#endif
+
+#if defined(FIRST)
+struct S22 {
+  template <template<class> class> void foo();
+  template <class> void foo();
+  template <int> void foo();
+};
+#elif defined(SECOND)
+struct S22 {
+  template <class> void foo();
+  template <int> void foo();
+  template <template<class> class> void foo();
+};
+#else
+S22 s22;
+// expected-error@second.h:* {{'FunctionTemplate::S22' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter being a type template parameter}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template paramter being a template template parameter}}
+#endif
+
+#if defined(FIRST)
+struct S23 {
+  template <class> void foo();
+  template <int> void foo();
+  template <template<class> class> void foo();
+};
+#elif defined(SECOND)
+struct S23 {
+  template <int> void foo();
+  template <template<class> class> void foo();
+  template <class> void foo();
+};
+#else
+S23 s23;
+// expected-error@second.h:* {{'FunctionTemplate::S23' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter being a non-type template parameter}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template paramter being a type template parameter}}
+#endif
+
+#if defined(FIRST)
+struct S24 {
+  template <int> void foo();
+  template <template<class> class> void foo();
+  template <class> void foo();
+};
+#elif defined(SECOND)
+struct S24 {
+  template <template<class> class> void foo();
+  template <class> void foo();
+  template <int> void foo();
+};
+#else
+S24 s24;
+// expected-error@second.h:* {{'FunctionTemplate::S24' has different definitions in different modules; first difference is definition in module 'SecondModule' found function template 'foo' with 1st template parameter being a template template parameter}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template 'foo' with 1st template paramter being a non-type template parameter}}
+#endif
+
+#if defined(FIRST)
+struct S25 {
+  template <int> void foo();
+};
+#elif defined(SECOND)
+struct S25 {
+ public:
+  template <int> void foo();
+};
+#else
+S25 s25;
+// expected-error@second.h:* {{'FunctionTemplate::S25' has different definitions in different modules; first difference is definition in module 'SecondModule' found public access specifier}}
+// expected-note@first.h:* {{but in 'FirstModule' found function template}}
+#endif
+
+#define DECLS                                           \
+  template <int>                                        \
+  void nontype1();                                      \
+  template <int x>                                      \
+  void nontype2();                                      \
+  template <int, int>                                   \
+  void nontype3();                                      \
+  template <int x = 5>                                  \
+  void nontype4();                                      \
+  template <int... x>                                   \
+  void nontype5();                                      \
+                                                        \
+  template <class>                                      \
+  void type1();                                         \
+  template <class x>                                    \
+  void type2();                                         \
+  template <class, class>                               \
+  void type3();                                         \
+  template <class x = int>                              \
+  void type4();                                         \
+  template <class... x>                                 \
+  void type5();                                         \
+                                                        \
+  template <template <int> class>                       \
+  void template1();                                     \
+  template <template <int> class x>                     \
+  void template2();                                     \
+  template <template <int> class, template <int> class> \
+  void template3();                                     \
+  template <template <int> class x = U>                 \
+  void template4();                                     \
+  template <template <int> class... x>                  \
+  void template5();
+
+#if defined(FIRST) || defined(SECOND)
+template<int>
+struct U {};
+struct Valid1 {
+  DECLS
+};
+#else
+Valid1 v1;
+#endif
+
+#if defined(FIRST) || defined(SECOND)
+struct Invalid1 {
+  DECLS
+  ACCESS
+};
+#else
+Invalid1 i1;
+// expected-error@second.h:* {{'FunctionTemplate::Invalid1' has different definitions in different modules; first difference is definition in module 'SecondModule' found private access specifier}}
+// expected-note@first.h:* {{but in 'FirstModule' found public access specifier}}
+#endif
+#undef DECLS
+}
+
+namespace Enums {
+#if defined(FIRST)
+enum E1 { x11 };
+#elif defined(SECOND)
+enum E1 {};
+#else
+E1 e1;
+// expected-error@first.h:* {{'Enums::x11' from module 'FirstModule' is not present in definition of 'Enums::E1' in module 'SecondModule'}}
+// expected-note@second.h:* {{definition has no member 'x11'}}
+#endif
+
+#if defined(FIRST)
+enum E2 {};
+#elif defined(SECOND)
+enum E2 { x21 };
+#else
+E2 e2;
+// expected-error@second.h:* {{'Enums::E2' has different definitions in different modules; definition in module 'SecondModule' first difference is enum with 1 element}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum with 0 elements}}
+#endif
+
+#if defined(FIRST)
+enum E3 { x31 };
+#elif defined(SECOND)
+enum E3 { x32 };
+#else
+E3 e3;
+// expected-error@first.h:* {{'Enums::x31' from module 'FirstModule' is not present in definition of 'Enums::E3' in module 'SecondModule'}}
+// expected-note@second.h:* {{definition has no member 'x31'}}
+#endif
+
+#if defined(FIRST)
+enum E4 { x41 };
+#elif defined(SECOND)
+enum E4 { x41, x42 };
+#else
+E4 e4;
+// expected-error@second.h:* {{'Enums::E4' has different definitions in different modules; definition in module 'SecondModule' first difference is enum with 2 elements}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum with 1 element}}
+#endif
+
+#if defined(FIRST)
+enum E5 { x51, x52 };
+#elif defined(SECOND)
+enum E5 { x51 };
+#else
+E5 e5;
+// expected-error@first.h:* {{'Enums::x52' from module 'FirstModule' is not present in definition of 'Enums::E5' in module 'SecondModule'}}
+// expected-note@second.h:* {{definition has no member 'x52'}}
+#endif
+
+#if defined(FIRST)
+enum E6 { x61, x62 };
+#elif defined(SECOND)
+enum E6 { x62, x61 };
+#else
+E6 e6;
+// expected-error@second.h:* {{'Enums::E6' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st element has name 'x62'}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st element has name 'x61'}}
+#endif
+
+#if defined(FIRST)
+enum E7 { x71 = 0 };
+#elif defined(SECOND)
+enum E7 { x71 };
+#else
+E7 e7;
+// expected-error@second.h:* {{'Enums::E7' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st element 'x71' has an initilizer}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st element 'x71' does not have an initializer}}
+#endif
+
+#if defined(FIRST)
+enum E8 { x81 };
+#elif defined(SECOND)
+enum E8 { x81 = 0 };
+#else
+E8 e8;
+// expected-error@second.h:* {{'Enums::E8' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st element 'x81' does not have an initilizer}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st element 'x81' has an initializer}}
+#endif
+
+#if defined(FIRST)
+enum E9 { x91 = 0, x92 = 1 };
+#elif defined(SECOND)
+enum E9 { x91 = 0, x92 = 2 - 1 };
+#else
+E9 e9;
+// expected-error@second.h:* {{'Enums::E9' has different definitions in different modules; definition in module 'SecondModule' first difference is 2nd element 'x92' has an initializer}}
+// expected-note@first.h:* {{but in 'FirstModule' found 2nd element 'x92' has different initializer}}
+#endif
+
+#if defined(FIRST)
+enum class E10 : int {};
+#elif defined(SECOND)
+enum class E10 {};
+#else
+E10 e10;
+// expected-error@second.h:* {{'Enums::E10' has different definitions in different modules; definition in module 'SecondModule' first difference is enum without specified type}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum with specified type}}
+#endif
+
+#if defined(FIRST)
+enum E11 {};
+#elif defined(SECOND)
+enum E11 : int {};
+#else
+E11 e11;
+// expected-error@second.h:* {{'Enums::E11' has different definitions in different modules; definition in module 'SecondModule' first difference is enum with specified type}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum without specified type}}
+#endif
+
+#if defined(FIRST)
+enum struct E12 : long {};
+#elif defined(SECOND)
+enum struct E12 : int {};
+#else
+E12 e12;
+// expected-error@second.h:* {{'Enums::E12' has different definitions in different modules; definition in module 'SecondModule' first difference is enum with specified type 'int'}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum with specified type 'long'}}
+#endif
+
+#if defined(FIRST)
+enum struct E13 {};
+#elif defined(SECOND)
+enum E13 {};
+#else
+E13 e13;
+// expected-error@second.h:* {{'Enums::E13' has different definitions in different modules; definition in module 'SecondModule' first difference is enum that is not scoped}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum that is scoped}}
+#endif
+
+#if defined(FIRST)
+enum E14 {};
+#elif defined(SECOND)
+enum struct E14 {};
+#else
+E14 e14;
+// expected-error@second.h:* {{'Enums::E14' has different definitions in different modules; definition in module 'SecondModule' first difference is enum that is scoped}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum that is not scoped}}
+#endif
+
+#if defined(FIRST)
+enum class E15 {};
+#elif defined(SECOND)
+enum struct E15 {};
+#else
+E15 e15;
+// expected-error@second.h:* {{'Enums::E15' has different definitions in different modules; definition in module 'SecondModule' first difference is enum scoped with keyword struct}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum scoped with keyword class}}
+#endif
+
+#if defined(FIRST)
+enum struct E16 {};
+#elif defined(SECOND)
+enum class E16 {};
+#else
+E16 e16;
+// expected-error@second.h:* {{'Enums::E16' has different definitions in different modules; definition in module 'SecondModule' first difference is enum scoped with keyword class}}
+// expected-note@first.h:* {{but in 'FirstModule' found enum scoped with keyword struct}}
+#endif
+
+#if defined(FIRST)
+enum Valid { v1 = (struct S*)0 == (struct S*)0 };
+#elif defined(SECOND)
+struct S {};
+enum Valid { v1 = (struct S*)0 == (struct S*)0 };
+#else
+Valid V;
+#endif
+}  // namespace Enums
+
+namespace Types {
+namespace Complex {
+#if defined(FIRST)
+void invalid() {
+  _Complex float x;
+}
+void valid() {
+  _Complex float x;
+}
+#elif defined(SECOND)
+void invalid() {
+  _Complex double x;
+}
+void valid() {
+  _Complex float x;
+}
+#else
+auto function1 = invalid;
+// expected-error@second.h:* {{'Types::Complex::invalid' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = valid;
+#endif
+}  // namespace Complex
+
+namespace Decltype {
+#if defined(FIRST)
+void invalid1() {
+  decltype(1 + 1) x;
+}
+int global;
+void invalid2() {
+  decltype(global) x;
+}
+void valid() {
+  decltype(1.5) x;
+  decltype(x) y;
+}
+#elif defined(SECOND)
+void invalid1() {
+  decltype(2) x;
+}
+float global;
+void invalid2() {
+  decltype(global) x;
+}
+void valid() {
+  decltype(1.5) x;
+  decltype(x) y;
+}
+#else
+auto function1 = invalid1;
+// expected-error@second.h:* {{'Types::Decltype::invalid1' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = invalid2;
+// expected-error@second.h:* {{'Types::Decltype::invalid2' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function3 = valid;
+#endif
+}  // namespace Decltype
+
+namespace Auto {
+#if defined(FIRST)
+void invalid1() {
+  decltype(auto) x = 1;
+}
+void invalid2() {
+  auto x = 1;
+}
+void invalid3() {
+  __auto_type x = 1;
+}
+void valid() {
+  decltype(auto) x = 1;
+  auto y = 1;
+  __auto_type z = 1;
+}
+#elif defined(SECOND)
+void invalid1() {
+  auto x = 1;
+}
+void invalid2() {
+  __auto_type x = 1;
+}
+void invalid3() {
+  decltype(auto) x = 1;
+}
+void valid() {
+  decltype(auto) x = 1;
+  auto y = 1;
+  __auto_type z = 1;
+}
+#else
+auto function1 = invalid1;
+// expected-error@second.h:* {{'Types::Auto::invalid1' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = invalid3;
+// expected-error@second.h:* {{'Types::Auto::invalid2' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function3 = invalid2;
+// expected-error@second.h:* {{'Types::Auto::invalid3' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function4 = valid;
+#endif
+}  // namespace Auto
+
+namespace DeducedTemplateSpecialization {
+#if defined(FIRST)
+template<typename T> struct A {};
+A() -> A<int>;
+template<typename T> struct B {};
+B() -> B<int>;
+
+void invalid1() {
+  A a{};
+}
+void invalid2() {
+  A a{};
+}
+void valid() {
+  B b{};
+}
+#elif defined(SECOND)
+template<typename T> struct A {};
+A() -> A<float>;
+template<typename T> struct B {};
+B() -> B<int>;
+
+void invalid1() {
+  A a{};
+}
+void invalid2() {
+  B a{};
+}
+void valid() {
+  B b{};
+}
+#else
+auto function1 = invalid1;
+// expected-error@second.h:* {{'Types::DeducedTemplateSpecialization::invalid1' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = invalid2;
+// expected-error@second.h:* {{'Types::DeducedTemplateSpecialization::invalid2' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function3 = valid;
+#endif
+}  // namespace DeducedTemplateSpecialization
+
+namespace DependentAddressSpace {
+#if defined(FIRST)
+template <int A1, int A2>
+void invalid1() {
+  using type = int __attribute__((address_space(A1)));
+}
+template <int A1>
+void invalid2() {
+  using type = float __attribute__((address_space(A1)));
+}
+template <int A1, int A2>
+void valid() {
+  using type1 = float __attribute__((address_space(A1)));
+  using type2 = int __attribute__((address_space(A2)));
+  using type3 = int __attribute__((address_space(A1 + A2)));
+}
+#elif defined(SECOND)
+template <int A1, int A2>
+void invalid1() {
+  using type = int __attribute__((address_space(A2)));
+}
+template <int A1>
+void invalid2() {
+  using type = int __attribute__((address_space(A1)));
+}
+template <int A1, int A2>
+void valid() {
+  using type1 = float __attribute__((address_space(A1)));
+  using type2 = int __attribute__((address_space(A2)));
+  using type3 = int __attribute__((address_space(A1 + A2)));
+}
+#else
+template <int A, int B>
+class S {
+  static auto function1 = invalid1<A, B>;
+  // expected-error@first.h:* {{'Types::DependentAddressSpace::invalid1' has different definitions in different modules; definition in module 'FirstModule' first difference is function body}}
+  // expected-note@second.h:* {{but in 'SecondModule' found a different body}}
+  static auto function2 = invalid2<B>;
+  // expected-error@first.h:* {{'Types::DependentAddressSpace::invalid2' has different definitions in different modules; definition in module 'FirstModule' first difference is function body}}
+  // expected-note@second.h:* {{but in 'SecondModule' found a different body}}
+  static auto function3 = valid<A, B>;
+};
+#endif
+}  // namespace DependentAddressSpace
+
+namespace DependentSizedExtVector {
+#if defined(FIRST)
+template<int Size>
+void invalid1() {
+  typedef int __attribute__((ext_vector_type(Size))) type;
+}
+template<int Size>
+void invalid2() {
+  typedef int __attribute__((ext_vector_type(Size + 0))) type;
+}
+template<int Size>
+void valid() {
+  typedef int __attribute__((ext_vector_type(Size))) type;
+}
+#elif defined(SECOND)
+template<int Size>
+void invalid1() {
+  typedef float __attribute__((ext_vector_type(Size))) type;
+}
+template<int Size>
+void invalid2() {
+  typedef int __attribute__((ext_vector_type(Size + 1))) type;
+}
+template<int Size>
+void valid() {
+  typedef int __attribute__((ext_vector_type(Size))) type;
+}
+#else
+template <int Num>
+class S {
+  static auto Function1 = invalid1<Num>;
+  // expected-error@first.h:* {{'Types::DependentSizedExtVector::invalid1' has different definitions in different modules; definition in module 'FirstModule' first difference is function body}}
+  // expected-note@second.h:* {{but in 'SecondModule' found a different body}}
+  static auto Function2 = invalid2<Num>;
+  // expected-error@first.h:* {{'Types::DependentSizedExtVector::invalid2' has different definitions in different modules; definition in module 'FirstModule' first difference is function body}}
+  // expected-note@second.h:* {{but in 'SecondModule' found a different body}}
+  static auto Function3 = valid<Num>;
+};
+#endif
+}  // namespace DependentSizedExtVector
+
+namespace InjectedClassName {
+#if defined(FIRST)
+struct Invalid {
+  template <int>
+  struct L2 {
+    template <int>
+    struct L3 {
+      L3 *x;
+    };
+  };
+};
+struct Valid {
+  template <int>
+  struct L2 {
+    template <int>
+    struct L3 {
+      L2 *x;
+      L3 *y;
+    };
+  };
+};
+#elif defined(SECOND)
+struct Invalid {
+  template <int>
+  struct L2 {
+    template <int>
+    struct L3 {
+      L2 *x;
+    };
+  };
+};
+struct Valid {
+  template <int>
+  struct L2 {
+    template <int>
+    struct L3 {
+      L2 *x;
+      L3 *y;
+    };
+  };
+};
+#else
+Invalid::L2<1>::L3<1> invalid;
+// expected-error@second.h:* {{'Types::InjectedClassName::Invalid::L2::L3::x' from module 'SecondModule' is not present in definition of 'L3<>' in module 'FirstModule'}}
+// expected-note@first.h:* {{declaration of 'x' does not match}}
+Valid::L2<1>::L3<1> valid;
+#endif
+}  // namespace InjectedClassName
+
+namespace MemberPointer {
+#if defined(FIRST)
+struct A {};
+struct B {};
+
+void Invalid1() {
+  int A::*x;
+};
+void Invalid2() {
+  int A::*x;
+}
+void Invalid3() {
+  int (A::*x)(int);
+}
+void Valid() {
+  int A::*x;
+  float A::*y;
+  bool B::*z;
+  void (A::*fun1)();
+  int (A::*fun2)();
+  void (B::*fun3)(int);
+  void (B::*fun4)(bool*, int);
+}
+#elif defined(SECOND)
+struct A {};
+struct B {};
+
+void Invalid1() {
+  float A::*x;
+};
+void Invalid2() {
+  int B::*x;
+}
+void Invalid3() {
+  int (A::*x)(int, int);
+}
+void Valid() {
+  int A::*x;
+  float A::*y;
+  bool B::*z;
+  void (A::*fun1)();
+  int (A::*fun2)();
+  void (B::*fun3)(int);
+  void (B::*fun4)(bool*, int);
+}
+#else
+auto function1 = Invalid1;
+// expected-error@second.h:* {{'Types::MemberPointer::Invalid1' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = Invalid2;
+// expected-error@second.h:* {{'Types::MemberPointer::Invalid2' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function3 = Invalid3;
+// expected-error@second.h:* {{'Types::MemberPointer::Invalid3' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function4 = Valid;
+#endif
+
+}  // namespace MemberPointer
+
+namespace PackExpansion {
+#if defined(FIRST)
+struct Invalid {
+  template <class... A>
+  struct L2 {
+    template <class... B>
+    struct L3 {
+      void run(A...);
+      void run(B...);
+    };
+  };
+};
+struct Valid {
+  template <class... A>
+  struct L2 {
+    template <class... B>
+    struct L3 {
+      void run(A...);
+      void run(B...);
+    };
+  };
+};
+#elif defined(SECOND)
+struct Invalid {
+  template <class... A>
+  struct L2 {
+    template <class... B>
+    struct L3 {
+      void run(B...);
+      void run(A...);
+    };
+  };
+};
+struct Valid {
+  template <class... A>
+  struct L2 {
+    template <class... B>
+    struct L3 {
+      void run(A...);
+      void run(B...);
+    };
+  };
+};
+#else
+Invalid::L2<int>::L3<short, bool> invalid;
+// expected-error@first.h:* {{'Types::PackExpansion::Invalid::L2::L3' has different definitions in different modules; first difference is definition in module 'FirstModule' found method 'run' with 1st parameter of type 'A...'}}
+// expected-note@second.h:* {{but in 'SecondModule' found method 'run' with 1st parameter of type 'B...'}}
+Valid::L2<int>::L3<short, bool> valid;
+#endif
+
+}  // namespace PackExpansion
+
+namespace Paren {
+#if defined(FIRST)
+void invalid() {
+  int (*x);
+}
+void valid() {
+  int (*x);
+}
+#elif defined(SECOND)
+void invalid() {
+  float (*x);
+}
+void valid() {
+  int (*x);
+}
+#else
+auto function1 = invalid;
+// expected-error@second.h:* {{'Types::Paren::invalid' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+auto function2 = valid;
+#endif
+}  // namespace Paren
+
+namespace SubstTemplateTypeParm {
+#if defined(FIRST)
+template <class> struct wrapper {};
+template <class, class, class> struct triple {};
+struct Valid {
+  template <class T,
+           template <class _T, class _U, class = wrapper<_T>> class A = triple>
+  struct L2 {
+    A<T, T> x;
+  };
+};
+#elif defined(SECOND)
+template <class> struct wrapper {};
+template <class, class, class> struct triple {};
+struct Valid {
+  template <class T,
+           template <class _T, class _U, class = wrapper<_T>> class A = triple>
+  struct L2 {
+    A<T, T> x;
+  };
+};
+#else
+template <class T,
+          template <class _T, class _U, class = wrapper<_T>> class A = triple>
+using V = Valid::L2<T, A>;
+#endif
+}  // namespace SubstTemplateTypeParm
+
+namespace SubstTemplateTypeParmPack {
+}  // namespace SubstTemplateTypeParmPack
+
+namespace UnaryTransform {
+#if defined(FIRST)
+enum class E1a : unsigned {};
+struct Invalid1 {
+  __underlying_type(E1a) x;
+};
+enum E2a : unsigned {};
+struct Invalid2 {
+  __underlying_type(E2a) x;
+};
+enum E3a {};
+struct Invalid3 {
+  __underlying_type(E3a) x;
+};
+enum E4a {};
+struct Invalid4 {
+  __underlying_type(E4a) x;
+};
+enum E1 {};
+struct Valid1 {
+  __underlying_type(E1) x;
+};
+enum E2 : unsigned {};
+struct Valid2 {
+  __underlying_type(E2) x;
+};
+enum class E3 {};
+struct Valid3 {
+  __underlying_type(E3) x;
+};
+#elif defined(SECOND)
+enum class E1b : signed {};
+struct Invalid1 {
+  __underlying_type(E1b) x;
+};
+enum class E2b : unsigned {};
+struct Invalid2 {
+  __underlying_type(E2b) x;
+};
+enum E3b : int {};
+struct Invalid3 {
+  __underlying_type(E3b) x;
+};
+enum E4b {};
+struct Invalid4 {
+  __underlying_type(E4b) x;
+};
+#else
+Invalid1 i1;
+// expected-error@first.h:* {{'Types::UnaryTransform::Invalid1::x' from module 'FirstModule' is not present in definition of 'Types::UnaryTransform::Invalid1' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+Invalid2 i2;
+// expected-error@second.h:* {{'Types::UnaryTransform::Invalid2' has different definitions in different modules; first difference is definition in module 'SecondModule' found field 'x' with type '__underlying_type(Types::UnaryTransform::E2b)' (aka 'unsigned int')}}
+// expected-note@first.h:* {{but in 'FirstModule' found field 'x' with type '__underlying_type(Types::UnaryTransform::E2a)' (aka 'unsigned int')}}
+Invalid3 i3;
+// expected-error@first.h:* {{'Types::UnaryTransform::Invalid3::x' from module 'FirstModule' is not present in definition of 'Types::UnaryTransform::Invalid3' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+Invalid4 i4;
+// expected-error@second.h:* {{'Types::UnaryTransform::Invalid4' has different definitions in different modules; first difference is definition in module 'SecondModule' found field 'x' with type '__underlying_type(Types::UnaryTransform::E4b)' (aka 'unsigned int')}}
+// expected-note@first.h:* {{but in 'FirstModule' found field 'x' with type '__underlying_type(Types::UnaryTransform::E4a)' (aka 'unsigned int')}}
+Valid1 v1;
+Valid2 v2;
+Valid3 v3;
+#endif
+}  // namespace UnaryTransform
+
+namespace UnresolvedUsing {
+#if defined(FIRST)
+template <class T> struct wrapper {};
+template <class T>
+struct Invalid {
+  using typename wrapper<T>::T1;
+  using typename wrapper<T>::T2;
+  T1 x;
+};
+template <class T>
+struct Valid {
+  using typename wrapper<T>::T1;
+  using typename wrapper<T>::T2;
+  T1 x;
+  T2 y;
+};
+#elif defined(SECOND)
+template <class T> struct wrapper {};
+template <class T>
+struct Invalid {
+  using typename wrapper<T>::T1;
+  using typename wrapper<T>::T2;
+  T2 x;
+};
+template <class T>
+struct Valid {
+  using typename wrapper<T>::T1;
+  using typename wrapper<T>::T2;
+  T1 x;
+  T2 y;
+};
+#else
+template <class T> using I = Invalid<T>;
+// expected-error@first.h:* {{'Types::UnresolvedUsing::Invalid::x' from module 'FirstModule' is not present in definition of 'Invalid<T>' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+
+template <class T> using V = Valid<T>;
+#endif
+
+}  // namespace UnresolvedUsing
+
+// Vector
+// void invalid1() {
+//  __attribute((vector_size(8))) int *x1;
+//}
+
+}  // namespace Types
 
 // Collection of interesting cases below.
 
@@ -2744,6 +4320,38 @@ struct S3 {
 #else
 S3 s3;
 #endif
+
+#if defined(FIRST)
+using A4 = int;
+using B4 = A4;
+struct S4 {
+  B4 x;
+};
+#elif defined(SECOND)
+using A4 = int;
+using B4 = ::MultipleTypedefs::A4;
+struct S4 {
+  B4 x;
+};
+#else
+S4 s4;
+#endif
+
+#if defined(FIRST)
+using A5 = int;
+using B5 = MultipleTypedefs::A5;
+struct S5 {
+  B5 x;
+};
+#elif defined(SECOND)
+using A5 = int;
+using B5 = ::MultipleTypedefs::A5;
+struct S5 {
+  B5 x;
+};
+#else
+S5 s5;
+#endif
 }  // MultipleTypedefs
 
 namespace DefaultArguments {
@@ -2751,14 +4359,14 @@ namespace DefaultArguments {
 template <typename T>
 struct S {
   struct R {
-    void foo(T x = 0) {}
+    void foo(T x = 0);
   };
 };
 #elif defined(SECOND)
 template <typename T>
 struct S {
   struct R {
-    void foo(T x = 1) {}
+    void foo(T x = 1);
   };
 };
 #else
@@ -2771,13 +4379,13 @@ void run() {
 
 #if defined(FIRST)
 template <typename alpha> struct Bravo {
-  void charlie(bool delta = false) {}
+  void charlie(bool delta = false);
 };
 typedef Bravo<char> echo;
 echo foxtrot;
 #elif defined(SECOND)
 template <typename alpha> struct Bravo {
-  void charlie(bool delta = (false)) {}
+  void charlie(bool delta = (false));
 };
 typedef Bravo<char> echo;
 echo foxtrot;
@@ -2787,6 +4395,295 @@ Bravo<char> golf;
 // expected-note@first.h:* {{but in 'FirstModule' found method 'charlie' with 1st parameter with a different default argument}}
 #endif
 }  // namespace DefaultArguments
+
+namespace FunctionDecl {
+#if defined(FIRST)
+struct S1 {};
+S1 s1a;
+#elif defined(SECOND)
+struct S1 {};
+#else
+S1 s1;
+#endif
+
+#if defined(FIRST)
+struct S2 {
+  S2() = default;
+};
+S2 s2a = S2();
+#elif defined(SECOND)
+struct S2 {
+  S2() = default;
+};
+#else
+S2 s2;
+#endif
+
+#if defined(FIRST)
+struct S3 {
+  S3() = delete;
+};
+S3* s3c;
+#elif defined(SECOND)
+struct S3 {
+  S3() = delete;
+};
+#else
+S3* s3;
+#endif
+
+#if defined(FIRST) || defined(SECOND)
+int F1(int x, float y = 2.7) { return 1; }
+#else
+int I1 = F1(1);
+#endif
+
+#if defined(FIRST)
+int F2() { return 1; }
+#elif defined(SECOND)
+double F2() { return 1; }
+#else
+int I2 = F2();
+// expected-error@-1 {{call to 'F2' is ambiguous}}
+// expected-note@first.h:* {{candidate function}}
+// expected-note@second.h:* {{candidate function}}
+#endif
+
+#if defined(FIRST)
+int F3(float) { return 1; }
+#elif defined(SECOND)
+int F3(double) { return 1; }
+#else
+int I3 = F3(1);
+// expected-error@-1 {{call to 'F3' is ambiguous}}
+// expected-note@first.h:* {{candidate function}}
+// expected-note@second.h:* {{candidate function}}
+#endif
+
+#if defined(FIRST)
+int F4(int x) { return 1; }
+#elif defined(SECOND)
+int F4(int y) { return 1; }
+#else
+int I4 = F4(1);
+// expected-error@second.h:* {{'FunctionDecl::F4' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st parameter with name 'y'}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st parameter with name 'x'}}
+#endif
+
+#if defined(FIRST)
+int F5(int x) { return 1; }
+#elif defined(SECOND)
+int F5(int x = 1) { return 1; }
+#else
+int I5 = F6(1);
+// expected-error@second.h:* {{'FunctionDecl::F5' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st parameter without a default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st parameter with a default argument}}
+#endif
+
+#if defined(FIRST)
+int F6(int x = 2) { return 1; }
+#elif defined(SECOND)
+int F6(int x = 1) { return 1; }
+#else
+int I6 = F6(1);
+// expected-error@second.h:* {{'FunctionDecl::F6' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st parameter with a default argument}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st parameter with a different default argument}}
+#endif
+
+using I = int;
+#if defined(FIRST)
+I F7() { return 0; }
+#elif defined(SECOND)
+int F7() { return 0; }
+#else
+int I7 = F7();
+// expected-error@second.h:* {{'FunctionDecl::F7' has different definitions in different modules; definition in module 'SecondModule' first difference is return type is 'int'}}
+// expected-note@first.h:* {{but in 'FirstModule' found different return type 'FunctionDecl::I' (aka 'int')}}
+#endif
+
+#if defined(FIRST)
+int F8(int) { return 0; }
+#elif defined(SECOND)
+int F8(I) { return 0; }
+#else
+int I8 = F8(1);
+// expected-error@second.h:* {{'FunctionDecl::F8' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st parameter with type 'FunctionDecl::I' (aka 'int')}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st parameter with type 'int'}}
+#endif
+
+#if defined(FIRST)
+int F9(int[1]) { return 0; }
+#elif defined(SECOND)
+int F9(int[2]) { return 0; }
+#else
+int I9 = F9(nullptr);
+// expected-error@second.h:* {{'FunctionDecl::F9' has different definitions in different modules; definition in module 'SecondModule' first difference is 1st parameter with type 'int *' decayed from 'int [2]'}}
+// expected-note@first.h:* {{but in 'FirstModule' found 1st parameter with type 'int *' decayed from 'int [1]'}}
+#endif
+
+#if defined(FIRST)
+int F10() { return 1; }
+#elif defined(SECOND)
+int F10() { return 2; }
+#else
+int I10 = F10();
+#endif
+// expected-error@second.h:* {{'FunctionDecl::F10' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+
+#if defined(FIRST)
+struct S11 {
+  template <int> void foo();
+};
+#elif defined(SECOND)
+struct S11 {
+  template <int> void foo();
+};
+template <int> void S11::foo() {}
+#else
+S11 s11;
+#endif
+
+#if defined(FIRST)
+struct S12 {
+  void foo(int x);
+};
+#elif defined(SECOND)
+struct S12 {
+  void foo(int x);
+};
+void S12::foo(int y) {}
+#else
+S12 s12;
+#endif
+
+#if defined(FIRST)
+struct S13 {
+  void foo(int x);
+};
+void S13::foo(int y) {}
+#elif defined(SECOND)
+struct S13 {
+  void foo(int x);
+};
+void S13::foo(int y) {}
+#else
+S13 s13;
+#endif
+}  // namespace FunctionDecl
+
+namespace DeclTemplateArguments {
+#if defined(FIRST)
+int foo() { return 1; }
+int bar() { return foo(); }
+#elif defined(SECOND)
+template <class T = int>
+int foo() { return 2; }
+int bar() { return foo<>(); }
+#else
+int num = bar();
+// expected-error@second.h:* {{'DeclTemplateArguments::bar' has different definitions in different modules; definition in module 'SecondModule' first difference is function body}}
+// expected-note@first.h:* {{but in 'FirstModule' found a different body}}
+#endif
+}
+
+namespace FunctionProtoTypeDecay {
+#if defined(FIRST)
+struct S1 {
+  struct X {};
+  using Y = X(X());
+};
+#elif defined(SECOND)
+struct S1 {
+  struct X {};
+  using Y = X(X(X()));
+};
+#else
+S1 s1;
+// expected-error@first.h:* {{'FunctionProtoTypeDecay::S1::Y' from module 'FirstModule' is not present in definition of 'FunctionProtoTypeDecay::S1' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'Y' does not match}}
+#endif
+
+#if defined(FIRST)
+struct S2 {
+  struct X {};
+  using Y =
+      X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(
+      X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(
+      X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(
+      X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(X(
+      ))))))))))))))))
+      ))))))))))))))))
+      ))))))))))))))))
+      ))))))))))))))));
+};
+#elif defined(SECOND)
+#else
+S2 s2;
+#endif
+}
+
+namespace TypedefStruct {
+#if defined(FIRST)
+struct T1;
+class S1 {
+  T1* t;
+};
+#elif defined(SECOND)
+typedef struct T1 {} T1;
+class S1 {
+  T1* t;
+};
+#else
+S1 s1;
+#endif
+
+#if defined(FIRST)
+struct T2;
+class S2 {
+  const T2* t = nullptr;
+};
+#elif defined(SECOND)
+typedef struct T2 {} T2;
+class S2 {
+  const T2* t = nullptr;
+};
+#else
+S2 s2;
+#endif
+
+#if defined(FIRST)
+struct T3;
+class S3 {
+  T3* const t = nullptr;
+};
+#elif defined(SECOND)
+typedef struct T3 {} T3;
+class S3 {
+  T3* const t = nullptr;
+};
+#else
+S3 s3;
+#endif
+
+#if defined(FIRST)
+namespace NS4 {
+struct T4;
+} // namespace NS4
+class S4 {
+  NS4::T4* t = 0;
+};
+#elif defined(SECOND)
+namespace NS4 {
+typedef struct T4 {} T4;
+} // namespace NS4
+class S4 {
+  NS4::T4* t = 0;
+};
+#else
+S4 s4;
+#endif
+} // namespace TypedefStruct
 
 // Keep macros contained to one file.
 #ifdef FIRST

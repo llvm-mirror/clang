@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
 
 void foo() {
 }

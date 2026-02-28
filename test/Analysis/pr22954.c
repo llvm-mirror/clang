@@ -3,7 +3,7 @@
 // At the moment the whole of the destination array content is invalidated.
 // If a.s1 region has a symbolic offset, the whole region of 'a' is invalidated.
 // Specific triple set to test structures of size 0.
-// RUN: %clang_analyze_cc1 -triple x86_64-pc-linux-gnu -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-store=region -verify %s
+// RUN: %clang_analyze_cc1 -triple x86_64-pc-linux-gnu -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-store=region -verify -analyzer-config eagerly-assume=false %s
 
 typedef __typeof(sizeof(int)) size_t;
 
@@ -303,7 +303,7 @@ int f18() {
   i18.j = 11;
   i18.s2 = strdup("hello");
   char input[100] = {3};
-  memcpy(i18.s1, input, 100);
+  memcpy(i18.s1, input, 100); // expected-warning {{'memcpy' will always overflow; destination buffer has size 24, but size argument is 100}}
   clang_analyzer_eval(i18.s1[0] == 1); // expected-warning{{UNKNOWN}}\
   expected-warning{{Potential leak of memory pointed to by 'i18.s2'}}
   clang_analyzer_eval(i18.s1[1] == 2); // expected-warning{{UNKNOWN}}
@@ -534,7 +534,7 @@ int f262() {
   struct aa a262 = {{1, 2, 3, 4}, 0};
   a262.s2 = strdup("hello");
   char input[] = {'a', 'b', 'c', 'd'};
-  memcpy(a262.s1, input, -1);
+  memcpy(a262.s1, input, -1); // expected-warning{{'memcpy' will always overflow; destination buffer has size 16, but size argument is 18446744073709551615}}
   clang_analyzer_eval(a262.s1[0] == 1); // expected-warning{{UNKNOWN}}\
   expected-warning{{Potential leak of memory pointed to by 'a262.s2'}}
   clang_analyzer_eval(a262.s1[1] == 1); // expected-warning{{UNKNOWN}}
@@ -585,7 +585,7 @@ int f28(int i, int j, int k, int l) {
   m28[j].s3[k] = 1;
   struct ll * l28 = (struct ll*)(&m28[1]);
   l28->s1[l] = 2;
-  char input[] = {'a', 'b', 'c', 'd'};
+  char input[] = {'a', 'b', 'c', 'd'}; // expected-warning{{Potential leak of memory pointed to by field 's4'}}
   memcpy(l28->s1, input, 4);
   clang_analyzer_eval(m28[0].s3[0] == 1); // expected-warning{{UNKNOWN}}
   clang_analyzer_eval(m28[0].s3[1] == 1); // expected-warning{{UNKNOWN}}
@@ -624,9 +624,10 @@ int f29(int i, int j, int k, int l, int m) {
   clang_analyzer_eval(m29[i].s3[1] == 1); // expected-warning{{UNKNOWN}}
   clang_analyzer_eval(m29[i].s3[2] == 1); // expected-warning{{UNKNOWN}}
   clang_analyzer_eval(m29[i].s3[3] == 1); // expected-warning{{UNKNOWN}}
-  clang_analyzer_eval(m29[j].s3[k] == 1); // expected-warning{{TRUE}}\
-  expected-warning{{Potential leak of memory pointed to by field 's4'}}
+  clang_analyzer_eval(m29[j].s3[k] == 1); // expected-warning{{TRUE}}
   clang_analyzer_eval(l29->s1[m] == 2); // expected-warning{{UNKNOWN}}
+  // FIXME: Should warn that m29[i].s4 leaks. But not on the previous line,
+  // because l29 and m29 alias.
   return 0;
 }
 

@@ -47,7 +47,7 @@ The 3.9 release of clang includes ThinLTO support. However, ThinLTO
 is under active development, and new features, improvements and bugfixes
 are being added for the next release. For the latest ThinLTO support,
 `build a recent version of clang and LLVM
-<http://llvm.org/docs/CMake.html>`_.
+<https://llvm.org/docs/CMake.html>`_.
 
 Linkers
 -------
@@ -59,7 +59,7 @@ ThinLTO is currently supported for the following linkers:
 - **gold (via the gold-plugin)**:
   Similar to monolithic LTO, this requires using
   a `gold linker configured with plugins enabled
-  <http://llvm.org/docs/GoldPlugin.html>`_.
+  <https://llvm.org/docs/GoldPlugin.html>`_.
 - **ld64**:
   Starting with `Xcode 8 <https://developer.apple.com/xcode/>`_.
 - **lld**:
@@ -99,13 +99,15 @@ With gold, if you see an error during the link of the form:
 Then either gold was not configured with plugins enabled, or clang
 was not built with ``-DLLVM_BINUTILS_INCDIR`` set properly. See
 the instructions for the
-`LLVM gold plugin <http://llvm.org/docs/GoldPlugin.html#how-to-build-it>`_.
+`LLVM gold plugin <https://llvm.org/docs/GoldPlugin.html#how-to-build-it>`_.
 
 Controlling Backend Parallelism
 -------------------------------
 .. _parallelism:
 
-By default, the ThinLTO link step will launch up to
+By default, the ThinLTO link step will launch as many
+threads in parallel as there are cores. If the number of
+cores can't be computed for the architecture, then it will launch
 ``std::thread::hardware_concurrency`` number of threads in parallel.
 For machines with hyper-threading, this is the total number of
 virtual cores. For some applications and machine configurations this
@@ -156,7 +158,7 @@ A policy string is a series of key-value pairs separated by ``:`` characters.
 Possible key-value pairs are:
 
 - ``cache_size=X%``: The maximum size for the cache directory is ``X`` percent
-  of the available space on the the disk. Set to 100 to indicate no limit,
+  of the available space on the disk. Set to 100 to indicate no limit,
   50 to indicate that the cache size will not be left over half the available
   disk space. A value over 100 is invalid. A value of 0 disables the percentage
   size-based pruning. The default is 75%.
@@ -172,6 +174,10 @@ Possible key-value pairs are:
   and changing one does not affect the other. For example, a policy of
   ``cache_size_bytes=1g`` on its own will cause both the 1GB and default 75%
   policies to be applied unless the default ``cache_size`` is overridden.
+
+- ``cache_size_files=X``:
+  Set the maximum number of files in the cache directory. Set to 0 to indicate
+  no limit. The default is 1000000 files.
 
 - ``prune_after=Xs``, ``prune_after=Xm``, ``prune_after=Xh``: Sets the
   expiration time for cache files to ``X`` seconds (or minutes, hours
@@ -192,9 +198,9 @@ To bootstrap clang/LLVM with ThinLTO, follow these steps:
 
 1. The host compiler_ must be a version of clang that supports ThinLTO.
 #. The host linker_ must support ThinLTO (and in the case of gold, must be
-   `configured with plugins enabled <http://llvm.org/docs/GoldPlugin.html>`_.
+   `configured with plugins enabled <https://llvm.org/docs/GoldPlugin.html>`_).
 #. Use the following additional `CMake variables
-   <http://llvm.org/docs/CMake.html#options-and-variables>`_
+   <https://llvm.org/docs/CMake.html#options-and-variables>`_
    when configuring the bootstrap compiler build:
 
   * ``-DLLVM_ENABLE_LTO=Thin``
@@ -218,6 +224,10 @@ To bootstrap clang/LLVM with ThinLTO, follow these steps:
    build directory. Specify any additional linker options after
    ``CMAKE_EXE_LINKER_FLAGS:STRING=``. Note the configure may fail if
    linker plugin options are instead specified directly in the previous step.
+
+The `BOOTSTRAP_LLVM_ENABLE_LTO=Thin`` will enable ThinLTO for stage 2 and
+stage 3 in case the compiler used for stage 1 does not support the ThinLTO
+option.
 
 More Information
 ================

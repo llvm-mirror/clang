@@ -1,4 +1,19 @@
-// RUN: %clang_cc1 -emit-llvm-only %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -o - %s | FileCheck %s
+
+// CHECK: @"_OBJC_$_PROTOCOL_METHOD_TYPES_P1" = internal global
+// CHECK: @[[PROTO_P1:"_OBJC_PROTOCOL_\$_P1"]] = weak hidden
+// CHECK: @[[LABEL_PROTO_P1:"_OBJC_LABEL_PROTOCOL_\$_P1"]] = weak hidden global %{{.*}}* @[[PROTO_P1]]
+// CHECK: @[[PROTO_P2:"_OBJC_PROTOCOL_\$_P2"]] = weak hidden
+// CHECK: @[[LABEL_PROTO_P2:"_OBJC_LABEL_PROTOCOL_\$_P2"]] = weak hidden global %{{.*}}* @[[PROTO_P2]]
+// CHECK: @"_OBJC_$_PROTOCOL_REFS_P3" = internal global { i64, [3 x %{{.*}}] } { i64 2, [3 x %{{.*}}*] [%{{.*}}* @[[PROTO_P1]], %{{.*}}* @[[PROTO_P2]], %{{.*}}* null] }
+// CHECK: @[[PROTO_P3:"_OBJC_PROTOCOL_\$_P3"]] = weak hidden
+// CHECK: @[[LABEL_PROTO_P3:"_OBJC_LABEL_PROTOCOL_\$_P3"]] = weak hidden global %{{.*}}* @[[PROTO_P3]]
+// CHECK: "_OBJC_PROTOCOL_REFERENCE_$_P3" = weak hidden global %{{.*}}* bitcast (%{{.*}}* @[[PROTO_P3]] to %{{.*}}*)
+// CHECK: @[[PROTO_P0:"_OBJC_PROTOCOL_\$_P0"]] = weak hidden
+// CHECK: @[[LABEL_PROTO_P0:"_OBJC_LABEL_PROTOCOL_\$_P0"]] = weak hidden global %{{.*}}* @[[PROTO_P0]]
+// CHECK: "_OBJC_PROTOCOL_REFERENCE_$_P0" = weak hidden global %0* bitcast (%{{.*}}* @[[PROTO_P0]] to %{{.*}}*)
+// CHECK: "_OBJC_PROTOCOL_REFERENCE_$_P1" = weak hidden global %0* bitcast (%{{.*}}* @[[PROTO_P1]] to %{{.*}}*)
+// CHECK: "_OBJC_PROTOCOL_REFERENCE_$_P2" = weak hidden global %0* bitcast (%{{.*}}* @[[PROTO_P2]] to %{{.*}}*)
 
 void p(const char*, ...);
 
@@ -7,7 +22,8 @@ void p(const char*, ...);
 -(int) conformsTo: (id) x;
 @end
 
-@protocol P0;
+@protocol P0
+@end
 
 @protocol P1
 +(void) classMethodReq0;

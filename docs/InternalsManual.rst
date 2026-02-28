@@ -19,7 +19,7 @@ LLVM Support Library
 ====================
 
 The LLVM ``libSupport`` library provides many underlying libraries and
-`data-structures <http://llvm.org/docs/ProgrammersManual.html>`_, including
+`data-structures <https://llvm.org/docs/ProgrammersManual.html>`_, including
 command line option processing, various containers and a system abstraction
 layer, which is used for file system access.
 
@@ -54,7 +54,7 @@ number of source ranges that related to the diagnostic.
 
 In this section, we'll be giving examples produced by the Clang command line
 driver, but diagnostics can be :ref:`rendered in many different ways
-<DiagnosticClient>` depending on how the ``DiagnosticClient`` interface is
+<DiagnosticConsumer>` depending on how the ``DiagnosticConsumer`` interface is
 implemented.  A representative example of a diagnostic is:
 
 .. code-block:: text
@@ -188,7 +188,7 @@ Formatting a Diagnostic Argument
 Arguments to diagnostics are fully typed internally, and come from a couple
 different classes: integers, types, names, and random strings.  Depending on
 the class of the argument, it can be optionally formatted in different ways.
-This gives the ``DiagnosticClient`` information about what the argument means
+This gives the ``DiagnosticConsumer`` information about what the argument means
 without requiring it to use a specific presentation (consider this MVC for
 Clang :).
 
@@ -319,6 +319,32 @@ they should be discussed before they are added.  If you are creating a lot of
 repetitive diagnostics and/or have an idea for a useful formatter, please bring
 it up on the cfe-dev mailing list.
 
+**"sub" format**
+
+Example:
+  Given the following record definition of type ``TextSubstitution``:
+
+  .. code-block:: text
+
+    def select_ovl_candidate : TextSubstitution<
+      "%select{function|constructor}0%select{| template| %2}1">;
+
+  which can be used as
+
+  .. code-block:: text
+
+    def note_ovl_candidate : Note<
+      "candidate %sub{select_ovl_candidate}3,2,1 not viable">;
+
+  and will act as if it was written
+  ``"candidate %select{function|constructor}3%select{| template| %1}2 not viable"``.
+Description:
+  This format specifier is used to avoid repeating strings verbatim in multiple
+  diagnostics. The argument to ``%sub`` must name a ``TextSubstitution`` tblgen
+  record. The substitution must specify all arguments used by the substitution,
+  and the modifier indexes in the substitution are re-numbered accordingly. The
+  substituted text must itself be a valid format string before substitution.
+
 .. _internals-producing-diag:
 
 Producing the Diagnostic
@@ -387,7 +413,7 @@ exactly where those parentheses would be inserted into the source code.  The
 fix-it hints themselves describe what changes to make to the source code in an
 abstract manner, which the text diagnostic printer renders as a line of
 "insertions" below the caret line.  :ref:`Other diagnostic clients
-<DiagnosticClient>` might choose to render the code differently (e.g., as
+<DiagnosticConsumer>` might choose to render the code differently (e.g., as
 markup inline) or even give the user the ability to automatically fix the
 problem.
 
@@ -397,6 +423,9 @@ Fix-it hints on errors and warnings need to obey these rules:
   driver, they should only be used when it's very likely they match the user's
   intent.
 * Clang must recover from errors as if the fix-it had been applied.
+* Fix-it hints on a warning must not change the meaning of the code.
+  However, a hint may clarify the meaning as intentional, for example by adding
+  parentheses when the precedence of operators isn't obvious.
 
 If a fix-it can't obey these rules, put the fix-it on a note.  Fix-its on notes
 are not applied automatically.
@@ -420,26 +449,26 @@ Fix-it hints can be created with one of three constructors:
     Specifies that the code in the given source ``Range`` should be removed,
     and replaced with the given ``Code`` string.
 
-.. _DiagnosticClient:
+.. _DiagnosticConsumer:
 
-The ``DiagnosticClient`` Interface
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The ``DiagnosticConsumer`` Interface
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Once code generates a diagnostic with all of the arguments and the rest of the
 relevant information, Clang needs to know what to do with it.  As previously
 mentioned, the diagnostic machinery goes through some filtering to map a
 severity onto a diagnostic level, then (assuming the diagnostic is not mapped
-to "``Ignore``") it invokes an object that implements the ``DiagnosticClient``
+to "``Ignore``") it invokes an object that implements the ``DiagnosticConsumer``
 interface with the information.
 
 It is possible to implement this interface in many different ways.  For
-example, the normal Clang ``DiagnosticClient`` (named
+example, the normal Clang ``DiagnosticConsumer`` (named
 ``TextDiagnosticPrinter``) turns the arguments into strings (according to the
 various formatting rules), prints out the file/line/column information and the
 string, then prints out the line of code, the source ranges, and the caret.
 However, this behavior isn't required.
 
-Another implementation of the ``DiagnosticClient`` interface is the
+Another implementation of the ``DiagnosticConsumer`` interface is the
 ``TextDiagnosticBuffer`` class, which is used when Clang is in ``-verify``
 mode.  Instead of formatting and printing out the diagnostics, this
 implementation just captures and remembers the diagnostics as they fly by.
@@ -508,7 +537,7 @@ token.  This concept maps directly to the "spelling location" for the token.
 ``SourceRange`` and ``CharSourceRange``
 ---------------------------------------
 
-.. mostly taken from http://lists.llvm.org/pipermail/cfe-dev/2010-August/010595.html
+.. mostly taken from https://lists.llvm.org/pipermail/cfe-dev/2010-August/010595.html
 
 Clang represents most source ranges by [first, last], where "first" and "last"
 each point to the beginning of their respective tokens.  For example consider
@@ -533,13 +562,9 @@ The clang Driver and library are documented :doc:`here <DriverInternals>`.
 Precompiled Headers
 ===================
 
-Clang supports two implementations of precompiled headers.  The default
-implementation, precompiled headers (:doc:`PCH <PCHInternals>`) uses a
+Clang supports precompiled headers (:doc:`PCH <PCHInternals>`), which  uses a
 serialized representation of Clang's internal data structures, encoded with the
-`LLVM bitstream format <http://llvm.org/docs/BitCodeFormat.html>`_.
-Pretokenized headers (:doc:`PTH <PTHInternals>`), on the other hand, contain a
-serialized representation of the tokens encountered when preprocessing a header
-(and anything that header includes).
+`LLVM bitstream format <https://llvm.org/docs/BitCodeFormat.html>`_.
 
 The Frontend Library
 ====================
@@ -805,6 +830,79 @@ wrappers.
 The AST Library
 ===============
 
+.. _ASTPhilosophy:
+
+Design philosophy
+-----------------
+
+Immutability
+^^^^^^^^^^^^
+
+Clang AST nodes (types, declarations, statements, expressions, and so on) are
+generally designed to be immutable once created. This provides a number of key
+benefits:
+
+  * Canonicalization of the "meaning" of nodes is possible as soon as the nodes
+    are created, and is not invalidated by later addition of more information.
+    For example, we :ref:`canonicalize types <CanonicalType>`, and use a
+    canonicalized representation of expressions when determining whether two
+    function template declarations involving dependent expressions declare the
+    same entity.
+  * AST nodes can be reused when they have the same meaning. For example, we
+    reuse ``Type`` nodes when representing the same type (but maintain separate
+    ``TypeLoc``\s for each instance where a type is written), and we reuse
+    non-dependent ``Stmt`` and ``Expr`` nodes across instantiations of a
+    template.
+  * Serialization and deserialization of the AST to/from AST files is simpler:
+    we do not need to track modifications made to AST nodes imported from AST
+    files and serialize separate "update records".
+
+There are unfortunately exceptions to this general approach, such as:
+
+  * The first declaration of a redeclarable entity maintains a pointer to the
+    most recent declaration of that entity, which naturally needs to change as
+    more declarations are parsed.
+  * Name lookup tables in declaration contexts change after the namespace
+    declaration is formed.
+  * We attempt to maintain only a single declaration for an instantiation of a
+    template, rather than having distinct declarations for an instantiation of
+    the declaration versus the definition, so template instantiation often
+    updates parts of existing declarations.
+  * Some parts of declarations are required to be instantiated separately (this
+    includes default arguments and exception specifications), and such
+    instantiations update the existing declaration.
+
+These cases tend to be fragile; mutable AST state should be avoided where
+possible.
+
+As a consequence of this design principle, we typically do not provide setters
+for AST state. (Some are provided for short-term modifications intended to be
+used immediately after an AST node is created and before it's "published" as
+part of the complete AST, or where language semantics require after-the-fact
+updates.)
+
+Faithfulness
+^^^^^^^^^^^^
+
+The AST intends to provide a representation of the program that is faithful to
+the original source. We intend for it to be possible to write refactoring tools
+using only information stored in, or easily reconstructible from, the Clang AST.
+This means that the AST representation should either not desugar source-level
+constructs to simpler forms, or -- where made necessary by language semantics
+or a clear engineering tradeoff -- should desugar minimally and wrap the result
+in a construct representing the original source form.
+
+For example, ``CXXForRangeStmt`` directly represents the syntactic form of a
+range-based for statement, but also holds a semantic representation of the
+range declaration and iterator declarations. It does not contain a
+fully-desugared ``ForStmt``, however.
+
+Some AST nodes (for example, ``ParenExpr``) represent only syntax, and others
+(for example, ``ImplicitCastExpr``) represent only semantics, but most nodes
+will represent a combination of syntax and associated semantics. Inheritance
+is typically used when representing different (but related) syntaxes for nodes
+with the same or similar semantics.
+
 .. _Type:
 
 The ``Type`` class and its subclasses
@@ -866,6 +964,8 @@ with this: first, various semantic checks need to make judgements about the
 way to query whether two types are structurally identical to each other,
 ignoring typedefs.  The solution to both of these problems is the idea of
 canonical types.
+
+.. _CanonicalType:
 
 Canonical Types
 ^^^^^^^^^^^^^^^
@@ -1127,6 +1227,10 @@ the source code.  In the semantics-centric view, only the most recent "``f``"
 will be found by the lookup, since it effectively replaces the first
 declaration of "``f``".
 
+(Note that because ``f`` can be redeclared at block scope, or in a friend
+declaration, etc. it is possible that the declaration of ``f`` found by name
+lookup will not be the most recent one.)
+
 In the semantics-centric view, overloading of functions is represented
 explicitly.  For example, given two declarations of a function "``g``" that are
 overloaded, e.g.,
@@ -1291,7 +1395,7 @@ The transparent ``DeclContext``\ s are:
 Multiply-Defined Declaration Contexts
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-C++ namespaces have the interesting --- and, so far, unique --- property that
+C++ namespaces have the interesting property that
 the namespace can be defined multiple times, and the declarations provided by
 each namespace definition are effectively merged (from the semantic point of
 view).  For example, the following two code snippets are semantically
@@ -1331,6 +1435,498 @@ this context (which will be the only result, for non-namespace contexts) via
 internally within the lookup and insertion methods of the ``DeclContext``, so
 the vast majority of clients can ignore them.
 
+Because the same entity can be defined multiple times in different modules,
+it is also possible for there to be multiple definitions of (for instance)
+a ``CXXRecordDecl``, all of which describe a definition of the same class.
+In such a case, only one of those "definitions" is considered by Clang to be
+the definiition of the class, and the others are treated as non-defining
+declarations that happen to also contain member declarations. Corresponding
+members in each definition of such multiply-defined classes are identified
+either by redeclaration chains (if the members are ``Redeclarable``)
+or by simply a pointer to the canonical declaration (if the declarations
+are not ``Redeclarable`` -- in that case, a ``Mergeable`` base class is used
+instead).
+
+The ASTImporter
+---------------
+
+The ``ASTImporter`` class imports nodes of an ``ASTContext`` into another
+``ASTContext``. Please refer to the document :doc:`ASTImporter: Merging Clang
+ASTs <LibASTImporter>` for an introduction. And please read through the
+high-level `description of the import algorithm
+<LibASTImporter.html#algorithm-of-the-import>`_, this is essential for
+understanding further implementation details of the importer.
+
+.. _templated:
+
+Abstract Syntax Graph
+^^^^^^^^^^^^^^^^^^^^^
+
+Despite the name, the Clang AST is not a tree. It is a directed graph with
+cycles. One example of a cycle is the connection between a
+``ClassTemplateDecl`` and its "templated" ``CXXRecordDecl``. The *templated*
+``CXXRecordDecl`` represents all the fields and methods inside the class
+template, while the ``ClassTemplateDecl`` holds the information which is
+related to being a template, i.e. template arguments, etc. We can get the
+*templated* class (the ``CXXRecordDecl``) of a ``ClassTemplateDecl`` with
+``ClassTemplateDecl::getTemplatedDecl()``. And we can get back a pointer of the
+"described" class template from the *templated* class:
+``CXXRecordDecl::getDescribedTemplate()``. So, this is a cycle between two
+nodes: between the *templated* and the *described* node. There may be various
+other kinds of cycles in the AST especially in case of declarations.
+
+.. _structural-eq:
+
+Structural Equivalency
+^^^^^^^^^^^^^^^^^^^^^^
+
+Importing one AST node copies that node into the destination ``ASTContext``. To
+copy one node means that we create a new node in the "to" context then we set
+its properties to be equal to the properties of the source node. Before the
+copy, we make sure that the source node is not *structurally equivalent* to any
+existing node in the destination context. If it happens to be equivalent then
+we skip the copy.
+
+The informal definition of structural equivalency is the following:
+Two nodes are **structurally equivalent** if they are
+
+- builtin types and refer to the same type, e.g. ``int`` and ``int`` are
+  structurally equivalent,
+- function types and all their parameters have structurally equivalent types,
+- record types and all their fields in order of their definition have the same
+  identifier names and structurally equivalent types,
+- variable or function declarations and they have the same identifier name and
+  their types are structurally equivalent.
+
+In C, two types are structurally equivalent if they are *compatible types*. For
+a formal definition of *compatible types*, please refer to 6.2.7/1 in the C11
+standard. However, there is no definition for *compatible types* in the C++
+standard. Still, we extend the definition of structural equivalency to
+templates and their instantiations similarly: besides checking the previously
+mentioned properties, we have to check for equivalent template
+parameters/arguments, etc.
+
+The structural equivalent check can be and is used independently from the
+ASTImporter, e.g. the ``clang::Sema`` class uses it also.
+
+The equivalence of nodes may depend on the equivalency of other pairs of nodes.
+Thus, the check is implemented as a parallel graph traversal. We traverse
+through the nodes of both graphs at the same time. The actual implementation is
+similar to breadth-first-search. Let's say we start the traverse with the <A,B>
+pair of nodes. Whenever the traversal reaches a pair <X,Y> then the following
+statements are true:
+
+- A and X are nodes from the same ASTContext.
+- B and Y are nodes from the same ASTContext.
+- A and B may or may not be from the same ASTContext.
+- if A == X and B == Y (pointer equivalency) then (there is a cycle during the
+  traverse)
+
+  - A and B are structurally equivalent if and only if
+
+    - All dependent nodes on the path from <A,B> to <X,Y> are structurally
+      equivalent.
+
+When we compare two classes or enums and one of them is incomplete or has
+unloaded external lexical declarations then we cannot descend to compare their
+contained declarations. So in these cases they are considered equal if they
+have the same names. This is the way how we compare forward declarations with
+definitions.
+
+.. TODO Should we elaborate the actual implementation of the graph traversal,
+.. which is a very weird BFS traversal?
+
+Redeclaration Chains
+^^^^^^^^^^^^^^^^^^^^
+
+The early version of the ``ASTImporter``'s merge mechanism squashed the
+declarations, i.e. it aimed to have only one declaration instead of maintaining
+a whole redeclaration chain. This early approach simply skipped importing a
+function prototype, but it imported a definition. To demonstrate the problem
+with this approach let's consider an empty "to" context and the following
+``virtual`` function declarations of ``f`` in the "from" context:
+
+.. code-block:: c++
+
+  struct B { virtual void f(); };
+  void B::f() {} // <-- let's import this definition
+
+If we imported the definition with the "squashing" approach then we would
+end-up having one declaration which is indeed a definition, but ``isVirtual()``
+returns ``false`` for it. The reason is that the definition is indeed not
+virtual, it is the property of the prototype!
+
+Consequently, we must either set the virtual flag for the definition (but then
+we create a malformed AST which the parser would never create), or we import
+the whole redeclaration chain of the function. The most recent version of the
+``ASTImporter`` uses the latter mechanism. We do import all function
+declarations - regardless if they are definitions or prototypes - in the order
+as they appear in the "from" context.
+
+.. One definition
+
+If we have an existing definition in the "to" context, then we cannot import
+another definition, we will use the existing definition. However, we can import
+prototype(s): we chain the newly imported prototype(s) to the existing
+definition. Whenever we import a new prototype from a third context, that will
+be added to the end of the redeclaration chain. This may result in long
+redeclaration chains in certain cases, e.g. if we import from several
+translation units which include the same header with the prototype.
+
+.. Squashing prototypes
+
+To mitigate the problem of long redeclaration chains of free functions, we
+could compare prototypes to see if they have the same properties and if yes
+then we could merge these prototypes. The implementation of squashing of
+prototypes for free functions is future work.
+
+.. Exception: Cannot have more than 1 prototype in-class
+
+Chaining functions this way ensures that we do copy all information from the
+source AST. Nonetheless, there is a problem with member functions: While we can
+have many prototypes for free functions, we must have only one prototype for a
+member function.
+
+.. code-block:: c++
+
+  void f(); // OK
+  void f(); // OK
+
+  struct X {
+    void f(); // OK
+    void f(); // ERROR
+  };
+  void X::f() {} // OK
+
+Thus, prototypes of member functions must be squashed, we cannot just simply
+attach a new prototype to the existing in-class prototype. Consider the
+following contexts:
+
+.. code-block:: c++
+
+  // "to" context
+  struct X {
+    void f(); // D0
+  };
+
+.. code-block:: c++
+
+  // "from" context
+  struct X {
+    void f(); // D1
+  };
+  void X::f() {} // D2
+
+When we import the prototype and the definition of ``f`` from the "from"
+context, then the resulting redecl chain will look like this ``D0 -> D2'``,
+where ``D2'`` is the copy of ``D2`` in the "to" context.
+
+.. Redecl chains of other declarations
+
+Generally speaking, when we import declarations (like enums and classes) we do
+attach the newly imported declaration to the existing redeclaration chain (if
+there is structural equivalency). We do not import, however, the whole
+redeclaration chain as we do in case of functions. Up till now, we haven't
+found any essential property of forward declarations which is similar to the
+case of the virtual flag in a member function prototype. In the future, this
+may change, though.
+
+Traversal during the Import
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The node specific import mechanisms are implemented in
+``ASTNodeImporter::VisitNode()`` functions, e.g. ``VisitFunctionDecl()``.
+When we import a declaration then first we import everything which is needed to
+call the constructor of that declaration node. Everything which can be set
+later is set after the node is created. For example, in case of  a
+``FunctionDecl`` we first import the declaration context in which the function
+is declared, then we create the ``FunctionDecl`` and only then we import the
+body of the function. This means there are implicit dependencies between AST
+nodes. These dependencies determine the order in which we visit nodes in the
+"from" context. As with the regular graph traversal algorithms like DFS, we
+keep track which nodes we have already visited in
+``ASTImporter::ImportedDecls``. Whenever we create a node then we immediately
+add that to the ``ImportedDecls``. We must not start the import of any other
+declarations before we keep track of the newly created one. This is essential,
+otherwise, we would not be able to handle circular dependencies. To enforce
+this, we wrap all constructor calls of all AST nodes in
+``GetImportedOrCreateDecl()``. This wrapper ensures that all newly created
+declarations are immediately marked as imported; also, if a declaration is
+already marked as imported then we just return its counterpart in the "to"
+context. Consequently, calling a declaration's ``::Create()`` function directly
+would lead to errors, please don't do that!
+
+Even with the use of ``GetImportedOrCreateDecl()`` there is still a
+probability of having an infinite import recursion if things are imported from
+each other in wrong way. Imagine that during the import of ``A``, the import of
+``B`` is requested before we could create the node for ``A`` (the constructor
+needs a reference to ``B``). And the same could be true for the import of ``B``
+(``A`` is requested to be imported before we could create the node for ``B``).
+In case of the :ref:`templated-described swing <templated>` we take
+extra attention to break the cyclical dependency: we import and set the
+described template only after the ``CXXRecordDecl`` is created. As a best
+practice, before creating the node in the "to" context, avoid importing of
+other nodes which are not needed for the constructor of node ``A``.
+
+Error Handling
+^^^^^^^^^^^^^^
+
+Every import function returns with either an ``llvm::Error`` or an
+``llvm::Expected<T>`` object. This enforces to check the return value of the
+import functions. If there was an error during one import then we return with
+that error. (Exception: when we import the members of a class, we collect the
+individual errors with each member and we concatenate them in one Error
+object.) We cache these errors in cases of declarations. During the next import
+call if there is an existing error we just return with that. So, clients of the
+library receive an Error object, which they must check.
+
+During import of a specific declaration, it may happen that some AST nodes had
+already been created before we recognize an error. In this case, we signal back
+the error to the caller, but the "to" context remains polluted with those nodes
+which had been created. Ideally, those nodes should not had been created, but
+that time we did not know about the error, the error happened later. Since the
+AST is immutable (most of the cases we can't remove existing nodes) we choose
+to mark these nodes as erroneous.
+
+We cache the errors associated with declarations in the "from" context in
+``ASTImporter::ImportDeclErrors`` and the ones which are associated with the
+"to" context in ``ASTImporterSharedState::ImportErrors``. Note that, there may
+be several ASTImporter objects which import into the same "to" context but from
+different "from" contexts; in this case, they have to share the associated
+errors of the "to" context.
+
+When an error happens, that propagates through the call stack, through all the
+dependant nodes. However, in case of dependency cycles, this is not enough,
+because we strive to mark the erroneous nodes so clients can act upon. In those
+cases, we have to keep track of the errors for those nodes which are
+intermediate nodes of a cycle.
+
+An **import path** is the list of the AST nodes which we visit during an Import
+call. If node ``A`` depends on node ``B`` then the path contains an ``A->B``
+edge. From the call stack of the import functions, we can read the very same
+path.
+
+Now imagine the following AST, where the ``->`` represents dependency in terms
+of the import (all nodes are declarations).
+
+.. code-block:: text
+
+  A->B->C->D
+     `->E
+
+We would like to import A.
+The import behaves like a DFS, so we will visit the nodes in this order: ABCDE.
+During the visitation we will have the following import paths:
+
+.. code-block:: text
+
+  A
+  AB
+  ABC
+  ABCD
+  ABC
+  AB
+  ABE
+  AB
+  A
+
+If during the visit of E there is an error then we set an error for E, then as
+the call stack shrinks for B, then for A:
+
+.. code-block:: text
+
+  A
+  AB
+  ABC
+  ABCD
+  ABC
+  AB
+  ABE // Error! Set an error to E
+  AB  // Set an error to B
+  A   // Set an error to A
+
+However, during the import we could import C and D without any error and they
+are independent of A,B and E. We must not set up an error for C and D. So, at
+the end of the import we have an entry in ``ImportDeclErrors`` for A,B,E but
+not for C,D.
+
+Now, what happens if there is a cycle in the import path? Let's consider this
+AST:
+
+.. code-block:: text
+
+  A->B->C->A
+     `->E
+
+During the visitation, we will have the below import paths and if during the
+visit of E there is an error then we will set up an error for E,B,A. But what's
+up with C?
+
+.. code-block:: text
+
+  A
+  AB
+  ABC
+  ABCA
+  ABC
+  AB
+  ABE // Error! Set an error to E
+  AB  // Set an error to B
+  A   // Set an error to A
+
+This time we know that both B and C are dependent on A. This means we must set
+up an error for C too. As the call stack reverses back we get to A and we must
+set up an error to all nodes which depend on A (this includes C). But C is no
+longer on the import path, it just had been previously. Such a situation can
+happen only if during the visitation we had a cycle. If we didn't have any
+cycle, then the normal way of passing an Error object through the call stack
+could handle the situation. This is why we must track cycles during the import
+process for each visited declaration.
+
+Lookup Problems
+^^^^^^^^^^^^^^^
+
+When we import a declaration from the source context then we check whether we
+already have a structurally equivalent node with the same name in the "to"
+context. If the "from" node is a definition and the found one is also a
+definition, then we do not create a new node, instead, we mark the found node
+as the imported node. If the found definition and the one we want to import
+have the same name but they are structurally in-equivalent, then we have an ODR
+violation in case of C++. If the "from" node is not a definition then we add
+that to the redeclaration chain of the found node. This behaviour is essential
+when we merge ASTs from different translation units which include the same
+header file(s). For example, we want to have only one definition for the class
+template ``std::vector``, even if we included ``<vector>`` in several
+translation units.
+
+To find a structurally equivalent node we can use the regular C/C++ lookup
+functions: ``DeclContext::noload_lookup()`` and
+``DeclContext::localUncachedLookup()``. These functions do respect the C/C++
+name hiding rules, thus you cannot find certain declarations in a given
+declaration context. For instance, unnamed declarations (anonymous structs),
+non-first ``friend`` declarations and template specializations are hidden. This
+is a problem, because if we use the regular C/C++ lookup then we create
+redundant AST nodes during the merge! Also, having two instances of the same
+node could result in false :ref:`structural in-equivalencies <structural-eq>`
+of other nodes which depend on the duplicated node. Because of these reasons,
+we created a lookup class which has the sole purpose to register all
+declarations, so later they can be looked up by subsequent import requests.
+This is the ``ASTImporterLookupTable`` class. This lookup table should be
+shared amongst the different ``ASTImporter`` instances if they happen to import
+to the very same "to" context. This is why we can use the importer specific
+lookup only via the ``ASTImporterSharedState`` class.
+
+ExternalASTSource
+~~~~~~~~~~~~~~~~~
+
+The ``ExternalASTSource`` is an abstract interface associated with the
+``ASTContext`` class. It provides the ability to read the declarations stored
+within a declaration context either for iteration or for name lookup. A
+declaration context with an external AST source may load its declarations
+on-demand. This means that the list of declarations (represented as a linked
+list, the head is ``DeclContext::FirstDecl``) could be empty. However, member
+functions like ``DeclContext::lookup()`` may initiate a load.
+
+Usually, external sources are associated with precompiled headers. For example,
+when we load a class from a PCH then the members are loaded only if we do want
+to look up something in the class' context.
+
+In case of LLDB, an implementation of the ``ExternalASTSource`` interface is
+attached to the AST context which is related to the parsed expression. This
+implementation of the ``ExternalASTSource`` interface is realized with the help
+of the ``ASTImporter`` class. This way, LLDB can reuse Clang's parsing
+machinery while synthesizing the underlying AST from the debug data (e.g. from
+DWARF). From the view of the ``ASTImporter`` this means both the "to" and the
+"from" context may have declaration contexts with external lexical storage. If
+a ``DeclContext`` in the "to" AST context has external lexical storage then we
+must take extra attention to work only with the already loaded declarations!
+Otherwise, we would end up with an uncontrolled import process. For instance,
+if we used the regular ``DeclContext::lookup()`` to find the existing
+declarations in the "to" context then the ``lookup()`` call itself would
+initiate a new import while we are in the middle of importing a declaration!
+(By the time we initiate the lookup we haven't registered yet that we already
+started to import the node of the "from" context.) This is why we use
+``DeclContext::noload_lookup()`` instead.
+
+Class Template Instantiations
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Different translation units may have class template instantiations with the
+same template arguments, but with a different set of instantiated
+``MethodDecls`` and ``FieldDecls``. Consider the following files:
+
+.. code-block:: c++
+
+  // x.h
+  template <typename T>
+  struct X {
+      int a{0}; // FieldDecl with InitListExpr
+      X(char) : a(3) {}     // (1)
+      X(int) {}             // (2)
+  };
+
+  // foo.cpp
+  void foo() {
+      // ClassTemplateSpec with ctor (1): FieldDecl without InitlistExpr
+      X<char> xc('c');
+  }
+
+  // bar.cpp
+  void bar() {
+      // ClassTemplateSpec with ctor (2): FieldDecl WITH InitlistExpr
+      X<char> xc(1);
+  }
+
+In ``foo.cpp`` we use the constructor with number ``(1)``, which explicitly
+initializes the member ``a`` to ``3``, thus the ``InitListExpr`` ``{0}`` is not
+used here and the AST node is not instantiated. However, in the case of
+``bar.cpp`` we use the constructor with number ``(2)``, which does not
+explicitly initialize the ``a`` member, so the default ``InitListExpr`` is
+needed and thus instantiated. When we merge the AST of ``foo.cpp`` and
+``bar.cpp`` we must create an AST node for the class template instantiation of
+``X<char>`` which has all the required nodes. Therefore, when we find an
+existing ``ClassTemplateSpecializationDecl`` then we merge the fields of the
+``ClassTemplateSpecializationDecl`` in the "from" context in a way that the
+``InitListExpr`` is copied if not existent yet. The same merge mechanism should
+be done in the cases of instantiated default arguments and exception
+specifications of functions.
+
+.. _visibility:
+
+Visibility of Declarations
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+During import of a global variable with external visibility, the lookup will
+find variables (with the same name) but with static visibility (linkage).
+Clearly, we cannot put them into the same redeclaration chain. The same is true
+the in case of functions. Also, we have to take care of other kinds of
+declarations like enums, classes, etc. if they are in anonymous namespaces.
+Therefore, we filter the lookup results and consider only those which have the
+same visibility as the declaration we currently import.
+
+We consider two declarations in two anonymous namespaces to have the same
+visibility only if they are imported from the same AST context.
+
+Strategies to Handle Conflicting Names
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+During the import we lookup existing declarations with the same name. We filter
+the lookup results based on their :ref:`visibility <visibility>`. If any of the
+found declarations are not structurally equivalent then we bumped to a name
+conflict error (ODR violation in C++). In this case, we return with an
+``Error`` and we set up the ``Error`` object for the declaration. However, some
+clients of the ``ASTImporter`` may require a different, perhaps less
+conservative and more liberal error handling strategy.
+
+E.g. static analysis clients may benefit if the node is created even if there
+is a name conflict. During the CTU analysis of certain projects, we recognized
+that there are global declarations which collide with declarations from other
+translation units, but they are not referenced outside from their translation
+unit. These declarations should be in an unnamed namespace ideally. If we treat
+these collisions liberally then CTU analysis can find more results. Note, the
+feature be able to choose between name conflict handling strategies is still an
+ongoing work.
+
 .. _CFG:
 
 The ``CFG`` class
@@ -1342,7 +1938,7 @@ constructed for function bodies (usually an instance of ``CompoundStmt``), but
 can also be instantiated to represent the control-flow of any class that
 subclasses ``Stmt``, which includes simple expressions.  Control-flow graphs
 are especially useful for performing `flow- or path-sensitive
-<http://en.wikipedia.org/wiki/Data_flow_analysis#Sensitivities>`_ program
+<https://en.wikipedia.org/wiki/Data_flow_analysis#Sensitivities>`_ program
 analyses on a given function.
 
 Basic Blocks
@@ -1529,7 +2125,7 @@ about them.
 
 Finally, this is not just a problem for semantic analysis.  The code generator
 and other clients have to be able to fold constants (e.g., to initialize global
-variables) and has to handle a superset of what C99 allows.  Further, these
+variables) and have to handle a superset of what C99 allows.  Further, these
 clients can benefit from extended information.  For example, we know that
 "``foo() || 1``" always evaluates to ``true``, but we can't replace the
 expression with ``true`` because it has side effects.
@@ -1638,15 +2234,15 @@ and then the semantic handling of the attribute.
 Parsing of the attribute is determined by the various syntactic forms attributes
 can take, such as GNU, C++11, and Microsoft style attributes, as well as other
 information provided by the table definition of the attribute. Ultimately, the
-parsed representation of an attribute object is an ``AttributeList`` object.
+parsed representation of an attribute object is an ``ParsedAttr`` object.
 These parsed attributes chain together as a list of parsed attributes attached
 to a declarator or declaration specifier. The parsing of attributes is handled
 automatically by Clang, except for attributes spelled as keywords. When
 implementing a keyword attribute, the parsing of the keyword and creation of the
-``AttributeList`` object must be done manually.
+``ParsedAttr`` object must be done manually.
 
 Eventually, ``Sema::ProcessDeclAttributeList()`` is called with a ``Decl`` and
-an ``AttributeList``, at which point the parsed attribute can be transformed
+an ``ParsedAttr``, at which point the parsed attribute can be transformed
 into a semantic attribute. The process by which a parsed attribute is converted
 into a semantic attribute depends on the attribute definition and semantic
 requirements of the attribute. The end result, however, is that the semantic
@@ -1664,7 +2260,7 @@ semantic checking for some attributes, etc.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The first step to adding a new attribute to Clang is to add its definition to
 `include/clang/Basic/Attr.td
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/Basic/Attr.td?view=markup>`_.
+<https://github.com/llvm/llvm-project/blob/master/clang/include/clang/Basic/Attr.td>`_.
 This tablegen definition must derive from the ``Attr`` (tablegen, not
 semantic) type, or one of its derivatives. Most attributes will derive from the
 ``InheritableAttr`` type, which specifies that the attribute can be inherited by
@@ -1725,11 +2321,11 @@ subjects in the list, but a custom diagnostic parameter can also be specified in
 the ``SubjectList``. The diagnostics generated for subject list violations are
 either ``diag::warn_attribute_wrong_decl_type`` or
 ``diag::err_attribute_wrong_decl_type``, and the parameter enumeration is found
-in `include/clang/Sema/AttributeList.h
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/Sema/AttributeList.h?view=markup>`_
+in `include/clang/Sema/ParsedAttr.h
+<https://github.com/llvm/llvm-project/blob/master/clang/include/clang/Sema/ParsedAttr.h>`_
 If a previously unused Decl node is added to the ``SubjectList``, the logic used
 to automatically determine the diagnostic parameter in `utils/TableGen/ClangAttrEmitter.cpp
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/utils/TableGen/ClangAttrEmitter.cpp?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/utils/TableGen/ClangAttrEmitter.cpp>`_
 may need to be updated.
 
 By default, all subjects in the SubjectList must either be a Decl node defined
@@ -1751,7 +2347,7 @@ All attributes must have some form of documentation associated with them.
 Documentation is table generated on the public web server by a server-side
 process that runs daily. Generally, the documentation for an attribute is a
 stand-alone definition in `include/clang/Basic/AttrDocs.td 
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/Basic/AttdDocs.td?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/include/clang/Basic/AttrDocs.td>`_
 that is named after the attribute being documented.
 
 If the attribute is not for public consumption, or is an implicitly-created
@@ -1802,7 +2398,7 @@ All arguments have a name and a flag that specifies whether the argument is
 optional. The associated C++ type of the argument is determined by the argument
 definition type. If the existing argument types are insufficient, new types can
 be created, but it requires modifying `utils/TableGen/ClangAttrEmitter.cpp
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/utils/TableGen/ClangAttrEmitter.cpp?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/utils/TableGen/ClangAttrEmitter.cpp>`_
 to properly support the type.
 
 Other Properties
@@ -1814,7 +2410,7 @@ document, however a few deserve mention.
 If the parsed form of the attribute is more complex, or differs from the
 semantic form, the ``HasCustomParsing`` bit can be set to ``1`` for the class,
 and the parsing code in `Parser::ParseGNUAttributeArgs()
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/lib/Parse/ParseDecl.cpp?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/lib/Parse/ParseDecl.cpp>`_
 can be updated for the special case. Note that this only applies to arguments
 with a GNU spelling -- attributes with a __declspec spelling currently ignore
 this flag and are handled by ``Parser::ParseMicrosoftDeclSpec``.
@@ -1823,7 +2419,7 @@ Note that setting this member to 1 will opt out of common attribute semantic
 handling, requiring extra implementation efforts to ensure the attribute
 appertains to the appropriate subject, etc.
 
-If the attribute should not be propagated from from a template declaration to an
+If the attribute should not be propagated from a template declaration to an
 instantiation of the template, set the ``Clone`` member to 0. By default, all
 attributes will be cloned to template instantiations.
 
@@ -1861,14 +2457,9 @@ requirements. To support this feature, an attribute inheriting from
 should be the same value between all arguments sharing a spelling, and
 corresponds to the parsed attribute's ``Kind`` enumerator. This allows
 attributes to share a parsed attribute kind, but have distinct semantic
-attribute classes. For instance, ``AttributeList::AT_Interrupt`` is the shared
+attribute classes. For instance, ``ParsedAttr`` is the shared
 parsed attribute kind, but ARMInterruptAttr and MSP430InterruptAttr are the
 semantic attributes generated.
-
-By default, when declarations are merging attributes, an attribute will not be
-duplicated. However, if an attribute can be duplicated during this merging
-stage, set ``DuplicatesAllowedWhileMerging`` to ``1``, and the attribute will
-be merged.
 
 By default, attribute arguments are parsed in an evaluated context. If the
 arguments for an attribute should be parsed in an unevaluated context (akin to
@@ -1882,7 +2473,7 @@ semantic attribute class object, with ``public`` access.
 Boilerplate
 ^^^^^^^^^^^
 All semantic processing of declaration attributes happens in `lib/Sema/SemaDeclAttr.cpp
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/lib/Sema/SemaDeclAttr.cpp?view=markup>`_,
+<https://github.com/llvm/llvm-project/blob/master/clang/lib/Sema/SemaDeclAttr.cpp>`_,
 and generally starts in the ``ProcessDeclAttribute()`` function. If the
 attribute is a "simple" attribute -- meaning that it requires no custom semantic
 processing aside from what is automatically  provided, add a call to
@@ -1898,11 +2489,11 @@ correct minimum number of arguments are passed, etc.
 
 If the attribute adds additional warnings, define a ``DiagGroup`` in
 `include/clang/Basic/DiagnosticGroups.td
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/Basic/DiagnosticGroups.td?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/include/clang/Basic/DiagnosticGroups.td>`_
 named after the attribute's ``Spelling`` with "_"s replaced by "-"s. If there
 is only a single diagnostic, it is permissible to use ``InGroup<DiagGroup<"your-attribute">>``
 directly in `DiagnosticSemaKinds.td
-<http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/Basic/DiagnosticSemaKinds.td?view=markup>`_
+<https://github.com/llvm/llvm-project/blob/master/clang/include/clang/Basic/DiagnosticSemaKinds.td>`_
 
 All semantic diagnostics generated for your attribute, including automatically-
 generated ones (such as subjects and argument counts), should have a
@@ -2054,7 +2645,7 @@ are similar.
      exception-handling directly.
    * Testing is extremely important in IR generation.  Use ``clang -cc1
      -emit-llvm`` and `FileCheck
-     <http://llvm.org/docs/CommandGuide/FileCheck.html>`_ to verify that you're
+     <https://llvm.org/docs/CommandGuide/FileCheck.html>`_ to verify that you're
      generating the right IR.
 
 #. Teach template instantiation how to cope with your AST node, which requires

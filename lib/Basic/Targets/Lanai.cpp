@@ -1,9 +1,8 @@
 //===--- Lanai.cpp - Implement Lanai target feature support ---------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -39,6 +38,10 @@ ArrayRef<TargetInfo::GCCRegAlias> LanaiTargetInfo::getGCCRegAliases() const {
 
 bool LanaiTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::StringSwitch<bool>(Name).Case("v11", true).Default(false);
+}
+void LanaiTargetInfo::fillValidCPUList(
+    SmallVectorImpl<StringRef> &Values) const {
+  Values.emplace_back("v11");
 }
 
 bool LanaiTargetInfo::setCPU(const std::string &Name) {

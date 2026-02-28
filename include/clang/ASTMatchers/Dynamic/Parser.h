@@ -1,14 +1,13 @@
 //===- Parser.h - Matcher expression parser ---------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 /// \file
-/// \brief Simple matcher expression parser.
+/// Simple matcher expression parser.
 ///
 /// The parser understands matcher expressions of the form:
 ///   MatcherName(Arg0, Arg1, ..., ArgN)
@@ -52,10 +51,10 @@ namespace dynamic {
 
 class Diagnostics;
 
-/// \brief Matcher expression parser.
+/// Matcher expression parser.
 class Parser {
 public:
-  /// \brief Interface to connect the parser with the registry and more.
+  /// Interface to connect the parser with the registry and more.
   ///
   /// The parser uses the Sema instance passed into
   /// parseMatcherExpression() to handle all matcher tokens. The simplest
@@ -69,7 +68,7 @@ public:
   public:
     virtual ~Sema();
 
-    /// \brief Process a matcher expression.
+    /// Process a matcher expression.
     ///
     /// All the arguments passed here have already been processed.
     ///
@@ -92,7 +91,7 @@ public:
                                                   ArrayRef<ParserValue> Args,
                                                   Diagnostics *Error) = 0;
 
-    /// \brief Look up a matcher by name.
+    /// Look up a matcher by name.
     ///
     /// \param MatcherName The matcher name found by the parser.
     ///
@@ -101,7 +100,7 @@ public:
     virtual llvm::Optional<MatcherCtor>
     lookupMatcherCtor(StringRef MatcherName) = 0;
 
-    /// \brief Compute the list of completion types for \p Context.
+    /// Compute the list of completion types for \p Context.
     ///
     /// Each element of \p Context represents a matcher invocation, going from
     /// outermost to innermost. Elements are pairs consisting of a reference to
@@ -112,7 +111,7 @@ public:
     virtual std::vector<ArgKind> getAcceptedCompletionTypes(
         llvm::ArrayRef<std::pair<MatcherCtor, unsigned>> Context);
 
-    /// \brief Compute the list of completions that match any of
+    /// Compute the list of completions that match any of
     /// \p AcceptedTypes.
     ///
     /// \param AcceptedTypes All types accepted for this completion.
@@ -125,7 +124,7 @@ public:
     getMatcherCompletions(llvm::ArrayRef<ArgKind> AcceptedTypes);
   };
 
-  /// \brief Sema implementation that uses the matcher registry to process the
+  /// Sema implementation that uses the matcher registry to process the
   ///   tokens.
   class RegistrySema : public Parser::Sema {
   public:
@@ -149,7 +148,7 @@ public:
 
   using NamedValueMap = llvm::StringMap<VariantValue>;
 
-  /// \brief Parse a matcher expression.
+  /// Parse a matcher expression.
   ///
   /// \param MatcherCode The matcher expression to parse.
   ///
@@ -178,7 +177,7 @@ public:
     return parseMatcherExpression(MatcherCode, nullptr, Error);
   }
 
-  /// \brief Parse an expression.
+  /// Parse an expression.
   ///
   /// Parses any expression supported by this parser. In general, the
   /// \c parseMatcherExpression function is a better approach to get a matcher
@@ -202,7 +201,7 @@ public:
     return parseExpression(Code, nullptr, Value, Error);
   }
 
-  /// \brief Complete an expression at the given offset.
+  /// Complete an expression at the given offset.
   ///
   /// \param S The Sema instance that will help the parser
   ///   construct the matchers. If null, it uses the default registry.
@@ -234,6 +233,7 @@ private:
          const NamedValueMap *NamedValues,
          Diagnostics *Error);
 
+  bool parseBindID(std::string &BindID);
   bool parseExpressionImpl(VariantValue *Value);
   bool parseMatcherExpressionImpl(const TokenInfo &NameToken,
                                   VariantValue *Value);

@@ -1,22 +1,36 @@
-//== CallGraph.cpp - AST-based Call graph  ----------------------*- C++ -*--==//
+//===- CallGraph.cpp - AST-based Call graph -------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 //  This file defines the AST-based CallGraph.
 //
 //===----------------------------------------------------------------------===//
+
 #include "clang/Analysis/CallGraph.h"
-#include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclBase.h"
+#include "clang/AST/DeclObjC.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/ExprObjC.h"
+#include "clang/AST/Stmt.h"
 #include "clang/AST/StmtVisitor.h"
+#include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/LLVM.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/DOTGraphTraits.h"
 #include "llvm/Support/GraphWriter.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
+#include <memory>
+#include <string>
 
 using namespace clang;
 
@@ -26,6 +40,7 @@ STATISTIC(NumObjCCallEdges, "Number of Objective-C method call edges");
 STATISTIC(NumBlockCallEdges, "Number of block call edges");
 
 namespace {
+
 /// A helper class, which walks the AST and locates all the call sites in the
 /// given function body.
 class CGBuilder : public StmtVisitor<CGBuilder> {
@@ -33,8 +48,7 @@ class CGBuilder : public StmtVisitor<CGBuilder> {
   CallGraphNode *CallerNode;
 
 public:
-  CGBuilder(CallGraph *g, CallGraphNode *N)
-    : G(g), CallerNode(N) {}
+  CGBuilder(CallGraph *g, CallGraphNode *N) : G(g), CallerNode(N) {}
 
   void VisitStmt(Stmt *S) { VisitChildren(S); }
 
@@ -65,11 +79,42 @@ public:
     VisitChildren(CE);
   }
 
+  void VisitLambdaExpr(LambdaExpr *LE) {
+    if (FunctionTemplateDecl *FTD = LE->getDependentCallOperator())
+      for (FunctionDecl *FD : FTD->specializations())
+        G->VisitFunctionDecl(FD);
+    else if (CXXMethodDecl *MD = LE->getCallOperator())
+      G->VisitFunctionDecl(MD);
+  }
+
+  void VisitCXXNewExpr(CXXNewExpr *E) {
+    if (FunctionDecl *FD = E->getOperatorNew())
+      addCalledDecl(FD);
+    VisitChildren(E);
+  }
+
+  void VisitCXXConstructExpr(CXXConstructExpr *E) {
+    CXXConstructorDecl *Ctor = E->getConstructor();
+    if (FunctionDecl *Def = Ctor->getDefinition())
+      addCalledDecl(Def);
+    VisitChildren(E);
+  }
+
+  // Include the evaluation of the default argument.
+  void VisitCXXDefaultArgExpr(CXXDefaultArgExpr *E) {
+    Visit(E->getExpr());
+  }
+
+  // Include the evaluation of the default initializers in a class.
+  void VisitCXXDefaultInitExpr(CXXDefaultInitExpr *E) {
+    Visit(E->getExpr());
+  }
+
   // Adds may-call edges for the ObjC message sends.
   void VisitObjCMessageExpr(ObjCMessageExpr *ME) {
     if (ObjCInterfaceDecl *IDecl = ME->getReceiverInterface()) {
       Selector Sel = ME->getSelector();
-      
+
       // Find the callee definition within the same translation unit.
       Decl *D = nullptr;
       if (ME->isInstanceMessage())
@@ -90,7 +135,7 @@ public:
   }
 };
 
-} // end anonymous namespace
+} // namespace
 
 void CallGraph::addNodesForBlocks(DeclContext *D) {
   if (BlockDecl *BD = dyn_cast<BlockDecl>(D))
@@ -105,7 +150,7 @@ CallGraph::CallGraph() {
   Root = getOrInsertNode(nullptr);
 }
 
-CallGraph::~CallGraph() {}
+CallGraph::~CallGraph() = default;
 
 bool CallGraph::includeInGraph(const Decl *D) {
   assert(D);
@@ -129,13 +174,20 @@ bool CallGraph::includeInGraph(const Decl *D) {
 void CallGraph::addNodeForDecl(Decl* D, bool IsGlobal) {
   assert(D);
 
-  // Allocate a new node, mark it as root, and process it's calls.
+  // Allocate a new node, mark it as root, and process its calls.
   CallGraphNode *Node = getOrInsertNode(D);
 
   // Process all the calls by this function as well.
   CGBuilder builder(this, Node);
   if (Stmt *Body = D->getBody())
     builder.Visit(Body);
+
+  // Include C++ constructor member initializers.
+  if (auto constructor = dyn_cast<CXXConstructorDecl>(D)) {
+    for (CXXCtorInitializer *init : constructor->inits()) {
+      builder.Visit(init->getInit());
+    }
+  }
 }
 
 CallGraphNode *CallGraph::getNode(const Decl *F) const {
@@ -152,7 +204,7 @@ CallGraphNode *CallGraph::getOrInsertNode(Decl *F) {
   if (Node)
     return Node.get();
 
-  Node = llvm::make_unique<CallGraphNode>(F);
+  Node = std::make_unique<CallGraphNode>(F);
   // Make Root node a parent of all functions to make sure all are reachable.
   if (F)
     Root->addCallee(Node.get());
@@ -164,8 +216,8 @@ void CallGraph::print(raw_ostream &OS) const {
 
   // We are going to print the graph in reverse post order, partially, to make
   // sure the output is deterministic.
-  llvm::ReversePostOrderTraversal<const clang::CallGraph*> RPOT(this);
-  for (llvm::ReversePostOrderTraversal<const clang::CallGraph*>::rpo_iterator
+  llvm::ReversePostOrderTraversal<const CallGraph *> RPOT(this);
+  for (llvm::ReversePostOrderTraversal<const CallGraph *>::rpo_iterator
          I = RPOT.begin(), E = RPOT.end(); I != E; ++I) {
     const CallGraphNode *N = *I;
 
@@ -197,7 +249,7 @@ void CallGraph::viewGraph() const {
 
 void CallGraphNode::print(raw_ostream &os) const {
   if (const NamedDecl *ND = dyn_cast_or_null<NamedDecl>(FD))
-      return ND->printName(os);
+      return ND->printQualifiedName(os);
   os << "< >";
 }
 
@@ -209,8 +261,7 @@ namespace llvm {
 
 template <>
 struct DOTGraphTraits<const CallGraph*> : public DefaultDOTGraphTraits {
-
-  DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
+  DOTGraphTraits (bool isSimple = false) : DefaultDOTGraphTraits(isSimple) {}
 
   static std::string getNodeLabel(const CallGraphNode *Node,
                                   const CallGraph *CG) {
@@ -222,6 +273,6 @@ struct DOTGraphTraits<const CallGraph*> : public DefaultDOTGraphTraits {
     else
       return "< >";
   }
-
 };
-}
+
+} // namespace llvm

@@ -1,6 +1,10 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
-// RUN: %clang_cc1 -verify -fopenmp -std=c++98 %s
-// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp-simd -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify -fopenmp-simd -std=c++11 %s -Wuninitialized
 
 void foo() {
 }
@@ -56,7 +60,7 @@ T tmain(T argc, S **argv) { //expected-note 2 {{declared here}}
     argv[0][i] = argv[0][i] - argv[0][i-ST]; // expected-error 2 {{expected 2 for loops after '#pragma omp teams distribute simd', but found only 1}}
 
 // expected-error@+7 2 {{directive '#pragma omp teams distribute simd' cannot contain more than one 'collapse' clause}}
-// expected-error@+6 2 {{argument to 'collapse' clause must be a strictly positive integer value}}
+// expected-error@+6 {{argument to 'collapse' clause must be a strictly positive integer value}}
 // expected-error@+5 2 {{expression is not an integral constant expression}}
 #if __cplusplus >= 201103L
 // expected-note@+3 2 {{non-constexpr function 'foobool' cannot be used in a constant expression}}
@@ -132,7 +136,7 @@ int main(int argc, char **argv) {
 
 // expected-error@+7 {{expression is not an integral constant expression}}
 // expected-error@+6 2 {{directive '#pragma omp teams distribute simd' cannot contain more than one 'collapse' clause}}
-// expected-error@+5 2 {{argument to 'collapse' clause must be a strictly positive integer value}}
+// expected-error@+5 {{argument to 'collapse' clause must be a strictly positive integer value}}
 #if __cplusplus >= 201103L
 // expected-note@+3 {{non-constexpr function 'foobool' cannot be used in a constant expression}}
 #endif

@@ -4,8 +4,8 @@
 
 namespace basic {
 
-// CHECK64: VarDecl=v:[[@LINE+2]]:6 (Definition) [type=void] [typekind=Void]
-// CHECK32: VarDecl=v:[[@LINE+1]]:6 (Definition) [type=void] [typekind=Void]
+// CHECK64: VarDecl=v:[[@LINE+2]]:6 (Definition) (invalid) [type=void] [typekind=Void]
+// CHECK32: VarDecl=v:[[@LINE+1]]:6 (Definition) (invalid) [type=void] [typekind=Void]
 void v;
 
 // CHECK64: VarDecl=v1:[[@LINE+2]]:7 (Definition) [type=void *] [typekind=Pointer] [sizeof=8] [alignof=8]
@@ -398,6 +398,12 @@ plopplop;
 // CHECK64: StructDecl=lastValid:[[@LINE+2]]:8 (Definition) [type=CrashTest::lastValid] [typekind=Record] [sizeof=1] [alignof=1]
 // CHECK32: StructDecl=lastValid:[[@LINE+1]]:8 (Definition) [type=CrashTest::lastValid] [typekind=Record] [sizeof=1] [alignof=1]
 struct lastValid {
+};
+
+// CHECK64: CXXMethod=Tie:[[@LINE+3]]:8 (const) [type=auto (void *) const] [typekind=FunctionProto] [sizeof=1] [alignof=4] [resulttype=auto] [resulttypekind=Auto] [resultsizeof=-6] [resultalignof=-6]
+// CHECK32: CXXMethod=Tie:[[@LINE+2]]:8 (const) [type=auto (void *) const] [typekind=FunctionProto] [sizeof=1] [alignof=4] [resulttype=auto] [resulttypekind=Auto] [resultsizeof=-6] [resultalignof=-6]
+class BrowsingContext {
+  auto Tie(void*) const;
 };
 
 }

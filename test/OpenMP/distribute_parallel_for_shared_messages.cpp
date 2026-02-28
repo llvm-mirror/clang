@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 %s -Wno-openmp-target -Wuninitialized
 
 
 struct S1; // expected-note 2 {{declared here}}
@@ -115,7 +117,7 @@ T tmain(T argc, S **argv) {
 
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute parallel for shared (a, b, c, d, f)
+#pragma omp distribute parallel for shared (a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}}
   for(int k = 0 ; k < n ; k++) {
     acc++;
   }
@@ -289,7 +291,7 @@ int main(int argc, char **argv) {
 
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute parallel for shared (a, b, c, d, f)
+#pragma omp distribute parallel for shared (a, b, c, d, f) // expected-error {{incomplete type 'S1' where a complete type is required}}
   for(int k = 0 ; k < n ; k++) {
     acc++;
   }

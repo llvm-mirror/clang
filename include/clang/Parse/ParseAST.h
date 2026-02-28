@@ -1,9 +1,8 @@
 //===--- ParseAST.h - Define the ParseAST method ----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,7 +22,7 @@ namespace clang {
   class CodeCompleteConsumer;
   class Sema;
 
-  /// \brief Parse the entire file specified, notifying the ASTConsumer as
+  /// Parse the entire file specified, notifying the ASTConsumer as
   /// the file is parsed.
   ///
   /// This operation inserts the parsed decls into the translation
@@ -42,7 +41,7 @@ namespace clang {
                 CodeCompleteConsumer *CompletionConsumer = nullptr,
                 bool SkipFunctionBodies = false);
 
-  /// \brief Parse the main file known to the preprocessor, producing an 
+  /// Parse the main file known to the preprocessor, producing an
   /// abstract syntax tree.
   void ParseAST(Sema &S, bool PrintStats = false,
                 bool SkipFunctionBodies = false);

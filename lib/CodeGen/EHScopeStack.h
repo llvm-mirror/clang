@@ -1,9 +1,8 @@
 //===-- EHScopeStack.h - Stack for cleanup IR generation --------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -200,14 +199,14 @@ public:
     SavedTuple Saved;
 
     template <std::size_t... Is>
-    T restore(CodeGenFunction &CGF, llvm::index_sequence<Is...>) {
+    T restore(CodeGenFunction &CGF, std::index_sequence<Is...>) {
       // It's important that the restores are emitted in order. The braced init
       // list guarantees that.
       return T{DominatingValue<As>::restore(CGF, std::get<Is>(Saved))...};
     }
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
-      restore(CGF, llvm::index_sequence_for<As...>()).Emit(CGF, flags);
+      restore(CGF, std::index_sequence_for<As...>()).Emit(CGF, flags);
     }
 
   public:

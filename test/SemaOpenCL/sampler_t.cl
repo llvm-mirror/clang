@@ -1,11 +1,17 @@
 // RUN: %clang_cc1 %s -verify -pedantic -fsyntax-only
 // RUN: %clang_cc1 %s -verify -pedantic -fsyntax-only -DCHECK_SAMPLER_VALUE -Wspir-compat -triple amdgcn--amdhsa
 // RUN: %clang_cc1 %s -verify -pedantic -fsyntax-only -DCHECK_SAMPLER_VALUE -triple spir-unknown-unknown
+// RUN: %clang_cc1 %s -cl-std=CL2.0 -verify -pedantic -fsyntax-only
+// RUN: %clang_cc1 %s -cl-std=CL2.0 -verify -pedantic -fsyntax-only -DCHECK_SAMPLER_VALUE -Wspir-compat -triple amdgcn--amdhsa
+// RUN: %clang_cc1 %s -cl-std=CL2.0 -verify -pedantic -fsyntax-only -DCHECK_SAMPLER_VALUE -triple spir-unknown-unknown
 
 #define CLK_ADDRESS_CLAMP_TO_EDGE       2
 #define CLK_NORMALIZED_COORDS_TRUE      1
 #define CLK_FILTER_NEAREST              0x10
 #define CLK_FILTER_LINEAR               0x20
+
+typedef float float4 __attribute__((ext_vector_type(4)));
+float4 read_imagef(read_only image1d_t, sampler_t, float);
 
 constant sampler_t glb_smp = CLK_ADDRESS_CLAMP_TO_EDGE | CLK_NORMALIZED_COORDS_TRUE | CLK_FILTER_LINEAR;
 constant sampler_t glb_smp2; // expected-error{{variable in constant address space must be initialized}}
@@ -33,6 +39,8 @@ constant sampler_t glb_smp9 = 0x100000000LL; // expected-error{{sampler_t initia
 
 void foo(sampler_t); // expected-note{{passing argument to parameter here}}
 
+void constant_sampler(constant sampler_t s); // expected-error{{parameter may not be qualified with an address space}}
+
 constant struct sampler_s {
   sampler_t smp; // expected-error{{the 'sampler_t' type cannot be used to declare a structure or union field}}
 } sampler_str = {0};
@@ -46,39 +54,18 @@ const constant sampler_t glb_smp11 = CLK_ADDRESS_CLAMP_TO_EDGE | CLK_NORMALIZED_
 
 void kernel ker(sampler_t argsmp) {
   local sampler_t smp; // expected-error{{sampler type cannot be used with the __local and __global address space qualifiers}}
-  const sampler_t const_smp = CLK_ADDRESS_CLAMP_TO_EDGE | CLK_NORMALIZED_COORDS_TRUE | CLK_FILTER_LINEAR;
-  const sampler_t const_smp2;
-  const sampler_t const_smp3 = const_smp;
-  const sampler_t const_smp4 = f();
   const sampler_t const_smp5 = 1.0f; // expected-error{{initializing 'const sampler_t' with an expression of incompatible type 'float'}}
   const sampler_t const_smp6 = 0x100000000LL; // expected-error{{sampler_t initialization requires 32-bit integer, not 'long long'}}
 
-  foo(glb_smp);
-  foo(glb_smp2);
-  foo(glb_smp3);
-  foo(glb_smp4);
-  foo(glb_smp5);
-  foo(glb_smp6);
-  foo(glb_smp7);
-  foo(glb_smp8);
-  foo(glb_smp9);
-  foo(smp);
-  foo(sampler_str.smp);
-  foo(const_smp);
-  foo(const_smp2);
-  foo(const_smp3);
-  foo(const_smp4);
-  foo(const_smp5);
-  foo(const_smp6);
-  foo(argsmp);
-  foo(5);
   foo(5.0f); // expected-error {{passing 'float' to parameter of incompatible type 'sampler_t'}}
-  sampler_t sa[] = {argsmp, const_smp}; // expected-error {{array of 'sampler_t' type is invalid in OpenCL}}
-  foo(sa[0]);
-  foo(bad());
+  sampler_t sa[] = {argsmp, glb_smp}; // expected-error {{array of 'sampler_t' type is invalid in OpenCL}}
 }
 
+#if __OPENCL_C_VERSION__ == 200
+void bad(sampler_t*); // expected-error{{pointer to type '__generic sampler_t' is invalid in OpenCL}}
+#else
 void bad(sampler_t*); // expected-error{{pointer to type 'sampler_t' is invalid in OpenCL}}
+#endif
 
 void bar() {
   sampler_t smp1 = CLK_ADDRESS_CLAMP_TO_EDGE | CLK_NORMALIZED_COORDS_TRUE | CLK_FILTER_LINEAR;
@@ -90,3 +77,7 @@ void bar() {
   foo(smp1+1); //expected-error{{invalid operands to binary expression ('sampler_t' and 'int')}}
 }
 
+void smp_args(read_only image1d_t image) {
+  // Test that parentheses around sampler arguments are ignored.
+  float4 res = read_imagef(image, (glb_smp10), 0.0f);
+}

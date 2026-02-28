@@ -34,6 +34,15 @@ bar:
   return &&bar;  // expected-warning {{returning address of label, which is local}}
 }
 
+// PR38569: Don't warn when returning a label from a statement expression.
+void test10_logpc(void*);
+void test10a() {
+  test10_logpc(({
+    my_pc:
+      &&my_pc;
+  }));
+}
+
 // PR6034
 void test11(int bit) {
   switch (bit)
@@ -109,4 +118,22 @@ void test_pr22849() {
   enum E {
     SIZE = sizeof(({unsigned long __ptr; __ptr;}))
   };
+}
+
+// GCC ignores empty statements at the end of compound expressions where the
+// result type is concerned.
+void test13() {
+  int a;
+  a = ({ 1; });
+  a = ({1;; });
+  a = ({int x = 1; (void)x; }); // expected-error {{assigning to 'int' from incompatible type 'void'}}
+  a = ({int x = 1; (void)x;; }); // expected-error {{assigning to 'int' from incompatible type 'void'}}
+}
+
+void test14() { return ({}); }
+void test15() {
+  return ({;;;; });
+}
+void test16() {
+  return ({test:;; });
 }

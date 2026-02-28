@@ -1,9 +1,8 @@
 //===- lib/Tooling/Execution.cpp - Standalone clang action execution. -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,9 +29,11 @@ static ArgumentsAdjuster getDefaultArgumentsAdjusters() {
 StandaloneToolExecutor::StandaloneToolExecutor(
     const CompilationDatabase &Compilations,
     llvm::ArrayRef<std::string> SourcePaths,
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> BaseFS,
     std::shared_ptr<PCHContainerOperations> PCHContainerOps)
-    : Tool(Compilations, SourcePaths), Context(&Results),
-      ArgsAdjuster(getDefaultArgumentsAdjusters()) {
+    : Tool(Compilations, SourcePaths, std::move(PCHContainerOps),
+           std::move(BaseFS)),
+      Context(&Results), ArgsAdjuster(getDefaultArgumentsAdjusters()) {
   // Use self-defined default argument adjusters instead of the default
   // adjusters that come with the old `ClangTool`.
   Tool.clearArgumentsAdjusters();
@@ -43,7 +44,7 @@ StandaloneToolExecutor::StandaloneToolExecutor(
     std::shared_ptr<PCHContainerOperations> PCHContainerOps)
     : OptionsParser(std::move(Options)),
       Tool(OptionsParser->getCompilations(), OptionsParser->getSourcePathList(),
-           PCHContainerOps),
+           std::move(PCHContainerOps)),
       Context(&Results), ArgsAdjuster(getDefaultArgumentsAdjusters()) {
   Tool.clearArgumentsAdjusters();
 }
@@ -75,7 +76,7 @@ public:
     if (OptionsParser.getSourcePathList().empty())
       return make_string_error(
           "[StandaloneToolExecutorPlugin] No positional argument found.");
-    return llvm::make_unique<StandaloneToolExecutor>(std::move(OptionsParser));
+    return std::make_unique<StandaloneToolExecutor>(std::move(OptionsParser));
   }
 };
 

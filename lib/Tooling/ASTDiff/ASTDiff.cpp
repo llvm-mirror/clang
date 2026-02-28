@@ -1,9 +1,8 @@
 //===- ASTDiff.cpp - AST differencing implementation-----------*- C++ -*- -===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -36,8 +35,8 @@ public:
   Mapping &operator=(Mapping &&Other) = default;
 
   Mapping(size_t Size) {
-    SrcToDst = llvm::make_unique<NodeId[]>(Size);
-    DstToSrc = llvm::make_unique<NodeId[]>(Size);
+    SrcToDst = std::make_unique<NodeId[]>(Size);
+    DstToSrc = std::make_unique<NodeId[]>(Size);
   }
 
   void link(NodeId Src, NodeId Dst) {
@@ -238,8 +237,8 @@ struct PreorderVisitor : public RecursiveASTVisitor<PreorderVisitor> {
     return true;
   }
   bool TraverseStmt(Stmt *S) {
-    if (S)
-      S = S->IgnoreImplicit();
+    if (auto *E = dyn_cast_or_null<Expr>(S))
+      S = E->IgnoreImplicit();
     if (isNodeExcluded(Tree.AST.getSourceManager(), S))
       return true;
     auto SavedState = PreTraverse(S);
@@ -369,7 +368,7 @@ SyntaxTree::Impl::getRelativeName(const NamedDecl *ND,
   else if (AST.getLangOpts().CPlusPlus11)
     if (auto *Tag = dyn_cast<TagDecl>(Context))
       ContextPrefix = Tag->getQualifiedNameAsString();
-  // Strip the qualifier, if Val refers to somthing in the current scope.
+  // Strip the qualifier, if Val refers to something in the current scope.
   // But leave one leading ':' in place, so that we know that this is a
   // relative path.
   if (!ContextPrefix.empty() && StringRef(Val).startswith(ContextPrefix))
@@ -566,13 +565,13 @@ public:
   ZhangShashaMatcher(const ASTDiff::Impl &DiffImpl, const SyntaxTree::Impl &T1,
                      const SyntaxTree::Impl &T2, NodeId Id1, NodeId Id2)
       : DiffImpl(DiffImpl), S1(T1, Id1), S2(T2, Id2) {
-    TreeDist = llvm::make_unique<std::unique_ptr<double[]>[]>(
+    TreeDist = std::make_unique<std::unique_ptr<double[]>[]>(
         size_t(S1.getSize()) + 1);
-    ForestDist = llvm::make_unique<std::unique_ptr<double[]>[]>(
+    ForestDist = std::make_unique<std::unique_ptr<double[]>[]>(
         size_t(S1.getSize()) + 1);
     for (int I = 0, E = S1.getSize() + 1; I < E; ++I) {
-      TreeDist[I] = llvm::make_unique<double[]>(size_t(S2.getSize()) + 1);
-      ForestDist[I] = llvm::make_unique<double[]>(size_t(S2.getSize()) + 1);
+      TreeDist[I] = std::make_unique<double[]>(size_t(S2.getSize()) + 1);
+      ForestDist[I] = std::make_unique<double[]>(size_t(S2.getSize()) + 1);
     }
   }
 
@@ -741,7 +740,7 @@ public:
       List.pop();
     }
     // TODO this is here to get a stable output, not a good heuristic
-    std::sort(Result.begin(), Result.end());
+    llvm::sort(Result);
     return Result;
   }
   int peekMax() const {
@@ -845,9 +844,8 @@ void ASTDiff::Impl::matchBottomUp(Mapping &M) const {
     }
     bool Matched = M.hasSrc(Id1);
     const Node &N1 = T1.getNode(Id1);
-    bool MatchedChildren =
-        std::any_of(N1.Children.begin(), N1.Children.end(),
-                    [&](NodeId Child) { return M.hasSrc(Child); });
+    bool MatchedChildren = llvm::any_of(
+        N1.Children, [&](NodeId Child) { return M.hasSrc(Child); });
     if (Matched || !MatchedChildren)
       continue;
     NodeId Id2 = findCandidate(M, Id1);
@@ -962,7 +960,7 @@ void ASTDiff::Impl::computeChangeKinds(Mapping &M) {
 
 ASTDiff::ASTDiff(SyntaxTree &T1, SyntaxTree &T2,
                  const ComparisonOptions &Options)
-    : DiffImpl(llvm::make_unique<Impl>(*T1.TreeImpl, *T2.TreeImpl, Options)) {}
+    : DiffImpl(std::make_unique<Impl>(*T1.TreeImpl, *T2.TreeImpl, Options)) {}
 
 ASTDiff::~ASTDiff() = default;
 
@@ -971,7 +969,7 @@ NodeId ASTDiff::getMapped(const SyntaxTree &SourceTree, NodeId Id) const {
 }
 
 SyntaxTree::SyntaxTree(ASTContext &AST)
-    : TreeImpl(llvm::make_unique<SyntaxTree::Impl>(
+    : TreeImpl(std::make_unique<SyntaxTree::Impl>(
           this, AST.getTranslationUnitDecl(), AST)) {}
 
 SyntaxTree::~SyntaxTree() = default;

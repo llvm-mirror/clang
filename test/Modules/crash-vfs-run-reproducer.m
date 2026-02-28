@@ -3,8 +3,8 @@
 // RUN: rm -rf %t
 // RUN: mkdir -p %t/i %t/m %t
 
-// RUN: not env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
-// RUN: %clang -fsyntax-only -nostdinc %s \
+// RUN: env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
+// RUN: not %clang -fsyntax-only -nostdinc %s \
 // RUN:     -I %S/Inputs/crash-recovery/usr/include -isysroot %/t/i/ \
 // RUN:     -fmodules -fmodules-cache-path=%t/m/ 2>&1 | FileCheck %s
 
@@ -36,7 +36,6 @@
 // CHECKYAML: 'case-sensitive':
 // CHECKYAML-NEXT: 'use-external-names': 'false',
 // CHECKYAML-NEXT: 'overlay-relative': 'true',
-// CHECKYAML-NEXT: 'ignore-non-existent-contents': 'false'
 // CHECKYAML: 'type': 'directory'
 // CHECKYAML: 'name': "/[[PATH:.*]]/Inputs/crash-recovery/usr/include",
 // CHECKYAML-NEXT: 'contents': [

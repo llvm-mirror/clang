@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
 
 void foo() {
 }
@@ -11,7 +13,7 @@ struct S1; // expected-note {{declared here}} expected-note{{forward declaration
 extern S1 a;
 class S2 {
   mutable int a;
-  
+
 public:
   S2() : a(0) {}
   S2(const S2 &s2) : a(s2.a) {}
@@ -24,7 +26,7 @@ const S2 ba[5];
 class S3 {
   int a;
   S3 &operator=(const S3 &s3);
-  
+
 public:
   S3() : a(0) {} // expected-note {{candidate constructor not viable: requires 0 arguments, but 1 was provided}}
   S3(S3 &s3) : a(s3.a) {} // expected-note {{candidate constructor not viable: 1st argument ('const S3') would lose const qualifier}}
@@ -52,6 +54,8 @@ public:
   S6() : a(0) { }
 };
 
+extern int omp_default_mem_alloc;
+
 S3 h;
 #pragma omp threadprivate(h) // expected-note {{defined as threadprivate or thread local}}
 
@@ -61,7 +65,7 @@ int main(int argc, char **argv) {
   S4 e(4);
   S5 g(5);
   S6 p;
-  int i;
+  int i, z;
   int &j = i;
   #pragma omp distribute firstprivate // expected-error {{expected '(' after 'firstprivate'}}
   for (i = 0; i < argc; ++i) foo();
@@ -83,7 +87,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
-  #pragma omp distribute firstprivate (argc)
+  #pragma omp distribute firstprivate (argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
@@ -91,7 +95,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
-  #pragma omp distribute firstprivate (a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+  #pragma omp distribute firstprivate (a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}} expected-warning {{Non-trivial type 'const S2' is mapped, only trivial types are guaranteed to be mapped correctly}} expected-warning {{Non-trivial type 'const S3' is mapped, only trivial types are guaranteed to be mapped correctly}} expected-error {{incomplete type 'S1' where a complete type is required}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
@@ -99,15 +103,15 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
-  #pragma omp distribute firstprivate(ba)
+  #pragma omp distribute firstprivate(ba) // expected-warning {{Non-trivial type 'const S2 [5]' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
-  #pragma omp distribute firstprivate(ca) // expected-error {{no matching constructor for initialization of 'S3'}}
+  #pragma omp distribute firstprivate(ca) // expected-error {{no matching constructor for initialization of 'S3'}} expected-warning {{Non-trivial type 'const S3 [5]' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams
-  #pragma omp distribute firstprivate(da)
+  #pragma omp distribute firstprivate(da, z)
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target
   #pragma omp teams

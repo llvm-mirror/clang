@@ -1,9 +1,8 @@
-//===--- clang/Basic/CharInfo.h - Classifying ASCII Characters ------------===//
+//===--- clang/Basic/CharInfo.h - Classifying ASCII Characters --*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -180,14 +179,15 @@ LLVM_READONLY inline char toUppercase(char c) {
 
 /// Return true if this is a valid ASCII identifier.
 ///
-/// Note that this is a very simple check; it does not accept '$' or UCNs as
-/// valid identifier characters.
-LLVM_READONLY inline bool isValidIdentifier(StringRef S) {
-  if (S.empty() || !isIdentifierHead(S[0]))
+/// Note that this is a very simple check; it does not accept UCNs as valid
+/// identifier characters.
+LLVM_READONLY inline bool isValidIdentifier(StringRef S,
+                                            bool AllowDollar = false) {
+  if (S.empty() || !isIdentifierHead(S[0], AllowDollar))
     return false;
 
   for (StringRef::iterator I = S.begin(), E = S.end(); I != E; ++I)
-    if (!isIdentifierBody(*I))
+    if (!isIdentifierBody(*I, AllowDollar))
       return false;
 
   return true;

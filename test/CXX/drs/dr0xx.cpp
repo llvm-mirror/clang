@@ -413,6 +413,36 @@ namespace dr33 { // dr33: yes
   void g(X::S);
   template<typename Z> Z g(Y::T);
   void h() { f(&g); } // expected-error {{ambiguous}}
+
+  template<typename T> void t(X::S);
+  template<typename T, typename U = void> void u(X::S); // expected-error 0-1{{default template argument}}
+  void templ() { f(t<int>); f(u<int>); }
+
+  // Even though v<int> cannot select the first overload, ADL considers it
+  // and adds namespace Z to the set of associated namespaces, and then picks
+  // Z::f even though that function has nothing to do with any associated type.
+  namespace Z { struct Q; void f(void(*)()); }
+  template<int> Z::Q v();
+  template<typename> void v();
+  void unrelated_templ() { f(v<int>); }
+
+  namespace dependent {
+    struct X {};
+    template<class T> struct Y {
+      friend int operator+(X, void(*)(Y)) {}
+    };
+
+    template<typename T> void f(Y<T>);
+    int use = X() + f<int>; // expected-error {{invalid operands}}
+  }
+
+  namespace member {
+    struct Q {};
+    struct Y { friend int operator+(Q, Y (*)()); };
+    struct X { template<typename> static Y f(); };
+    int m = Q() + X().f<int>; // ok
+    int n = Q() + (&(X().f<int>)); // ok
+  }
 }
 
 // dr34: na
@@ -499,10 +529,10 @@ namespace dr42 { // dr42: yes
 
 // dr43: na
 
-namespace dr44 { // dr44: yes
+namespace dr44 { // dr44: sup 727
   struct A {
     template<int> void f();
-    template<> void f<0>(); // expected-error {{explicit specialization of 'f' in class scope}}
+    template<> void f<0>();
   };
 }
 
@@ -839,18 +869,17 @@ namespace dr68 { // dr68: yes
 }
 
 namespace dr69 { // dr69: yes
-  template<typename T> static void f() {}
+  template<typename T> static void f() {} // #dr69-f
   // FIXME: Should we warn here?
   inline void g() { f<int>(); }
-  // FIXME: This should be rejected, per [temp.explicit]p11.
-  extern template void f<char>();
+  extern template void f<char>(); // expected-error {{explicit instantiation declaration of 'f' with internal linkage}}
 #if __cplusplus < 201103L
   // expected-error@-2 {{C++11 extension}}
 #endif
   template<void(*)()> struct Q {};
   Q<&f<int> > q;
 #if __cplusplus < 201103L
-  // expected-error@-2 {{internal linkage}} expected-note@-11 {{here}}
+  // expected-error@-2 {{internal linkage}} expected-note@#dr69-f {{here}}
 #endif
 }
 
@@ -911,9 +940,8 @@ namespace dr80 { // dr80: yes
     static int B; // expected-error {{same name as its class}}
   };
   struct C {
-    int C; // expected-note {{hidden by}}
-    // FIXME: These diagnostics aren't very good.
-    C(); // expected-error {{must use 'struct' tag to refer to}} expected-error {{expected member name}}
+    int C; // expected-error {{same name as its class}}
+    C();
   };
   struct D {
     D();

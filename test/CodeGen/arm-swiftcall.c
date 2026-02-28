@@ -29,7 +29,7 @@ SWIFTCALL void context_2(void *arg0, CONTEXT void *self) {}
 // CHECK-LABEL: define {{.*}} void @context_2(i8*{{.*}}, i8* swiftself
 
 SWIFTCALL void context_error_1(CONTEXT int *self, ERROR float **error) {}
-// CHECK-LABEL: define {{.*}} void @context_error_1(i32* swiftself{{.*}}, float** swifterror)
+// CHECK-LABEL: define {{.*}} void @context_error_1(i32* swiftself{{.*}}, float** swifterror %0)
 // CHECK:       [[TEMP:%.*]] = alloca float*, align 4
 // CHECK:       [[T0:%.*]] = load float*, float** [[ERRORARG:%.*]], align 4
 // CHECK:       store float* [[T0]], float** [[TEMP]], align 4
@@ -51,7 +51,7 @@ void test_context_error_1() {
 // CHECK:       store float* [[T0]], float** [[ERROR]], align 4
 
 SWIFTCALL void context_error_2(short s, CONTEXT int *self, ERROR float **error) {}
-// CHECK-LABEL: define {{.*}} void @context_error_2(i16{{.*}}, i32* swiftself{{.*}}, float** swifterror)
+// CHECK-LABEL: define {{.*}} void @context_error_2(i16{{.*}}, i32* swiftself{{.*}}, float** swifterror %0)
 
 /*****************************************************************************/
 /********************************** LOWERING *********************************/
@@ -103,9 +103,7 @@ typedef struct {
 TEST(struct_1);
 // CHECK-LABEL: define {{.*}} @return_struct_1()
 // CHECK:   [[RET:%.*]] = alloca [[REC:%.*]], align 4
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align 4
 // CHECK:   @llvm.memset
-// CHECK:   @llvm.memcpy
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[RET]] to [[AGG:{ i32, i16, \[2 x i8\], float, float }]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
 // CHECK:   [[FIRST:%.*]] = load i32, i32* [[T0]], align 4
@@ -120,7 +118,7 @@ TEST(struct_1);
 // CHECK:   [[T2:%.*]] = insertvalue [[UAGG]] [[T1]], float [[THIRD]], 2
 // CHECK:   [[T3:%.*]] = insertvalue [[UAGG]] [[T2]], float [[FOURTH]], 3
 // CHECK:   ret [[UAGG]] [[T3]]
-// CHECK-LABEL: define {{.*}} @take_struct_1(i32, i16, float, float)
+// CHECK-LABEL: define {{.*}} @take_struct_1(i32 %0, i16 %1, float %2, float %3)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align 4
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -170,8 +168,6 @@ typedef struct {
 TEST(struct_2);
 // CHECK-LABEL: define {{.*}} @return_struct_2()
 // CHECK:   [[RET:%.*]] = alloca [[REC:%.*]], align 4
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align 4
-// CHECK:   @llvm.memcpy
 // CHECK:   @llvm.memcpy
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[RET]] to [[AGG:{ i32, i32, float, float }]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -187,7 +183,7 @@ TEST(struct_2);
 // CHECK:   [[T2:%.*]] = insertvalue [[UAGG]] [[T1]], float [[THIRD]], 2
 // CHECK:   [[T3:%.*]] = insertvalue [[UAGG]] [[T2]], float [[FOURTH]], 3
 // CHECK:   ret [[UAGG]] [[T3]]
-// CHECK-LABEL: define {{.*}} @take_struct_2(i32, i32, float, float)
+// CHECK-LABEL: define {{.*}} @take_struct_2(i32 %0, i32 %1, float %2, float %3)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align 4
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -240,9 +236,7 @@ typedef struct {
 TEST(struct_misaligned_1)
 // CHECK-LABEL: define {{.*}} @return_struct_misaligned_1()
 // CHECK:   [[RET:%.*]] = alloca [[REC:%.*]], align
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align
 // CHECK:   @llvm.memset
-// CHECK:   @llvm.memcpy
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[RET]] to [[AGG:{ i32, i8 }]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
 // CHECK:   [[FIRST:%.*]] = load i32, i32* [[T0]], align
@@ -251,7 +245,7 @@ TEST(struct_misaligned_1)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ i32, i8 }]] undef, i32 [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], i8 [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_struct_misaligned_1(i32, i8)
+// CHECK-LABEL: define {{.*}} @take_struct_misaligned_1(i32 %0, i8 %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -282,8 +276,6 @@ typedef union {
 TEST(union_het_fp)
 // CHECK-LABEL: define {{.*}} @return_union_het_fp()
 // CHECK:   [[RET:%.*]] = alloca [[REC:%.*]], align {{(4|8)}}
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align {{(4|8)}}
-// CHECK:   @llvm.memcpy
 // CHECK:   @llvm.memcpy
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[RET]] to [[AGG:{ i32, i32 }]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -293,7 +285,7 @@ TEST(union_het_fp)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ i32, i32 }]] undef, i32 [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], i32 [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_union_het_fp(i32, i32)
+// CHECK-LABEL: define {{.*}} @take_union_het_fp(i32 %0, i32 %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align {{(4|8)}}
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -414,7 +406,6 @@ TEST(int4)
 TEST(int8)
 // CHECK-LABEL: define {{.*}} @return_int8()
 // CHECK:   [[RET:%.*]] = alloca [[REC:<8 x i32>]], align 32
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align
 // CHECK:   store
 // CHECK:   load
 // CHECK:   store
@@ -426,7 +417,7 @@ TEST(int8)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ <4 x i32>, <4 x i32> }]] undef, <4 x i32> [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], <4 x i32> [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_int8(<4 x i32>, <4 x i32>)
+// CHECK-LABEL: define {{.*}} @take_int8(<4 x i32> %0, <4 x i32> %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -458,7 +449,6 @@ TEST(int8)
 TEST(int5)
 // CHECK-LABEL: define {{.*}} @return_int5()
 // CHECK:   [[RET:%.*]] = alloca [[REC:<5 x i32>]], align 32
-// CHECK:   [[VAR:%.*]] = alloca [[REC]], align
 // CHECK:   store
 // CHECK:   load
 // CHECK:   store
@@ -470,7 +460,7 @@ TEST(int5)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ <4 x i32>, i32 }]] undef, <4 x i32> [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], i32 [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_int5(<4 x i32>, i32)
+// CHECK-LABEL: define {{.*}} @take_int5(<4 x i32> %0, i32 %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -504,14 +494,14 @@ typedef struct {
   int3 v __attribute__((packed));
 } misaligned_int3;
 TEST(misaligned_int3)
-// CHECK-LABEL: define {{.*}} @take_misaligned_int3(i32, i32, i32, i32)
+// CHECK-LABEL: define {{.*}} @take_misaligned_int3(i32 %0, i32 %1, i32 %2, i32 %3)
 
 typedef struct {
   float f0;
 } struct_f1;
 TEST(struct_f1)
 // CHECK-LABEL: define swiftcc float @return_struct_f1()
-// CHECK-LABEL: define swiftcc void @take_struct_f1(float)
+// CHECK-LABEL: define swiftcc void @take_struct_f1(float %0)
 
 typedef struct {
   float f0;
@@ -519,7 +509,7 @@ typedef struct {
 } struct_f2;
 TEST(struct_f2)
 // CHECK-LABEL: define swiftcc { float, float } @return_struct_f2()
-// CHECK-LABEL: define swiftcc void @take_struct_f2(float, float)
+// CHECK-LABEL: define swiftcc void @take_struct_f2(float %0, float %1)
 
 typedef struct {
   float f0;
@@ -528,7 +518,7 @@ typedef struct {
 } struct_f3;
 TEST(struct_f3)
 // CHECK-LABEL: define swiftcc { float, float, float } @return_struct_f3()
-// CHECK-LABEL: define swiftcc void @take_struct_f3(float, float, float)
+// CHECK-LABEL: define swiftcc void @take_struct_f3(float %0, float %1, float %2)
 
 typedef struct {
   float f0;
@@ -538,7 +528,7 @@ typedef struct {
 } struct_f4;
 TEST(struct_f4)
 // CHECK-LABEL: define swiftcc { float, float, float, float } @return_struct_f4()
-// CHECK-LABEL: define swiftcc void @take_struct_f4(float, float, float, float)
+// CHECK-LABEL: define swiftcc void @take_struct_f4(float %0, float %1, float %2, float %3)
 
 
 typedef struct {
@@ -546,7 +536,7 @@ typedef struct {
 } struct_d1;
 TEST(struct_d1)
 // CHECK-LABEL: define swiftcc double @return_struct_d1()
-// CHECK-LABEL: define swiftcc void @take_struct_d1(double)
+// CHECK-LABEL: define swiftcc void @take_struct_d1(double %0)
 
 typedef struct {
   double d0;
@@ -554,7 +544,7 @@ typedef struct {
 } struct_d2;
 TEST(struct_d2)
 // CHECK-LABEL: define swiftcc { double, double } @return_struct_d2()
-// CHECK-LABEL: define swiftcc void @take_struct_d2(double, double)
+// CHECK-LABEL: define swiftcc void @take_struct_d2(double %0, double %1)
 
 typedef struct {
   double d0;
@@ -563,7 +553,7 @@ typedef struct {
 } struct_d3;
 TEST(struct_d3)
 // CHECK-LABEL: define swiftcc { double, double, double } @return_struct_d3()
-// CHECK-LABEL: define swiftcc void @take_struct_d3(double, double, double)
+// CHECK-LABEL: define swiftcc void @take_struct_d3(double %0, double %1, double %2)
 
 typedef struct {
   double d0;
@@ -573,7 +563,7 @@ typedef struct {
 } struct_d4;
 TEST(struct_d4)
 // CHECK-LABEL: define swiftcc { double, double, double, double } @return_struct_d4()
-// CHECK-LABEL: define swiftcc void @take_struct_d4(double, double, double, double)
+// CHECK-LABEL: define swiftcc void @take_struct_d4(double %0, double %1, double %2, double %3)
 
 typedef struct {
   double d0;
@@ -591,7 +581,7 @@ typedef struct {
 } struct_c1;
 TEST(struct_c1)
 // CHECK-LABEL: define swiftcc i8 @return_struct_c1()
-// CHECK-LABEL: define swiftcc void @take_struct_c1(i8)
+// CHECK-LABEL: define swiftcc void @take_struct_c1(i8 %0)
 
 typedef struct {
   char c0;
@@ -599,7 +589,7 @@ typedef struct {
 } struct_c2;
 TEST(struct_c2)
 // CHECK-LABEL: define swiftcc i16 @return_struct_c2()
-// CHECK-LABEL: define swiftcc void @take_struct_c2(i16)
+// CHECK-LABEL: define swiftcc void @take_struct_c2(i16 %0)
 //
 
 typedef struct {
@@ -609,7 +599,7 @@ typedef struct {
 } struct_c3;
 TEST(struct_c3)
 // CHECK-LABEL: define swiftcc i32 @return_struct_c3()
-// CHECK-LABEL: define swiftcc void @take_struct_c3(i32)
+// CHECK-LABEL: define swiftcc void @take_struct_c3(i32 %0)
 
 typedef struct {
   char c0;
@@ -619,7 +609,7 @@ typedef struct {
 } struct_c4;
 TEST(struct_c4)
 // CHECK-LABEL: define swiftcc i32 @return_struct_c4()
-// CHECK-LABEL: define swiftcc void @take_struct_c4(i32)
+// CHECK-LABEL: define swiftcc void @take_struct_c4(i32 %0)
 
 typedef struct {
   char c0;
@@ -630,14 +620,14 @@ typedef struct {
 } struct_c5;
 TEST(struct_c5)
 // CHECK-LABEL: define swiftcc { i32, i8 } @return_struct_c5()
-// CHECK-LABEL: define swiftcc void @take_struct_c5(i32, i8)
+// CHECK-LABEL: define swiftcc void @take_struct_c5(i32 %0, i8 %1)
 
 typedef struct {
   short s0;
 } struct_s1;
 TEST(struct_s1)
 // CHECK-LABEL: define swiftcc i16 @return_struct_s1()
-// CHECK-LABEL: define swiftcc void @take_struct_s1(i16)
+// CHECK-LABEL: define swiftcc void @take_struct_s1(i16 %0)
 
 typedef struct {
   short s0;
@@ -645,7 +635,7 @@ typedef struct {
 } struct_s2;
 TEST(struct_s2)
 // CHECK-LABEL: define swiftcc i32 @return_struct_s2()
-// CHECK-LABEL: define swiftcc void @take_struct_s2(i32)
+// CHECK-LABEL: define swiftcc void @take_struct_s2(i32 %0)
 
 typedef struct {
   short s0;
@@ -654,7 +644,7 @@ typedef struct {
 } struct_s3;
 TEST(struct_s3)
 // CHECK-LABEL: define swiftcc { i32, i16 } @return_struct_s3()
-// CHECK-LABEL: define swiftcc void @take_struct_s3(i32, i16)
+// CHECK-LABEL: define swiftcc void @take_struct_s3(i32 %0, i16 %1)
 
 typedef struct {
   short s0;
@@ -664,7 +654,7 @@ typedef struct {
 } struct_s4;
 TEST(struct_s4)
 // CHECK-LABEL: define swiftcc { i32, i32 } @return_struct_s4()
-// CHECK-LABEL: define swiftcc void @take_struct_s4(i32, i32)
+// CHECK-LABEL: define swiftcc void @take_struct_s4(i32 %0, i32 %1)
 
 typedef struct {
   short s0;
@@ -675,7 +665,7 @@ typedef struct {
 } struct_s5;
 TEST(struct_s5)
 // CHECK-LABEL: define swiftcc { i32, i32, i16 } @return_struct_s5()
-// CHECK-LABEL: define swiftcc void @take_struct_s5(i32, i32, i16)
+// CHECK-LABEL: define swiftcc void @take_struct_s5(i32 %0, i32 %1, i16 %2)
 
 
 typedef struct {
@@ -683,7 +673,7 @@ typedef struct {
 } struct_i1;
 TEST(struct_i1)
 // CHECK-LABEL: define swiftcc i32 @return_struct_i1()
-// CHECK-LABEL: define swiftcc void @take_struct_i1(i32)
+// CHECK-LABEL: define swiftcc void @take_struct_i1(i32 %0)
 
 typedef struct {
   int i0;
@@ -691,7 +681,7 @@ typedef struct {
 } struct_i2;
 TEST(struct_i2)
 // CHECK-LABEL: define swiftcc { i32, i32 } @return_struct_i2()
-// CHECK-LABEL: define swiftcc void @take_struct_i2(i32, i32)
+// CHECK-LABEL: define swiftcc void @take_struct_i2(i32 %0, i32 %1)
 
 typedef struct {
   int i0;
@@ -700,7 +690,7 @@ typedef struct {
 } struct_i3;
 TEST(struct_i3)
 // CHECK-LABEL: define swiftcc { i32, i32, i32 } @return_struct_i3()
-// CHECK-LABEL: define swiftcc void @take_struct_i3(i32, i32, i32)
+// CHECK-LABEL: define swiftcc void @take_struct_i3(i32 %0, i32 %1, i32 %2)
 
 typedef struct {
   int i0;
@@ -710,14 +700,14 @@ typedef struct {
 } struct_i4;
 TEST(struct_i4)
 // CHECK-LABEL: define swiftcc { i32, i32, i32, i32 } @return_struct_i4()
-// CHECK-LABEL: define swiftcc void @take_struct_i4(i32, i32, i32, i32)
+// CHECK-LABEL: define swiftcc void @take_struct_i4(i32 %0, i32 %1, i32 %2, i32 %3)
 
 typedef struct {
   long long l0;
 } struct_l1;
 TEST(struct_l1)
 // CHECK-LABEL: define swiftcc i64 @return_struct_l1()
-// CHECK-LABEL: define swiftcc void @take_struct_l1(i64)
+// CHECK-LABEL: define swiftcc void @take_struct_l1(i64 %0)
 
 typedef struct {
   long long l0;
@@ -725,7 +715,7 @@ typedef struct {
 } struct_l2;
 TEST(struct_l2)
 // CHECK-LABEL: define swiftcc { i64, i64 } @return_struct_l2()
-// CHECK-LABEL: define swiftcc void @take_struct_l2(i64, i64)
+// CHECK-LABEL: define swiftcc void @take_struct_l2(i64 %0, i64 %1)
 
 typedef struct {
   long long l0;
@@ -762,7 +752,7 @@ typedef struct {
 } struct_vc1;
 TEST(struct_vc1)
 // CHECK-LABEL: define swiftcc <16 x i8> @return_struct_vc1()
-// CHECK-LABEL: define swiftcc void @take_struct_vc1(<16 x i8>)
+// CHECK-LABEL: define swiftcc void @take_struct_vc1(<16 x i8> %0)
 
 typedef struct {
   char16 c0;
@@ -770,7 +760,7 @@ typedef struct {
 } struct_vc2;
 TEST(struct_vc2)
 // CHECK-LABEL: define swiftcc { <16 x i8>, <16 x i8> } @return_struct_vc2()
-// CHECK-LABEL: define swiftcc void @take_struct_vc2(<16 x i8>, <16 x i8>)
+// CHECK-LABEL: define swiftcc void @take_struct_vc2(<16 x i8> %0, <16 x i8> %1)
 
 typedef struct {
   char16 c0;
@@ -779,7 +769,7 @@ typedef struct {
 } struct_vc3;
 TEST(struct_vc3)
 // CHECK-LABEL: define swiftcc { <16 x i8>, <16 x i8>, <16 x i8> } @return_struct_vc3()
-// CHECK-LABEL: define swiftcc void @take_struct_vc3(<16 x i8>, <16 x i8>, <16 x i8>)
+// CHECK-LABEL: define swiftcc void @take_struct_vc3(<16 x i8> %0, <16 x i8> %1, <16 x i8> %2)
 
 typedef struct {
   char16 c0;
@@ -789,7 +779,7 @@ typedef struct {
 } struct_vc4;
 TEST(struct_vc4)
 // CHECK-LABEL: define swiftcc { <16 x i8>, <16 x i8>, <16 x i8>, <16 x i8> } @return_struct_vc4()
-// CHECK-LABEL: define swiftcc void @take_struct_vc4(<16 x i8>, <16 x i8>, <16 x i8>, <16 x i8>)
+// CHECK-LABEL: define swiftcc void @take_struct_vc4(<16 x i8> %0, <16 x i8> %1, <16 x i8> %2, <16 x i8> %3)
 
 typedef struct {
   char16 c0;
@@ -807,7 +797,7 @@ typedef struct {
 } struct_vs1;
 TEST(struct_vs1)
 // CHECK-LABEL: define swiftcc <8 x i16> @return_struct_vs1()
-// CHECK-LABEL: define swiftcc void @take_struct_vs1(<8 x i16>)
+// CHECK-LABEL: define swiftcc void @take_struct_vs1(<8 x i16> %0)
 
 typedef struct {
   short8 c0;
@@ -815,7 +805,7 @@ typedef struct {
 } struct_vs2;
 TEST(struct_vs2)
 // CHECK-LABEL: define swiftcc { <8 x i16>, <8 x i16> } @return_struct_vs2()
-// CHECK-LABEL: define swiftcc void @take_struct_vs2(<8 x i16>, <8 x i16>)
+// CHECK-LABEL: define swiftcc void @take_struct_vs2(<8 x i16> %0, <8 x i16> %1)
 
 typedef struct {
   short8 c0;
@@ -824,7 +814,7 @@ typedef struct {
 } struct_vs3;
 TEST(struct_vs3)
 // CHECK-LABEL: define swiftcc { <8 x i16>, <8 x i16>, <8 x i16> } @return_struct_vs3()
-// CHECK-LABEL: define swiftcc void @take_struct_vs3(<8 x i16>, <8 x i16>, <8 x i16>)
+// CHECK-LABEL: define swiftcc void @take_struct_vs3(<8 x i16> %0, <8 x i16> %1, <8 x i16> %2)
 
 typedef struct {
   short8 c0;
@@ -834,7 +824,7 @@ typedef struct {
 } struct_vs4;
 TEST(struct_vs4)
 // CHECK-LABEL: define swiftcc { <8 x i16>, <8 x i16>, <8 x i16>, <8 x i16> } @return_struct_vs4()
-// CHECK-LABEL: define swiftcc void @take_struct_vs4(<8 x i16>, <8 x i16>, <8 x i16>, <8 x i16>)
+// CHECK-LABEL: define swiftcc void @take_struct_vs4(<8 x i16> %0, <8 x i16> %1, <8 x i16> %2, <8 x i16> %3)
 
 typedef struct {
   short8 c0;
@@ -852,7 +842,7 @@ typedef struct {
 } struct_vi1;
 TEST(struct_vi1)
 // CHECK-LABEL: define swiftcc <4 x i32> @return_struct_vi1()
-// CHECK-LABEL: define swiftcc void @take_struct_vi1(<4 x i32>)
+// CHECK-LABEL: define swiftcc void @take_struct_vi1(<4 x i32> %0)
 
 typedef struct {
   int4 c0;
@@ -860,7 +850,7 @@ typedef struct {
 } struct_vi2;
 TEST(struct_vi2)
 // CHECK-LABEL: define swiftcc { <4 x i32>, <4 x i32> } @return_struct_vi2()
-// CHECK-LABEL: define swiftcc void @take_struct_vi2(<4 x i32>, <4 x i32>)
+// CHECK-LABEL: define swiftcc void @take_struct_vi2(<4 x i32> %0, <4 x i32> %1)
 
 typedef struct {
   int4 c0;
@@ -869,7 +859,7 @@ typedef struct {
 } struct_vi3;
 TEST(struct_vi3)
 // CHECK-LABEL: define swiftcc { <4 x i32>, <4 x i32>, <4 x i32> } @return_struct_vi3()
-// CHECK-LABEL: define swiftcc void @take_struct_vi3(<4 x i32>, <4 x i32>, <4 x i32>)
+// CHECK-LABEL: define swiftcc void @take_struct_vi3(<4 x i32> %0, <4 x i32> %1, <4 x i32> %2)
 
 typedef struct {
   int4 c0;
@@ -879,7 +869,7 @@ typedef struct {
 } struct_vi4;
 TEST(struct_vi4)
 // CHECK-LABEL: define swiftcc { <4 x i32>, <4 x i32>, <4 x i32>, <4 x i32> } @return_struct_vi4()
-// CHECK-LABEL: define swiftcc void @take_struct_vi4(<4 x i32>, <4 x i32>, <4 x i32>, <4 x i32>)
+// CHECK-LABEL: define swiftcc void @take_struct_vi4(<4 x i32> %0, <4 x i32> %1, <4 x i32> %2, <4 x i32> %3)
 
 typedef struct {
   int4 c0;
@@ -897,7 +887,7 @@ typedef struct {
 } struct_vl1;
 TEST(struct_vl1)
 // CHECK-LABEL: define swiftcc <2 x i64> @return_struct_vl1()
-// CHECK-LABEL: define swiftcc void @take_struct_vl1(<2 x i64>)
+// CHECK-LABEL: define swiftcc void @take_struct_vl1(<2 x i64> %0)
 
 typedef struct {
   long2 c0;
@@ -907,7 +897,7 @@ typedef struct {
 } struct_vl4;
 TEST(struct_vl4)
 // CHECK-LABEL: define swiftcc { <2 x i64>, <2 x i64>, <2 x i64>, <2 x i64> } @return_struct_vl4()
-// CHECK-LABEL: define swiftcc void @take_struct_vl4(<2 x i64>, <2 x i64>, <2 x i64>, <2 x i64>)
+// CHECK-LABEL: define swiftcc void @take_struct_vl4(<2 x i64> %0, <2 x i64> %1, <2 x i64> %2, <2 x i64> %3)
 
 typedef struct {
   long2 c0;
@@ -925,7 +915,7 @@ typedef struct {
 } struct_vd1;
 TEST(struct_vd1)
 // CHECK-LABEL: define swiftcc <2 x double> @return_struct_vd1()
-// CHECK-LABEL: define swiftcc void @take_struct_vd1(<2 x double>)
+// CHECK-LABEL: define swiftcc void @take_struct_vd1(<2 x double> %0)
 
 typedef struct {
   double2 c0;
@@ -935,7 +925,7 @@ typedef struct {
 } struct_vd4;
 TEST(struct_vd4)
 // CHECK-LABEL: define swiftcc { <2 x double>, <2 x double>, <2 x double>, <2 x double> } @return_struct_vd4()
-// CHECK-LABEL: define swiftcc void @take_struct_vd4(<2 x double>, <2 x double>, <2 x double>, <2 x double>)
+// CHECK-LABEL: define swiftcc void @take_struct_vd4(<2 x double> %0, <2 x double> %1, <2 x double> %2, <2 x double> %3)
 
 typedef struct {
   double2 c0;
@@ -953,7 +943,7 @@ typedef struct {
 } struct_vd41;
 TEST(struct_vd41)
 // CHECK-LABEL: define swiftcc { <2 x double>, <2 x double> } @return_struct_vd41()
-// CHECK-LABEL: define swiftcc void @take_struct_vd41(<2 x double>, <2 x double>)
+// CHECK-LABEL: define swiftcc void @take_struct_vd41(<2 x double> %0, <2 x double> %1)
 
 typedef struct {
   double4 c0;
@@ -961,7 +951,7 @@ typedef struct {
 } struct_vd42;
 TEST(struct_vd42)
 // CHECK-LABEL: define swiftcc { <2 x double>, <2 x double>, <2 x double>, <2 x double> } @return_struct_vd42()
-// CHECK-LABEL: define swiftcc void @take_struct_vd42(<2 x double>, <2 x double>, <2 x double>, <2 x double>)
+// CHECK-LABEL: define swiftcc void @take_struct_vd42(<2 x double> %0, <2 x double> %1, <2 x double> %2, <2 x double> %3)
 
 typedef struct {
   double4 c0;
@@ -977,7 +967,7 @@ typedef struct {
 } struct_vf1;
 TEST(struct_vf1)
 // CHECK-LABEL: define swiftcc <4 x float> @return_struct_vf1()
-// CHECK-LABEL: define swiftcc void @take_struct_vf1(<4 x float>)
+// CHECK-LABEL: define swiftcc void @take_struct_vf1(<4 x float> %0)
 
 typedef struct {
   float4 c0;
@@ -985,7 +975,7 @@ typedef struct {
 } struct_vf2;
 TEST(struct_vf2)
 // CHECK-LABEL: define swiftcc { <4 x float>, <4 x float> } @return_struct_vf2()
-// CHECK-LABEL: define swiftcc void @take_struct_vf2(<4 x float>, <4 x float>)
+// CHECK-LABEL: define swiftcc void @take_struct_vf2(<4 x float> %0, <4 x float> %1)
 
 typedef struct {
   float4 c0;
@@ -995,7 +985,7 @@ typedef struct {
 } struct_vf4;
 TEST(struct_vf4)
 // CHECK-LABEL: define swiftcc { <4 x float>, <4 x float>, <4 x float>, <4 x float> } @return_struct_vf4()
-// CHECK-LABEL: define swiftcc void @take_struct_vf4(<4 x float>, <4 x float>, <4 x float>, <4 x float>)
+// CHECK-LABEL: define swiftcc void @take_struct_vf4(<4 x float> %0, <4 x float> %1, <4 x float> %2, <4 x float> %3)
 
 typedef struct {
   float4 c0;
@@ -1013,11 +1003,11 @@ typedef struct {
 } struct_vf81;
 TEST(struct_vf81)
 // CHECK-LABEL: define swiftcc { <4 x float>, <4 x float> } @return_struct_vf81()
-// CHECK-LABEL: define swiftcc void @take_struct_vf81(<4 x float>, <4 x float>)
+// CHECK-LABEL: define swiftcc void @take_struct_vf81(<4 x float> %0, <4 x float> %1)
 
 typedef struct {
   float3 f3;
 } struct_v1f3;
 TEST(struct_v1f3)
 // CHECK-LABEL: define swiftcc { <2 x float>, float } @return_struct_v1f3()
-// CHECK-LABEL: define swiftcc void @take_struct_v1f3(<2 x float>, float)
+// CHECK-LABEL: define swiftcc void @take_struct_v1f3(<2 x float> %0, float %1)

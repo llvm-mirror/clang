@@ -1,9 +1,8 @@
 //===-- SimpleStreamChecker.cpp -----------------------------------------*- C++ -*--//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -109,10 +108,10 @@ SimpleStreamChecker::SimpleStreamChecker()
   DoubleCloseBugType.reset(
       new BugType(this, "Double fclose", "Unix Stream API Error"));
 
-  LeakBugType.reset(
-      new BugType(this, "Resource Leak", "Unix Stream API Error"));
   // Sinks are higher importance bugs as well as calls to assert() or exit(0).
-  LeakBugType->setSuppressOnSink(true);
+  LeakBugType.reset(
+      new BugType(this, "Resource Leak", "Unix Stream API Error",
+                  /*SuppressOnSink=*/true));
 }
 
 void SimpleStreamChecker::checkPostCall(const CallEvent &Call,
@@ -207,8 +206,8 @@ void SimpleStreamChecker::reportDoubleClose(SymbolRef FileDescSym,
     return;
 
   // Generate the report.
-  auto R = llvm::make_unique<BugReport>(*DoubleCloseBugType,
-      "Closing a previously closed file stream", ErrNode);
+  auto R = std::make_unique<PathSensitiveBugReport>(
+      *DoubleCloseBugType, "Closing a previously closed file stream", ErrNode);
   R->addRange(Call.getSourceRange());
   R->markInteresting(FileDescSym);
   C.emitReport(std::move(R));
@@ -220,8 +219,9 @@ void SimpleStreamChecker::reportLeaks(ArrayRef<SymbolRef> LeakedStreams,
   // Attach bug reports to the leak node.
   // TODO: Identify the leaked file descriptor.
   for (SymbolRef LeakedStream : LeakedStreams) {
-    auto R = llvm::make_unique<BugReport>(*LeakBugType,
-        "Opened file is never closed; potential resource leak", ErrNode);
+    auto R = std::make_unique<PathSensitiveBugReport>(
+        *LeakBugType, "Opened file is never closed; potential resource leak",
+        ErrNode);
     R->markInteresting(LeakedStream);
     C.emitReport(std::move(R));
   }
@@ -268,4 +268,9 @@ SimpleStreamChecker::checkPointerEscape(ProgramStateRef State,
 
 void ento::registerSimpleStreamChecker(CheckerManager &mgr) {
   mgr.registerChecker<SimpleStreamChecker>();
+}
+
+// This checker should be enabled regardless of how language options are set.
+bool ento::shouldRegisterSimpleStreamChecker(const LangOptions &LO) {
+  return true;
 }

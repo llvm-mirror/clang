@@ -37,14 +37,19 @@ constexpr bool g(S &&s) {
 }
 static_assert(g({1, 2}));
 
+auto [outer1, outer2] = S{1, 2};
 void enclosing() {
-  struct S { int a; };
+  struct S { int a = outer1; };
   auto [n] = S(); // expected-note 2{{'n' declared here}}
 
   struct Q { int f() { return n; } }; // expected-error {{reference to local binding 'n' declared in enclosing function}}
-  // FIXME: This is probably supposed to be valid, but we do not have clear rules on how it's supposed to work.
   (void) [&] { return n; }; // expected-error {{reference to local binding 'n' declared in enclosing function}}
   (void) [n] {}; // expected-error {{'n' in capture list does not name a variable}}
+
+  static auto [m] = S(); // expected-warning {{extension}}
+  struct R { int f() { return m; } };
+  (void) [&] { return m; };
+  (void) [m] {}; // expected-error {{'m' in capture list does not name a variable}}
 }
 
 void bitfield() {
@@ -75,5 +80,27 @@ template <class T> void dependent_foreach(T t) {
   for (auto [a,b,c] : t)
     a,b,c;
 }
+
+struct PR37352 {
+  int n;
+  void f() { static auto [a] = *this; } // expected-warning {{C++2a extension}}
+};
+
+namespace instantiate_template {
+
+template <typename T1, typename T2>
+struct pair {
+  T1 a;
+  T2 b;
+};
+
+const pair<int, int> &f1();
+
+int f2() {
+  const auto &[a, b] = f1();
+  return a + b;
+}
+
+} // namespace instantiate_template
 
 // FIXME: by-value array copies

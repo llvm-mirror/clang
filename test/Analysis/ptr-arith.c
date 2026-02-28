@@ -1,5 +1,5 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -analyzer-store=region -verify -triple x86_64-apple-darwin9 -Wno-tautological-pointer-compare %s
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -analyzer-store=region -verify -triple i686-apple-darwin9 -Wno-tautological-pointer-compare %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -analyzer-store=region -verify -triple x86_64-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -analyzer-store=region -verify -triple i686-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
 
 void clang_analyzer_eval(int);
 
@@ -265,49 +265,26 @@ void size_implies_comparison(int *lhs, int *rhs) {
   clang_analyzer_eval((rhs - lhs) > 0); // expected-warning{{TRUE}}
 }
 
-//-------------------------------
-// False positives
-//-------------------------------
-
 void zero_implies_reversed_equal(int *lhs, int *rhs) {
   clang_analyzer_eval((rhs - lhs) == 0); // expected-warning{{UNKNOWN}}
   if ((rhs - lhs) == 0) {
-#ifdef ANALYZER_CM_Z3
     clang_analyzer_eval(rhs != lhs); // expected-warning{{FALSE}}
     clang_analyzer_eval(rhs == lhs); // expected-warning{{TRUE}}
-#else
-    clang_analyzer_eval(rhs != lhs); // expected-warning{{UNKNOWN}}
-    clang_analyzer_eval(rhs == lhs); // expected-warning{{UNKNOWN}}
-#endif
     return;
   }
   clang_analyzer_eval((rhs - lhs) == 0); // expected-warning{{FALSE}}
-#ifdef ANALYZER_CM_Z3
   clang_analyzer_eval(rhs == lhs); // expected-warning{{FALSE}}
   clang_analyzer_eval(rhs != lhs); // expected-warning{{TRUE}}
-#else
-  clang_analyzer_eval(rhs == lhs); // expected-warning{{UNKNOWN}}
-  clang_analyzer_eval(rhs != lhs); // expected-warning{{UNKNOWN}}
-#endif
 }
 
 void canonical_equal(int *lhs, int *rhs) {
   clang_analyzer_eval(lhs == rhs); // expected-warning{{UNKNOWN}}
   if (lhs == rhs) {
-#ifdef ANALYZER_CM_Z3
     clang_analyzer_eval(rhs == lhs); // expected-warning{{TRUE}}
-#else
-    clang_analyzer_eval(rhs == lhs); // expected-warning{{UNKNOWN}}
-#endif
     return;
   }
   clang_analyzer_eval(lhs == rhs); // expected-warning{{FALSE}}
-
-#ifdef ANALYZER_CM_Z3
   clang_analyzer_eval(rhs == lhs); // expected-warning{{FALSE}}
-#else
-  clang_analyzer_eval(rhs == lhs); // expected-warning{{UNKNOWN}}
-#endif
 }
 
 void compare_element_region_and_base(int *p) {
@@ -346,4 +323,10 @@ void test_no_crash_on_pointer_to_label() {
   char *a = &&label;
   a[0] = 0;
 label:;
+}
+
+typedef __attribute__((__ext_vector_type__(2))) float simd_float2;
+float test_nowarning_on_vector_deref() {
+  simd_float2 x = {0, 1};
+  return x[1]; // no-warning
 }

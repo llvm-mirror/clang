@@ -1,17 +1,17 @@
 //===--- ClangCommentHTMLNamedCharacterReferenceEmitter.cpp -----------------=//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
-// This tablegen backend emits an fficient function to translate HTML named
+// This tablegen backend emits an efficient function to translate HTML named
 // character references to UTF-8 sequences.
 //
 //===----------------------------------------------------------------------===//
 
+#include "TableGenBackends.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/TableGen/Error.h"
@@ -22,7 +22,7 @@
 
 using namespace llvm;
 
-/// \brief Convert a code point to the corresponding UTF-8 sequence represented
+/// Convert a code point to the corresponding UTF-8 sequence represented
 /// as a C string literal.
 ///
 /// \returns true on success.
@@ -46,9 +46,8 @@ static bool translateCodePointToUTF8(unsigned CodePoint,
   return true;
 }
 
-namespace clang {
-void EmitClangCommentHTMLNamedCharacterReferences(RecordKeeper &Records,
-                                                  raw_ostream &OS) {
+void clang::EmitClangCommentHTMLNamedCharacterReferences(RecordKeeper &Records,
+                                                         raw_ostream &OS) {
   std::vector<Record *> Tags = Records.getAllDerivedDefinitions("NCR");
   std::vector<StringMatcher::StringPair> NameToUTF8;
   SmallString<32> CLiteral;
@@ -80,6 +79,3 @@ void EmitClangCommentHTMLNamedCharacterReferences(RecordKeeper &Records,
   OS << "  return StringRef();\n"
      << "}\n\n";
 }
-
-} // end namespace clang
-

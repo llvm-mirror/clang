@@ -41,12 +41,12 @@ struct T {
   operator Dummy() { return Dummy(); }
   // expected-note@-1 {{'operator Dummy' declared here}}
 
-  __host__ void operator delete(void*);
-  __device__ void operator delete(void*, size_t);
+  __host__ void operator delete(void *) { host_fn(); };
+  __device__ void operator delete(void*, __SIZE_TYPE__);
 };
 
 struct U {
-  __device__ void operator delete(void*, size_t) = delete;
+  __device__ void operator delete(void*, __SIZE_TYPE__) = delete;
   __host__ __device__ void operator delete(void*);
 };
 
@@ -56,14 +56,14 @@ __host__ __device__ void T::hd3() {
 }
 
 template <typename T> __host__ __device__ void hd2() { host_fn(); }
-// expected-error@-1 {{reference to __host__ function 'host_fn' in __host__ __device__ function}}
+// expected-error@-1 2 {{reference to __host__ function 'host_fn' in __host__ __device__ function}}
 __global__ void kernel() { hd2<int>(); }
 
 __host__ __device__ void hd() { host_fn(); }
 // expected-error@-1 {{reference to __host__ function 'host_fn' in __host__ __device__ function}}
 
 template <typename T> __host__ __device__ void hd3() { host_fn(); }
-// expected-error@-1 {{reference to __host__ function 'host_fn' in __host__ __device__ function}}
+// expected-error@-1 2 {{reference to __host__ function 'host_fn' in __host__ __device__ function}}
 __device__ void device_fn() { hd3<int>(); }
 
 // No error because this is never instantiated.

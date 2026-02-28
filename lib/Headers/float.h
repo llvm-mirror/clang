@@ -1,28 +1,14 @@
 /*===---- float.h - Characteristics of floating point types ----------------===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
 
-#ifndef __FLOAT_H
-#define __FLOAT_H
+#ifndef __CLANG_FLOAT_H
+#define __CLANG_FLOAT_H
 
 /* If we're on MinGW, fall back to the system's float.h, which might have
  * additional definitions provided for Windows.
@@ -51,7 +37,7 @@
 #  undef FLT_MANT_DIG
 #  undef DBL_MANT_DIG
 #  undef LDBL_MANT_DIG
-#  if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__)
+#  if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__) || __cplusplus >= 201103L
 #    undef DECIMAL_DIG
 #  endif
 #  undef FLT_DIG
@@ -78,13 +64,16 @@
 #  undef FLT_MIN
 #  undef DBL_MIN
 #  undef LDBL_MIN
-#  if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__)
+#  if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__) || __cplusplus >= 201703L
 #    undef FLT_TRUE_MIN
 #    undef DBL_TRUE_MIN
 #    undef LDBL_TRUE_MIN
 #    undef FLT_DECIMAL_DIG
 #    undef DBL_DECIMAL_DIG
 #    undef LDBL_DECIMAL_DIG
+#    undef FLT_HAS_SUBNORM
+#    undef DBL_HAS_SUBNORM
+#    undef LDBL_HAS_SUBNORM
 #  endif
 #endif
 
@@ -98,7 +87,7 @@
 #define DBL_MANT_DIG __DBL_MANT_DIG__
 #define LDBL_MANT_DIG __LDBL_MANT_DIG__
 
-#if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__)
+#if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__) || __cplusplus >= 201103L
 #  define DECIMAL_DIG __DECIMAL_DIG__
 #endif
 
@@ -134,13 +123,16 @@
 #define DBL_MIN __DBL_MIN__
 #define LDBL_MIN __LDBL_MIN__
 
-#if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__)
+#if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__) || __cplusplus >= 201703L
 #  define FLT_TRUE_MIN __FLT_DENORM_MIN__
 #  define DBL_TRUE_MIN __DBL_DENORM_MIN__
 #  define LDBL_TRUE_MIN __LDBL_DENORM_MIN__
 #  define FLT_DECIMAL_DIG __FLT_DECIMAL_DIG__
 #  define DBL_DECIMAL_DIG __DBL_DECIMAL_DIG__
 #  define LDBL_DECIMAL_DIG __LDBL_DECIMAL_DIG__
+#  define FLT_HAS_SUBNORM __FLT_HAS_DENORM__
+#  define DBL_HAS_SUBNORM __DBL_HAS_DENORM__
+#  define LDBL_HAS_SUBNORM __LDBL_HAS_DENORM__
 #endif
 
 #ifdef __STDC_WANT_IEC_60559_TYPES_EXT__
@@ -157,4 +149,4 @@
 #  define FLT16_TRUE_MIN    __FLT16_TRUE_MIN__
 #endif /* __STDC_WANT_IEC_60559_TYPES_EXT__ */
 
-#endif /* __FLOAT_H */
+#endif /* __CLANG_FLOAT_H */

@@ -4,7 +4,7 @@
 <html>
 <head>
   <META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
-  <title>"clang" C Language Family Frontend for LLVM</title>
+  <title>Clang C Language Family Frontend for LLVM</title>
   <link type="text/css" rel="stylesheet" href="menu.css">
   <link type="text/css" rel="stylesheet" href="content.css">
 </head>
@@ -12,13 +12,15 @@
 <!--#include virtual="menu.html.incl"-->
 <div id="content">
   <!--*********************************************************************-->
-  <h1>clang: a C language family frontend for LLVM</h1>
+  <h1>Clang: a C language family frontend for LLVM</h1>
   <!--*********************************************************************-->
 
-  <p>The goal of the Clang project is to create a new C based language
-  front-end: C, C++, Objective C/C++, OpenCL C and others for the
-  <a href="http://www.llvm.org/">LLVM</a> compiler.  You can
-  <a href="get_started.html">get and build</a> the source  today.</p>
+  <p>The Clang project provides a language front-end and tooling infrastructure
+  for languages in the C language family (C, C++, Objective C/C++, OpenCL,
+  CUDA, and RenderScript) for the <a href="http://www.llvm.org/">LLVM</a>
+  project. Both a GCC-compatible compiler driver (<tt>clang</tt>) and an
+  MSVC-compatible compiler driver (<tt>clang-cl.exe</tt>) are provided. You
+  can <a href="get_started.html">get and build</a> the source today.</p>
 
   <!--=====================================================================-->
   <h2 id="goals">Features and Goals</h2>
@@ -72,18 +74,8 @@
      motivations for starting work on a new front-end that could
      meet these needs.</p>
 
-  <p>A good (but quite dated) introduction to Clang can be found in the
-     following video lectures:</p>
-
-  <ul>
-    <li><a href="clang_video-05-25-2007.html">Clang Introduction</a>
-        (May 2007)</li>
-    <li><a href="clang_video-07-25-2007.html">Features and Performance of
-        Clang</a>  (July 2007)</li>
-  </ul>
-
   <p>For a more detailed comparison between Clang and other compilers, please
-     see the <a href="comparison.html">clang comparison page</a>.</p>
+     see the <a href="comparison.html">Clang comparison page</a>.</p>
 
   <!--=====================================================================-->
   <h2>Current Status</h2>
@@ -92,11 +84,11 @@
   <p>Clang is considered to
    be a production quality C, Objective-C, C++ and Objective-C++ compiler when
    targeting X86-32, X86-64, and ARM (other targets may have caveats, but are
-   usually easy to fix).  If you are looking for source analysis or
-   source-to-source transformation tools, Clang is probably a great
-   solution for you.  Clang supports C++11, C++14 and C++17, please see the <a
-    href="cxx_status.html">C++ status</a> page for more
-   information.</p>
+   usually easy to fix). As example, Clang is used in production to build
+   performance-critical software like Chrome or Firefox.<br />  If you are looking
+   for source analysis or source-to-source transformation tools, Clang is probably
+   a great solution for you.  Clang supports C++11, C++14 and C++17, please see
+   the <a href="cxx_status.html">C++ status</a> page for more information.</p>
 
   <!--=====================================================================-->
   <h2>Get it and get involved!</h2>
@@ -108,7 +100,7 @@
      it will "resonate" with you. :)</p>
 
   <p>Once you've done that, please consider <a href="get_involved.html">getting
-     involved in the clang community</a>.  The Clang developers include numerous
+     involved in the Clang community</a>.  The Clang developers include numerous
      volunteer contributors with a variety of backgrounds.  If you're
      interested in
      following the development of Clang, signing up for a mailing list is a good

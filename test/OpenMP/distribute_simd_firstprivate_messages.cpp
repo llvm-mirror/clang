@@ -1,5 +1,8 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+extern int omp_default_mem_alloc;
 void foo() {
 }
 
@@ -42,7 +45,7 @@ public:
 };
 class S5 {
   int a;
-  S5(const S5 &s5) : a(s5.a) {} // expected-note 4 {{implicitly declared private here}}
+  S5(const S5 &s5) : a(s5.a) {} // expected-note 2 {{implicitly declared private here}}
 
 public:
   S5() : a(0) {}
@@ -50,7 +53,7 @@ public:
 };
 class S6 {
   int a;
-  S6() : a(0) {}
+  S6() : a(0) {} // expected-note {{implicitly declared private here}}
 
 public:
   S6(const S6 &s6) : a(s6.a) {}
@@ -64,7 +67,7 @@ template <class I, class C>
 int foomain(int argc, char **argv) {
   I e(4);
   C g(5);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp target
 #pragma omp teams
@@ -98,7 +101,7 @@ int foomain(int argc, char **argv) {
     ++k;
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(argc)
+#pragma omp distribute simd firstprivate(argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp target
@@ -108,7 +111,7 @@ int foomain(int argc, char **argv) {
     ++k;
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(a, b) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+#pragma omp distribute simd firstprivate(z, a, b) // expected-error {{firstprivate variable with incomplete type 'S1'}} expected-warning {{Non-trivial type 'const S2' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp target
@@ -118,7 +121,7 @@ int foomain(int argc, char **argv) {
     ++k;
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(e, g) // expected-error {{calling a private constructor of class 'S4'}} expected-error {{calling a private constructor of class 'S5'}}
+#pragma omp distribute simd firstprivate(e, g) // expected-error {{calling a private constructor of class 'S4'}} expected-error {{calling a private constructor of class 'S5'}} expected-warning {{Non-trivial type 'S4' is mapped, only trivial types are guaranteed to be mapped correctly}} expected-warning {{Non-trivial type 'S5' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp target
@@ -150,22 +153,23 @@ int foomain(int argc, char **argv) {
 #pragma omp distribute simd firstprivate(i)
   for (int k = 0; k < argc; ++k)
     ++k;
+// expected-error@+3 {{lastprivate variable cannot be firstprivate}} expected-note@+3 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd lastprivate(g) firstprivate(g) // expected-error {{calling a private constructor of class 'S5'}}
+#pragma omp distribute simd lastprivate(g) firstprivate(g)
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp parallel private(i)
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(i) // expected-note {{defined as firstprivate}}
-  for (i = 0; i < argc; ++i) // expected-error {{loop iteration variable in the associated loop of 'omp distribute simd' directive may not be firstprivate, predetermined as linear}}
+#pragma omp distribute simd firstprivate(i) // expected-note 2 {{defined as firstprivate}}
+  for (i = 0; i < argc; ++i) // expected-error 2 {{loop iteration variable in the associated loop of 'omp distribute simd' directive may not be firstprivate, predetermined as linear}}
     foo();
 #pragma omp parallel reduction(+ : i)
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(i) // expected-note {{defined as firstprivate}}
-  for (i = 0; i < argc; ++i) // expected-error {{loop iteration variable in the associated loop of 'omp distribute simd' directive may not be firstprivate, predetermined as linear}}
+#pragma omp distribute simd firstprivate(i) // expected-note 2 {{defined as firstprivate}}
+  for (i = 0; i < argc; ++i) // expected-error 2 {{loop iteration variable in the associated loop of 'omp distribute simd' directive may not be firstprivate, predetermined as linear}}
     foo();
   return 0;
 }
@@ -185,7 +189,7 @@ int main(int argc, char **argv) {
   S5 g(5);
   S3 m;
   S6 n(2);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp target
 #pragma omp teams
@@ -219,7 +223,7 @@ int main(int argc, char **argv) {
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(argc)
+#pragma omp distribute simd firstprivate(argc, z)
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
@@ -229,7 +233,7 @@ int main(int argc, char **argv) {
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+#pragma omp distribute simd firstprivate(a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}} expected-error {{incomplete type 'S1' where a complete type is required}} expected-warning {{Non-trivial type 'const S2' is mapped, only trivial types are guaranteed to be mapped correctly}} expected-warning {{Non-trivial type 'const S3' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
@@ -244,12 +248,12 @@ int main(int argc, char **argv) {
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(ba) // OK
+#pragma omp distribute simd firstprivate(ba) // expected-warning {{Non-trivial type 'const S2 [5]' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(ca) // OK
+#pragma omp distribute simd firstprivate(ca) // expected-warning {{Non-trivial type 'const S3 [5]' is mapped, only trivial types are guaranteed to be mapped correctl}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
@@ -280,12 +284,12 @@ int main(int argc, char **argv) {
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(e, g) // expected-error {{calling a private constructor of class 'S4'}} expected-error {{calling a private constructor of class 'S5'}}
+#pragma omp distribute simd firstprivate(e, g) // expected-error {{calling a private constructor of class 'S4'}} expected-error {{calling a private constructor of class 'S5'}} expected-warning {{Non-trivial type 'S4' is mapped, only trivial types are guaranteed to be mapped correctly}} expected-warning {{Non-trivial type 'S5' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd firstprivate(m) // OK
+#pragma omp distribute simd firstprivate(m) // expected-warning {{Non-trivial type 'S3' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target
@@ -314,14 +318,16 @@ int main(int argc, char **argv) {
 #pragma omp distribute simd firstprivate(j)
   for (i = 0; i < argc; ++i)
     foo();
+// expected-error@+3 {{lastprivate variable cannot be firstprivate}} expected-note@+3 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd lastprivate(g) firstprivate(g) // expected-error {{calling a private constructor of class 'S5'}}
+#pragma omp distribute simd lastprivate(g) firstprivate(g) //expected-warning {{Non-trivial type 'S5' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
+// expected-error@+3 {{lastprivate variable cannot be firstprivate}} expected-note@+3 {{defined as lastprivate}}
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute simd lastprivate(n) firstprivate(n) // OK
+#pragma omp distribute simd lastprivate(n) firstprivate(n) // expected-error {{calling a private constructor of class 'S6'}} expected-warning {{Non-trivial type 'S6' is mapped, only trivial types are guaranteed to be mapped correctly}}
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp parallel

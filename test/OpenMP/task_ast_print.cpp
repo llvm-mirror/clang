@@ -1,6 +1,10 @@
 // RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 -ast-print %s | FileCheck %s
 // RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -x c++ -std=c++11 -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -fopenmp-version=45 -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -fopenmp-version=45 -ast-print %s | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=45 -x c++ -std=c++11 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=45 -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -24,8 +28,8 @@ protected:
 
 public:
   S7(typename T::type v) : a(v) {
-#pragma omp taskgroup task_reduction(+:b)
-#pragma omp task private(a) private(this->a) private(T::a) in_reduction(+:this->b)
+#pragma omp taskgroup allocate(b) task_reduction(+:b)
+#pragma omp task private(a) private(this->a) private(T::a) in_reduction(+:this->b) allocate(b)
     for (int k = 0; k < a.a; ++k)
       ++this->a.a;
   }
@@ -37,8 +41,8 @@ public:
   }
 };
 
-// CHECK: #pragma omp taskgroup task_reduction(+: this->b)
-// CHECK: #pragma omp task private(this->a) private(this->a) private(T::a) in_reduction(+: this->b)
+// CHECK: #pragma omp taskgroup allocate(this->b) task_reduction(+: this->b)
+// CHECK: #pragma omp task private(this->a) private(this->a) private(T::a) in_reduction(+: this->b) allocate(this->b){{$}}
 // CHECK: #pragma omp task private(this->a) private(this->a)
 // CHECK: #pragma omp task private(this->a) private(this->a) private(this->S1::a)
 

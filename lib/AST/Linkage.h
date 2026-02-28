@@ -1,9 +1,8 @@
 //===----- Linkage.h - Linkage calculation-related utilities ----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,6 +19,7 @@
 #include "clang/AST/Type.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/PointerIntPair.h"
 
 namespace clang {
 /// Kinds of LV computation.  The linkage side of the computation is
@@ -35,6 +35,8 @@ struct LVComputationKind {
   /// Whether all visibility should be ignored. When set, we're only interested
   /// in computing linkage.
   unsigned IgnoreAllVisibility : 1;
+
+  enum { NumLVComputationKindBits = 3 };
 
   explicit LVComputationKind(NamedDecl::ExplicitVisibilityKind EK)
       : ExplicitKind(EK), IgnoreExplicitVisibility(false),
@@ -78,12 +80,14 @@ class LinkageComputer {
   // using C = Foo<B, B>;
   // using D = Foo<C, C>;
   //
-  // The unsigned represents an LVComputationKind.
-  using QueryType = std::pair<const NamedDecl *, unsigned>;
+  // The integer represents an LVComputationKind.
+  using QueryType =
+      llvm::PointerIntPair<const NamedDecl *,
+                           LVComputationKind::NumLVComputationKindBits>;
   llvm::SmallDenseMap<QueryType, LinkageInfo, 8> CachedLinkageInfo;
 
   static QueryType makeCacheKey(const NamedDecl *ND, LVComputationKind Kind) {
-    return std::make_pair(ND, Kind.toBits());
+    return QueryType(ND, Kind.toBits());
   }
 
   llvm::Optional<LinkageInfo> lookup(const NamedDecl *ND,

@@ -1,9 +1,8 @@
 //===-- AnalysisManager.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,25 +13,35 @@ using namespace ento;
 
 void AnalysisManager::anchor() { }
 
-AnalysisManager::AnalysisManager(
-    ASTContext &ASTCtx, DiagnosticsEngine &diags, const LangOptions &lang,
-    const PathDiagnosticConsumers &PDC, StoreManagerCreator storemgr,
-    ConstraintManagerCreator constraintmgr, CheckerManager *checkerMgr,
-    AnalyzerOptions &Options, CodeInjector *injector)
-    : AnaCtxMgr(ASTCtx, Options.UnoptimizedCFG,
-                Options.includeImplicitDtorsInCFG(),
-                /*AddInitializers=*/true, Options.includeTemporaryDtorsInCFG(),
-                Options.includeLifetimeInCFG(),
-                // Adding LoopExit elements to the CFG is a requirement for loop
-                // unrolling.
-                Options.includeLoopExitInCFG() || Options.shouldUnrollLoops(),
-                Options.shouldSynthesizeBodies(),
-                Options.shouldConditionalizeStaticInitializers(),
-                /*addCXXNewAllocator=*/true,
-                injector),
-      Ctx(ASTCtx), Diags(diags), LangOpts(lang), PathConsumers(PDC),
-      CreateStoreMgr(storemgr), CreateConstraintMgr(constraintmgr),
-      CheckerMgr(checkerMgr), options(Options) {
+AnalysisManager::AnalysisManager(ASTContext &ASTCtx,
+                                 const PathDiagnosticConsumers &PDC,
+                                 StoreManagerCreator storemgr,
+                                 ConstraintManagerCreator constraintmgr,
+                                 CheckerManager *checkerMgr,
+                                 AnalyzerOptions &Options,
+                                 CodeInjector *injector)
+    : AnaCtxMgr(
+          ASTCtx, Options.UnoptimizedCFG,
+          Options.ShouldIncludeImplicitDtorsInCFG,
+          /*addInitializers=*/true,
+          Options.ShouldIncludeTemporaryDtorsInCFG,
+          Options.ShouldIncludeLifetimeInCFG,
+          // Adding LoopExit elements to the CFG is a requirement for loop
+          // unrolling.
+          Options.ShouldIncludeLoopExitInCFG ||
+            Options.ShouldUnrollLoops,
+          Options.ShouldIncludeScopesInCFG,
+          Options.ShouldSynthesizeBodies,
+          Options.ShouldConditionalizeStaticInitializers,
+          /*addCXXNewAllocator=*/true,
+          Options.ShouldIncludeRichConstructorsInCFG,
+          Options.ShouldElideConstructors,
+          /*addVirtualBaseBranches=*/true,
+          injector),
+      Ctx(ASTCtx), LangOpts(ASTCtx.getLangOpts()),
+      PathConsumers(PDC), CreateStoreMgr(storemgr),
+      CreateConstraintMgr(constraintmgr), CheckerMgr(checkerMgr),
+      options(Options) {
   AnaCtxMgr.getCFGBuildOptions().setAllAlwaysAdd();
 }
 

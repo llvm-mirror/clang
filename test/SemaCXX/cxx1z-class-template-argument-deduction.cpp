@@ -268,13 +268,16 @@ namespace tuple_tests {
   // Don't get caught by surprise when X<...> doesn't even exist in the
   // selected specialization!
   namespace libcxx_2 {
-    template<class ...T> struct tuple { // expected-note {{candidate}}
+    template<class ...T> struct tuple {
       template<class ...Args> struct X { static const bool value = false; };
+      // Substitution into X<U...>::value succeeds but produces the
+      // value-dependent expression
+      //   tuple<T...>::X<>::value
+      // FIXME: Is that the right behavior?
       template<class ...U, bool Y = X<U...>::value> tuple(U &&...u);
-      // expected-note@-1 {{substitution failure [with T = <>, U = <int, int, int>]: cannot reference member of primary template because deduced class template specialization 'tuple<>' is an explicit specialization}}
     };
     template <> class tuple<> {};
-    tuple a = {1, 2, 3}; // expected-error {{no viable constructor or deduction guide}}
+    tuple a = {1, 2, 3}; // expected-error {{excess elements in struct initializer}}
   }
 
   namespace libcxx_3 {
@@ -307,6 +310,201 @@ namespace dependent {
   template int Var(int);
   template int Cast(int);
   template int New(int);
+
+  template<template<typename> typename Y> void test() {
+    Y(0);
+    new Y(0);
+    Y y(0);
+  }
+  template void test<X>();
+}
+
+namespace injected_class_name {
+  template<typename T = void> struct A {
+    A();
+    template<typename U> A(A<U>);
+  };
+  A<int> a;
+  A b = a;
+  using T = decltype(a);
+  using T = decltype(b);
+}
+
+namespace member_guides {
+  // PR34520
+  template<class>
+  struct Foo {
+    template <class T> struct Bar {
+      Bar(...) {}
+    };
+    Bar(int) -> Bar<int>;
+  };
+  Foo<int>::Bar b = 0;
+
+  struct A {
+    template<typename T> struct Public; // expected-note {{declared public}}
+    Public(float) -> Public<float>;
+  protected: // expected-note {{declared protected by intervening access specifier}}
+    template<typename T> struct Protected; // expected-note 2{{declared protected}}
+    Protected(float) -> Protected<float>;
+    Public(int) -> Public<int>; // expected-error {{different access}}
+  private: // expected-note {{declared private by intervening access specifier}}
+    template<typename T> struct Private; // expected-note {{declared private}}
+    Protected(int) -> Protected<int>; // expected-error {{different access}}
+  public: // expected-note 2{{declared public by intervening access specifier}}
+    template<typename T> Public(T) -> Public<T>;
+    template<typename T> Protected(T) -> Protected<T>; // expected-error {{different access}}
+    template<typename T> Private(T) -> Private<T>; // expected-error {{different access}}
+  };
+}
+
+namespace rdar41903969 {
+template <class T> struct A {};
+template <class T> struct B;
+template <class T> struct C {
+  C(A<T>&);
+  C(B<T>&);
+};
+
+void foo(A<int> &a, B<int> &b) {
+  (void)C{b};
+  (void)C{a};
+}
+
+template<typename T> struct X {
+  X(std::initializer_list<T>) = delete;
+  X(const X&);
+};
+
+template <class T> struct D : X<T> {};
+
+void bar(D<int>& d) {
+  (void)X{d};
+}
+}
+
+namespace rdar41330135 {
+template <int> struct A {};
+template <class T>
+struct S {
+  template <class U>
+  S(T a, U t, A<sizeof(t)>);
+};
+template <class T> struct D {
+  D(T t, A<sizeof(t)>);
+};
+int f() {
+  S s(0, 0, A<sizeof(int)>());
+  D d(0, A<sizeof(int)>());
+}
+
+namespace test_dupls {
+template<unsigned long> struct X {};
+template<typename T> struct A {
+  A(T t, X<sizeof(t)>);
+};
+A a(0, {});
+template<typename U> struct B {
+  B(U u, X<sizeof(u)>);
+};
+B b(0, {});
+}
+
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic warning "-Wctad-maybe-unsupported"
+namespace test_implicit_ctad_warning {
+
+template <class T>
+struct Tag {};
+
+template <class T>
+struct NoExplicit { // expected-note {{add a deduction guide to suppress this warning}}
+  NoExplicit(T) {}
+  NoExplicit(T, int) {}
+};
+
+// expected-warning@+1 {{'NoExplicit' may not intend to support class template argument deduction}}
+NoExplicit ne(42);
+
+template <class U>
+struct HasExplicit {
+  HasExplicit(U) {}
+  HasExplicit(U, int) {}
+};
+template <class U> HasExplicit(U, int) -> HasExplicit<Tag<U>>;
+
+HasExplicit he(42);
+
+// Motivating examples from (taken from Stephan Lavavej's 2018 Cppcon talk)
+template <class T, class U>
+struct AmateurPair { // expected-note {{add a deduction guide to suppress this warning}}
+  T first;
+  U second;
+  explicit AmateurPair(const T &t, const U &u) {}
+};
+// expected-warning@+1 {{'AmateurPair' may not intend to support class template argument deduction}}
+AmateurPair p1(42, "hello world"); // deduces to Pair<int, char[12]>
+
+template <class T, class U>
+struct AmateurPair2 { // expected-note {{add a deduction guide to suppress this warning}}
+  T first;
+  U second;
+  explicit AmateurPair2(T t, U u) {}
+};
+// expected-warning@+1 {{'AmateurPair2' may not intend to support class template argument deduction}}
+AmateurPair2 p2(42, "hello world"); // deduces to Pair2<int, const char*>
+
+template <class T, class U>
+struct ProPair {
+  T first; U second;
+    explicit ProPair(T const& t, U  const& u)  {}
+};
+template<class T1, class T2>
+ProPair(T1, T2) -> ProPair<T1, T2>;
+ProPair p3(42, "hello world"); // deduces to ProPair<int, const char*>
+static_assert(__is_same(decltype(p3), ProPair<int, const char*>));
+
+// Test that user-defined explicit guides suppress the warning even if they
+// aren't used as candidates.
+template <class T>
+struct TestExplicitCtor {
+  TestExplicitCtor(T) {}
+};
+template <class T>
+explicit TestExplicitCtor(TestExplicitCtor<T> const&) -> TestExplicitCtor<void>;
+TestExplicitCtor<int> ce1{42};
+TestExplicitCtor ce2 = ce1;
+static_assert(__is_same(decltype(ce2), TestExplicitCtor<int>), "");
+
+struct allow_ctad_t {
+  allow_ctad_t() = delete;
+};
+
+template <class T>
+struct TestSuppression {
+  TestSuppression(T) {}
+};
+TestSuppression(allow_ctad_t)->TestSuppression<void>;
+TestSuppression ta("abc");
+static_assert(__is_same(decltype(ta), TestSuppression<const char *>), "");
+}
+#pragma clang diagnostic pop
+
+namespace PR41549 {
+
+template <class H, class P> struct umm;
+
+template <class H = int, class P = int>
+struct umm {
+  umm(H h = 0, P p = 0);
+};
+
+template <class H, class P> struct umm;
+
+umm m(1);
+
 }
 
 #else

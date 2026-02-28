@@ -1,10 +1,21 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wno-openmp-target -Wuninitialized
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wno-openmp-target -Wuninitialized
+
+extern int omp_default_mem_alloc;
 void foo() {
 }
 
 bool foobool(int argc) {
   return argc;
+}
+
+void xxx(int argc) {
+  int fp; // expected-note {{initialize the variable 'fp' to silence this warning}}
+#pragma omp target
+#pragma omp teams distribute firstprivate(fp) // expected-warning {{variable 'fp' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
 }
 
 struct S1; // expected-note {{declared here}} expected-note{{forward declaration of 'S1'}}
@@ -61,7 +72,7 @@ int main(int argc, char **argv) {
   S4 e(4);
   S5 g(5);
   S6 p;
-  int i;
+  int i, z;
   int &j = i;
 
 #pragma omp target
@@ -89,7 +100,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
-#pragma omp teams distribute firstprivate (argc)
+#pragma omp teams distribute firstprivate (argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
@@ -97,7 +108,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
-#pragma omp teams distribute firstprivate (a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+#pragma omp teams distribute firstprivate (a, b, c, d, f) // expected-error {{firstprivate variable with incomplete type 'S1'}} expected-error {{incomplete type 'S1' where a complete type is required}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
@@ -105,7 +116,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
-#pragma omp teams distribute firstprivate(ba)
+#pragma omp teams distribute firstprivate(ba, z)
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target
@@ -144,8 +155,9 @@ int main(int argc, char **argv) {
 #pragma omp teams distribute firstprivate(j)
   for (i = 0; i < argc; ++i) foo();
 
+// expected-error@+2 {{lastprivate variable cannot be firstprivate}} expected-note@+2 {{defined as lastprivate}}
 #pragma omp target
-#pragma omp teams distribute lastprivate(argc), firstprivate(argc) // OK
+#pragma omp teams distribute lastprivate(argc), firstprivate(argc)
   for (i = 0; i < argc; ++i) foo();
 
   return 0;

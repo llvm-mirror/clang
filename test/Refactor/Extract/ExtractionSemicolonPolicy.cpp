@@ -64,6 +64,7 @@ void extractStatementNotSemiSwitch() {
 // CHECK-NEXT: extracted();{{$}}
 // CHECK-NEXT: }
 
+
 void extractStatementNotSemiWhile() {
   /*range eextract=->+2:4*/while (true) {
     int x = 0;
@@ -190,3 +191,26 @@ void careForNonCompoundSemicolons2() {
 // CHECK-NEXT: extracted();{{$}}
 // CHECK-NEXT: //
 // CHECK-NEXT: }
+
+void careForSwitchSemicolon() {
+  /*range mextract=->+0:53*/switch(0) default: break;
+}
+// CHECK: 1 'mextract' results:
+// CHECK:      static void extracted() {
+// CHECK-NEXT: switch(0) default: break;{{$}}
+// CHECK-NEXT: }{{[[:space:]].*}}
+// CHECK-NEXT: void careForSwitchSemicolon() {
+// CHECK-NEXT: extracted();{{$}}
+// CHECK-NEXT: }
+
+void extractStatementNotSemiDecl() {
+  /*range nextract=->+0:38*/int x = 5;
+}
+// CHECK: 1 'nextract' results:
+// CHECK:      static void extracted() {
+// CHECK-NEXT: int x = 5;{{$}}
+// CHECK-NEXT: }{{[[:space:]].*}}
+// CHECK-NEXT: void extractStatementNotSemiDecl() {
+// CHECK-NEXT: extracted();{{$}}
+// CHECK-NEXT: }
+

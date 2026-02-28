@@ -1,13 +1,12 @@
 //===--- SourceExtraction.cpp - Clang refactoring library -----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "SourceExtraction.h"
+#include "clang/Tooling/Refactoring/Extract/SourceExtraction.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
@@ -41,8 +40,12 @@ bool isSemicolonRequiredAfter(const Stmt *S) {
     return isSemicolonRequiredAfter(CXXFor->getBody());
   if (const auto *ObjCFor = dyn_cast<ObjCForCollectionStmt>(S))
     return isSemicolonRequiredAfter(ObjCFor->getBody());
+  if(const auto *Switch = dyn_cast<SwitchStmt>(S))
+    return isSemicolonRequiredAfter(Switch->getBody());
+  if(const auto *Case = dyn_cast<SwitchCase>(S))
+    return isSemicolonRequiredAfter(Case->getSubStmt());
   switch (S->getStmtClass()) {
-  case Stmt::SwitchStmtClass:
+  case Stmt::DeclStmtClass:
   case Stmt::CXXTryStmtClass:
   case Stmt::ObjCAtSynchronizedStmtClass:
   case Stmt::ObjCAutoreleasePoolStmtClass:

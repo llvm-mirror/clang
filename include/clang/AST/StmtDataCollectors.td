@@ -3,8 +3,8 @@ class Stmt {
     addData(S->getStmtClass());
     // This ensures that non-macro-generated code isn't identical to
     // macro-generated code.
-    addData(data_collection::getMacroStack(S->getLocStart(), Context));
-    addData(data_collection::getMacroStack(S->getLocEnd(), Context));
+    addData(data_collection::getMacroStack(S->getBeginLoc(), Context));
+    addData(data_collection::getMacroStack(S->getEndLoc(), Context));
   }];
 }
 
@@ -27,7 +27,7 @@ class ExpressionTraitExpr {
 }
 class PredefinedExpr {
   code Code = [{
-    addData(S->getIdentType());
+    addData(S->getIdentKind());
   }];
 }
 class TypeTraitExpr {
@@ -189,8 +189,8 @@ class CXXFoldExpr {
 }
 class GenericSelectionExpr {
   code Code = [{
-    for (unsigned i = 0; i < S->getNumAssocs(); ++i) {
-      addData(S->getAssocType(i));
+    for (const GenericSelectionExpr::ConstAssociation &Assoc : S->associations()) {
+      addData(Assoc.getType());
     }
   }];
 }

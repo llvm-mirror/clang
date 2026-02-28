@@ -207,17 +207,22 @@ __device__ void df_sema() {
   // expected-error@-1 {{initialization is not supported for __shared__ variables.}}
 
   static __device__ int ds;
-  // expected-error@-1 {{within a __device__ function, only __shared__ variables may be marked 'static'}}
+  // expected-error@-1 {{within a __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
   static __constant__ int dc;
-  // expected-error@-1 {{within a __device__ function, only __shared__ variables may be marked 'static'}}
+  // expected-error@-1 {{within a __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
   static int v;
-  // expected-error@-1 {{within a __device__ function, only __shared__ variables may be marked 'static'}}
+  // expected-error@-1 {{within a __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
+  static const int cv = 1;
+  static const __device__ int cds = 1;
+  // expected-error@-1 {{within a __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
+  static const __constant__ int cdc = 1;
+  // expected-error@-1 {{within a __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
 }
 
 __host__ __device__ void hd_sema() {
   static int x = 42;
 #ifdef __CUDA_ARCH__
-  // expected-error@-2 {{within a __host__ __device__ function, only __shared__ variables may be marked 'static'}}
+  // expected-error@-2 {{within a __host__ __device__ function, only __shared__ variables or const variables without device memory qualifier may be marked 'static'}}
 #endif
 }
 
@@ -225,3 +230,20 @@ inline __host__ __device__ void hd_emitted_host_only() {
   static int x = 42; // no error on device because this is never codegen'ed there.
 }
 void call_hd_emitted_host_only() { hd_emitted_host_only(); }
+
+// Verify that we also check field initializers in instantiated structs.
+struct NontrivialInitializer {
+  __host__ __device__ NontrivialInitializer() : x(43) {}
+  int x;
+};
+
+template <typename T>
+__global__ void bar() {
+  __shared__ T bad;
+// expected-error@-1 {{initialization is not supported for __shared__ variables.}}
+}
+
+void instantiate() {
+  bar<NontrivialInitializer><<<1, 1>>>();
+// expected-note@-1 {{in instantiation of function template specialization 'bar<NontrivialInitializer>' requested here}}
+}

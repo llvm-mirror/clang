@@ -1,9 +1,8 @@
 //===--- DependencyGraph.cpp - Generate dependency file -------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -33,9 +32,9 @@ class DependencyGraphCallback : public PPCallbacks {
   llvm::SetVector<const FileEntry *> AllFiles;
   typedef llvm::DenseMap<const FileEntry *,
                          SmallVector<const FileEntry *, 2> > DependencyMap;
-  
+
   DependencyMap Dependencies;
-  
+
 private:
   raw_ostream &writeNodeReference(raw_ostream &OS,
                                   const FileEntry *Node);
@@ -50,33 +49,36 @@ public:
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange, const FileEntry *File,
                           StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported) override;
+                          const Module *Imported,
+                          SrcMgr::CharacteristicKind FileType) override;
 
   void EndOfMainFile() override {
     OutputGraphFile();
   }
-  
+
 };
 }
 
 void clang::AttachDependencyGraphGen(Preprocessor &PP, StringRef OutputFile,
                                      StringRef SysRoot) {
-  PP.addPPCallbacks(llvm::make_unique<DependencyGraphCallback>(&PP, OutputFile,
+  PP.addPPCallbacks(std::make_unique<DependencyGraphCallback>(&PP, OutputFile,
                                                                SysRoot));
 }
 
-void DependencyGraphCallback::InclusionDirective(SourceLocation HashLoc,
-                                                 const Token &IncludeTok,
-                                                 StringRef FileName,
-                                                 bool IsAngled,
-                                                 CharSourceRange FilenameRange,
-                                                 const FileEntry *File,
-                                                 StringRef SearchPath,
-                                                 StringRef RelativePath,
-                                                 const Module *Imported) {
+void DependencyGraphCallback::InclusionDirective(
+    SourceLocation HashLoc,
+    const Token &IncludeTok,
+    StringRef FileName,
+    bool IsAngled,
+    CharSourceRange FilenameRange,
+    const FileEntry *File,
+    StringRef SearchPath,
+    StringRef RelativePath,
+    const Module *Imported,
+    SrcMgr::CharacteristicKind FileType) {
   if (!File)
     return;
-  
+
   SourceManager &SM = PP->getSourceManager();
   const FileEntry *FromFile
     = SM.getFileEntryForID(SM.getFileID(SM.getExpansionLoc(HashLoc)));
@@ -84,7 +86,7 @@ void DependencyGraphCallback::InclusionDirective(SourceLocation HashLoc,
     return;
 
   Dependencies[FromFile].push_back(File);
-  
+
   AllFiles.insert(File);
   AllFiles.insert(FromFile);
 }
@@ -98,7 +100,7 @@ DependencyGraphCallback::writeNodeReference(raw_ostream &OS,
 
 void DependencyGraphCallback::OutputGraphFile() {
   std::error_code EC;
-  llvm::raw_fd_ostream OS(OutputFile, EC, llvm::sys::fs::F_Text);
+  llvm::raw_fd_ostream OS(OutputFile, EC, llvm::sys::fs::OF_Text);
   if (EC) {
     PP->getDiagnostics().Report(diag::err_fe_error_opening) << OutputFile
                                                             << EC.message();
@@ -106,7 +108,7 @@ void DependencyGraphCallback::OutputGraphFile() {
   }
 
   OS << "digraph \"dependencies\" {\n";
-  
+
   // Write the nodes
   for (unsigned I = 0, N = AllFiles.size(); I != N; ++I) {
     // Write the node itself.
@@ -116,15 +118,15 @@ void DependencyGraphCallback::OutputGraphFile() {
     StringRef FileName = AllFiles[I]->getName();
     if (FileName.startswith(SysRoot))
       FileName = FileName.substr(SysRoot.size());
-    
+
     OS << DOT::EscapeString(FileName)
     << "\"];\n";
   }
 
   // Write the edges
-  for (DependencyMap::iterator F = Dependencies.begin(), 
+  for (DependencyMap::iterator F = Dependencies.begin(),
                             FEnd = Dependencies.end();
-       F != FEnd; ++F) {    
+       F != FEnd; ++F) {
     for (unsigned I = 0, N = F->second.size(); I != N; ++I) {
       OS.indent(2);
       writeNodeReference(OS, F->first);

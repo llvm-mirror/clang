@@ -1,9 +1,8 @@
 //===--- SystemZ.h - Declare SystemZ target feature support -----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -62,6 +61,8 @@ public:
     return None;
   }
 
+  ArrayRef<TargetInfo::AddlRegName> getGCCAddlRegNames() const override;
+
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &info) const override;
 
@@ -74,11 +75,13 @@ public:
     return TargetInfo::SystemZBuiltinVaList;
   }
 
-  int getISARevision(const StringRef &Name) const;
+  int getISARevision(StringRef Name) const;
 
   bool isValidCPUName(StringRef Name) const override {
     return getISARevision(Name) != -1;
   }
+
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
   bool setCPU(const std::string &Name) override {
     CPU = Name;
@@ -97,6 +100,8 @@ public:
       Features["vector"] = true;
     if (ISARevision >= 12)
       Features["vector-enhancements-1"] = true;
+    if (ISARevision >= 13)
+      Features["vector-enhancements-2"] = true;
     return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
   }
 
@@ -138,7 +143,7 @@ public:
     return "";
   }
 
-  bool useFloat128ManglingForLongDouble() const override { return true; }
+  const char *getLongDoubleMangling() const override { return "g"; }
 };
 } // namespace targets
 } // namespace clang

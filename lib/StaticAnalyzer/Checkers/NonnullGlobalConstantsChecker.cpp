@@ -1,9 +1,8 @@
 //==- NonnullGlobalConstantsChecker.cpp ---------------------------*- C++ -*--//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -21,7 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -54,7 +53,7 @@ private:
 
 } // namespace
 
-/// Lazily initialize cache for required identifier informations.
+/// Lazily initialize cache for required identifier information.
 void NonnullGlobalConstantsChecker::initIdentifierInfo(ASTContext &Ctx) const {
   if (NSStringII)
     return;
@@ -73,9 +72,9 @@ void NonnullGlobalConstantsChecker::checkLocation(SVal location, bool isLoad,
     return;
 
   ProgramStateRef State = C.getState();
-  SVal V = State->getSVal(location.castAs<Loc>());
 
   if (isGlobalConstString(location)) {
+    SVal V = State->getSVal(location.castAs<Loc>());
     Optional<DefinedOrUnknownSVal> Constr = V.getAs<DefinedOrUnknownSVal>();
 
     if (Constr) {
@@ -107,14 +106,21 @@ bool NonnullGlobalConstantsChecker::isGlobalConstString(SVal V) const {
     return true;
 
   // Look through the typedefs.
-  while (auto *T = dyn_cast<TypedefType>(Ty)) {
-    Ty = T->getDecl()->getUnderlyingType();
-
-    // It is sufficient for any intermediate typedef
-    // to be classified const.
-    HasConst = HasConst || Ty.isConstQualified();
-    if (isNonnullType(Ty) && HasConst)
-      return true;
+  while (const Type *T = Ty.getTypePtr()) {
+    if (const auto *TT = dyn_cast<TypedefType>(T)) {
+      Ty = TT->getDecl()->getUnderlyingType();
+      // It is sufficient for any intermediate typedef
+      // to be classified const.
+      HasConst = HasConst || Ty.isConstQualified();
+      if (isNonnullType(Ty) && HasConst)
+        return true;
+    } else if (const auto *AT = dyn_cast<AttributedType>(T)) {
+      if (AT->getAttrKind() == attr::TypeNonNull)
+        return true;
+      Ty = AT->getModifiedType();
+    } else {
+      return false;
+    }
   }
   return false;
 }
@@ -137,4 +143,8 @@ bool NonnullGlobalConstantsChecker::isNonnullType(QualType Ty) const {
 
 void ento::registerNonnullGlobalConstantsChecker(CheckerManager &Mgr) {
   Mgr.registerChecker<NonnullGlobalConstantsChecker>();
+}
+
+bool ento::shouldRegisterNonnullGlobalConstantsChecker(const LangOptions &LO) {
+  return true;
 }

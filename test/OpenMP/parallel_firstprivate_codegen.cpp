@@ -4,17 +4,47 @@
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA -check-prefix=LAMBDA-32 %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS -check-prefix=BLOCKS-32 %s
 
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -triple i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple i386-pc-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -triple i386-pc-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -DLAMBDA -triple i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -fblocks -DBLOCKS -triple i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
+
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck %s -check-prefix=CHECK -check-prefix=CHECK-64
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-pc-linux-gnu -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-pc-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s -check-prefix=CHECK -check-prefix=CHECK-64
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA -check-prefix=LAMBDA-64 %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS -check-prefix=BLOCKS-64 %s
 
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY1 %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple x86_64-pc-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -triple x86_64-pc-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY1 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -DLAMBDA -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY1 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -fblocks -DBLOCKS -triple x86_64-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY1 %s
+// SIMD-ONLY1-NOT: {{__kmpc|__tgt}}
+
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DARRAY -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=ARRAY %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -DARRAY -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY2 %s
+// SIMD-ONLY2-NOT: {{__kmpc|__tgt}}
 // expected-no-diagnostics
 #ifndef ARRAY
 #ifndef HEADER
 #define HEADER
+
+enum omp_allocator_handle_t {
+  omp_null_allocator = 0,
+  omp_default_mem_alloc = 1,
+  omp_large_cap_mem_alloc = 2,
+  omp_const_mem_alloc = 3,
+  omp_high_bw_mem_alloc = 4,
+  omp_low_lat_mem_alloc = 5,
+  omp_cgroup_mem_alloc = 6,
+  omp_pteam_mem_alloc = 7,
+  omp_thread_mem_alloc = 8,
+  KMP_ALLOCATOR_MAX_HANDLE = __UINTPTR_MAX__
+};
 
 struct St {
   int a, b;
@@ -150,10 +180,10 @@ int main() {
     // LAMBDA: [[B_PRIV:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA: [[C_PRIV:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA-64: [[A_CONV:%.+]] = bitcast i64* [[A_PRIV]] to i32*
-    // LAMBDA-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
-    // LAMBDA-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
     // LAMBDA-64: [[B_CONV:%.+]] = bitcast i64* [[B_PRIV]] to i32*
     // LAMBDA-64: [[C_CONV:%.+]] = bitcast i64* [[C_PRIV]] to i32*
+    // LAMBDA-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
+    // LAMBDA-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
     // LAMBDA-64: store i32* [[C_CONV]], i32** [[REFC:%.+]],
     // LAMBDA-32: store i32* [[C_PRIV]], i32** [[REFC:%.+]],
     // LAMBDA-NEXT: [[A_PRIV:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[REFA]],
@@ -273,10 +303,10 @@ int main() {
 // BLOCKS: [[B_PRIV:%.+]] = alloca i{{[0-9]+}},
 // BLOCKS: [[C_PRIV:%.+]] = alloca i{{[0-9]+}},
 // BLOCKS-64: [[A_CONV:%.+]] = bitcast i64* [[A_PRIV]] to i32*
-// BLOCKS-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
-// BLOCKS-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
 // BLOCKS-64: [[B_CONV:%.+]] = bitcast i64* [[B_PRIV]] to i32*
 // BLOCKS-64: [[C_CONV:%.+]] = bitcast i64* [[C_PRIV]] to i32*
+// BLOCKS-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
+// BLOCKS-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
 // BLOCKS-64: store i32* [[C_CONV]], i32** [[REFC:%.+]],
 // BLOCKS-32: store i32* [[C_PRIV]], i32** [[REFC:%.+]],
 // BLOCKS-NEXT: [[A_PRIV:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[REFA]],
@@ -305,8 +335,9 @@ int main() {
     s_arr[0] = var;
     sivar = 2;
   }
-#pragma omp parallel firstprivate(t_var)
-  {}
+  const int a = 0;
+#pragma omp parallel allocate(omp_default_mem_alloc: t_var) firstprivate(t_var, a)
+  { t_var = a; }
   return tmain<int>();
 #endif
 }
@@ -316,6 +347,8 @@ int main() {
 // CHECK: [[T_VAR:%.+]] = alloca i32,
 // CHECK: [[T_VARCAST:%.+]] = alloca [[iz:i64|i32]],
 // CHECK: [[SIVARCAST:%.+]] = alloca [[iz]],
+// CHECK: [[A:%.+]] = alloca i32,
+// CHECK: [[T_VARCAST1:%.+]] = alloca [[iz:i64|i32]],
 // CHECK: call {{.*}} [[S_FLOAT_TY_DEF_CONSTR:@.+]]([[S_FLOAT_TY]]* [[TEST]])
 // CHECK: [[T_VARVAL:%.+]] = load i32, i32* [[T_VAR]],
 // CHECK-64: [[T_VARCONV:%.+]] = bitcast i64* [[T_VARCAST]] to i32*
@@ -328,6 +361,12 @@ int main() {
 // CHECK-32: store i32 [[SIVARVAL]], i32* [[SIVARCAST]],
 // CHECK: [[SIVARPVT:%.+]] = load [[iz]], [[iz]]* [[SIVARCAST]],
 // CHECK: call {{.*}}void (%{{.+}}*, i{{[0-9]+}}, void (i{{[0-9]+}}*, i{{[0-9]+}}*, ...)*, ...) @__kmpc_fork_call(%{{.+}}* @{{.+}}, i{{[0-9]+}} 5, void (i{{[0-9]+}}*, i{{[0-9]+}}*, ...)* bitcast (void (i{{[0-9]+}}*, i{{[0-9]+}}*, [2 x i32]*, [[iz]], [2 x [[S_FLOAT_TY]]]*, [[S_FLOAT_TY]]*, i{{[0-9]+}})* [[MAIN_MICROTASK:@.+]] to void {{.*}}[[iz]] [[T_VARPVT]],{{.*}}[[iz]] [[SIVARPVT]]
+// CHECK: [[T_VARVAL:%.+]] = load i32, i32* [[T_VAR]],
+// CHECK-64: [[T_VARCONV:%.+]] = bitcast i64* [[T_VARCAST1]] to i32*
+// CHECK-64: store i32 [[T_VARVAL]], i32* [[T_VARCONV]],
+// CHECK-32: store i32 [[T_VARVAL]], i32* [[T_VARCAST1]],
+// CHECK: [[T_VARPVT:%.+]] = load [[iz]], [[iz]]* [[T_VARCAST1]],
+// CHECK: call {{.*}}void (%{{.+}}*, i{{[0-9]+}}, void (i{{[0-9]+}}*, i{{[0-9]+}}*, ...)*, ...) @__kmpc_fork_call(%{{.+}}* @{{.+}}, i{{[0-9]+}} 1, void (i{{[0-9]+}}*, i{{[0-9]+}}*, ...)* bitcast (void (i{{[0-9]+}}*, i{{[0-9]+}}*, [[iz]])* [[MAIN_MICROTASK1:@.+]] to void {{.*}}[[iz]] [[T_VARPVT]])
 // CHECK: = call {{.*}}i{{.+}} [[TMAIN_INT:@.+]]()
 // CHECK: call {{.*}} [[S_FLOAT_TY_DESTR:@.+]]([[S_FLOAT_TY]]*
 // CHECK: ret
@@ -349,7 +388,7 @@ int main() {
 // CHECK-64: [[SIVAR7_CONV:%.+]] = bitcast i64* [[SIVAR7_PRIV]] to i32*
 // CHECK: [[VEC_DEST:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8*
 // CHECK: [[VEC_SRC:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_REF]] to i8*
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST]], i8* [[VEC_SRC]],
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align {{[0-9]+}} [[VEC_DEST]], i8* align {{[0-9]+}} [[VEC_SRC]],
 // CHECK: [[S_ARR_PRIV_BEGIN:%.+]] = getelementptr inbounds [2 x [[S_FLOAT_TY]]], [2 x [[S_FLOAT_TY]]]* [[S_ARR_PRIV]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
 // CHECK: [[S_ARR_BEGIN:%.+]] = bitcast [2 x [[S_FLOAT_TY]]]* [[S_ARR_REF]] to [[S_FLOAT_TY]]*
 // CHECK: [[S_ARR_PRIV_END:%.+]] = getelementptr [[S_FLOAT_TY]], [[S_FLOAT_TY]]* [[S_ARR_PRIV_BEGIN]], i{{[0-9]+}} 2
@@ -370,6 +409,24 @@ int main() {
 // CHECK-DAG: call {{.*}} [[S_FLOAT_TY_DESTR]]([[S_FLOAT_TY]]* [[VAR_PRIV]])
 // CHECK-DAG: call {{.*}} [[S_FLOAT_TY_DESTR]]([[S_FLOAT_TY]]*
 // CHECK: ret void
+
+
+// CHECK:    define internal void [[MAIN_MICROTASK1]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}}, [[iz]] [[T_VAR:%.+]])
+// CHECK:    [[GTID_ADDR:%.+]] = alloca i32*,
+// CHECK:    store [[iz]] [[T_VAR]], [[iz]]* [[T_VAR_ADDR:%.+]],
+// CHECK-64: [[BC:%.+]] = bitcast [[iz]]* [[T_VAR_ADDR]] to i32*
+// CHECK:    [[GTID_PTR:%.+]] = load i32*, i32** [[GTID_ADDR]],
+// CHECK:    [[GTID:%.+]] = load i32, i32* [[GTID_PTR]],
+// CHECK:    [[T_VAR_VOID_PTR:%.+]] = call i8* @__kmpc_alloc(i32 [[GTID]], [[iz]] 4, i8* inttoptr ([[iz]] 1 to i8*))
+// CHECK:    [[T_VAR_PRIV:%.+]] = bitcast i8* [[T_VAR_VOID_PTR]] to i32*
+// CHECK-32: [[T_VAR_VAL:%.+]] = load i32, i32* [[T_VAR_ADDR]],
+// CHECK-64: [[T_VAR_VAL:%.+]] = load i32, i32* [[BC]],
+// CHECK:    store i32 [[T_VAR_VAL]], i32* [[T_VAR_PRIV]],
+// CHECK:    store i32 0, i32* [[T_VAR_PRIV]],
+// CHECK:    call void @__kmpc_free(i32 [[GTID]], i8* [[T_VAR_VOID_PTR]], i8* inttoptr ([[iz]] 1 to i8*))
+// CHECK:    ret void
+
+
 // CHECK: define {{.*}} i{{[0-9]+}} [[TMAIN_INT]]()
 // CHECK: [[TEST:%.+]] = alloca [[S_INT_TY]],
 // CHECK: call {{.*}} [[S_INT_TY_DEF_CONSTR:@.+]]([[S_INT_TY]]* [[TEST]])
@@ -398,10 +455,10 @@ int main() {
 // CHECK: store i{{[0-9]+}} {{.+}}, i{{[0-9]+}}* [[B_PRIV]]
 // CHECK: store i{{[0-9]+}} {{.+}}, i{{[0-9]+}}* [[C_PRIV]]
 // CHECK-64: [[A_CONV:%.+]] = bitcast i64* [[A_PRIV:%.+]] to i32*
-// CHECK-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
-// CHECK-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
 // CHECK-64: [[B_CONV:%.+]] = bitcast i64* [[B_PRIV:%.+]] to i32*
 // CHECK-64: [[C_CONV:%.+]] = bitcast i64* [[C_PRIV:%.+]] to i32*
+// CHECK-64: store i32* [[A_CONV]], i32** [[REFA:%.+]],
+// CHECK-32: store i32* [[A_PRIV]], i32** [[REFA:%.+]],
 // CHECK-64: store i32* [[C_CONV]], i32** [[REFC:%.+]],
 // CHECK-32: store i32* [[C_PRIV]], i32** [[REFC:%.+]],
 // CHECK: bitcast [4 x i{{[0-9]+}}]* [[E_PRIV]] to i8*
@@ -442,7 +499,7 @@ int main() {
 // CHECK: store i{{[0-9]+}} [[T_VAR_VAL]], i{{[0-9]+}}* [[T_VAR_PRIV]], align 128
 // CHECK: [[VEC_DEST:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8*
 // CHECK: [[VEC_SRC:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_REF]] to i8*
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST]], i8* [[VEC_SRC]], i{{[0-9]+}} {{[0-9]+}}, i{{[0-9]+}} 128,
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align 128 [[VEC_DEST]], i8* align 128 [[VEC_SRC]], i{{[0-9]+}} {{[0-9]+}}, i1
 // CHECK: [[S_ARR_PRIV_BEGIN:%.+]] = getelementptr inbounds [2 x [[S_INT_TY]]], [2 x [[S_INT_TY]]]* [[S_ARR_PRIV]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
 // CHECK: [[S_ARR_BEGIN:%.+]] = bitcast [2 x [[S_INT_TY]]]* [[S_ARR_REF]] to [[S_INT_TY]]*
 // CHECK: [[S_ARR_PRIV_END:%.+]] = getelementptr [[S_INT_TY]], [[S_INT_TY]]* [[S_ARR_PRIV_BEGIN]], i{{[0-9]+}} 2
@@ -463,6 +520,20 @@ int main() {
 
 #endif
 #else
+
+enum omp_allocator_handle_t {
+  omp_null_allocator = 0,
+  omp_default_mem_alloc = 1,
+  omp_large_cap_mem_alloc = 2,
+  omp_const_mem_alloc = 3,
+  omp_high_bw_mem_alloc = 4,
+  omp_low_lat_mem_alloc = 5,
+  omp_cgroup_mem_alloc = 6,
+  omp_pteam_mem_alloc = 7,
+  omp_thread_mem_alloc = 8,
+  KMP_ALLOCATOR_MAX_HANDLE = __UINTPTR_MAX__
+};
+
 struct St {
   int a, b;
   St() : a(0), b(0) {}
@@ -471,7 +542,7 @@ struct St {
   void St_func(St s[2], int n, long double vla1[n]) {
     double vla2[n][n] __attribute__((aligned(128)));
     a = b;
-#pragma omp parallel firstprivate(s, vla1, vla2)
+#pragma omp parallel allocate(omp_thread_mem_alloc:vla2) firstprivate(s, vla1, vla2)
     vla1[b] = vla2[1][n - 1] = a = b;
   }
 };
@@ -490,7 +561,7 @@ void array_func(float a[3], St s[2], int n, long double vla1[n]) {
 // ARRAY-DAG: store double* %{{.+}}, double** [[PRIV_VLA2]],
 // ARRAY: call i8* @llvm.stacksave()
 // ARRAY: [[SIZE:%.+]] = mul nuw i64 %{{.+}}, 8
-// ARRAY: call void @llvm.memcpy.p0i8.p0i8.i64(i8* %{{.+}}, i8* %{{.+}}, i64 [[SIZE]], i32 128, i1 false)
+// ARRAY: call void @llvm.memcpy.p0i8.p0i8.i64(i8* align 128 %{{.+}}, i8* align 128 %{{.+}}, i64 [[SIZE]], i1 false)
 #pragma omp parallel firstprivate(a, s, vla1, vla2)
   s[0].St_func(s, n, vla1);
   ;
@@ -504,9 +575,17 @@ void array_func(float a[3], St s[2], int n, long double vla1[n]) {
 // ARRAY-DAG: store %struct.St* %{{.+}}, %struct.St** [[PRIV_S]],
 // ARRAY-DAG: store x86_fp80* %{{.+}}, x86_fp80** [[PRIV_VLA1]],
 // ARRAY-DAG: store double* %{{.+}}, double** [[PRIV_VLA2]],
-// ARRAY: call i8* @llvm.stacksave()
 // ARRAY: [[SIZE:%.+]] = mul nuw i64 %{{.+}}, 8
-// ARRAY: call void @llvm.memcpy.p0i8.p0i8.i64(i8* %{{.+}}, i8* %{{.+}}, i64 [[SIZE]], i32 128, i1 false)
+// ARRAY: [[SZ1:%.+]] = add nuw i64 [[SIZE]], 127
+// ARRAY: [[SZ2:%.+]] = udiv i64 [[SZ1]], 128
+// ARRAY: [[SIZE:%.+]] = mul nuw i64 [[SZ2]], 128
+// ARRAY: [[VLA2_VOID_PTR:%.+]] = call i8* @__kmpc_alloc(i32 [[GTID:%.+]], i64 [[SIZE]], i8* inttoptr (i64 8 to i8*))
+// ARRAY: [[VLA2_PTR:%.+]] = bitcast i8* [[VLA2_VOID_PTR]] to double*
+// ARRAY: [[SIZE:%.+]] = mul nuw i64 %{{.+}}, 8
+// ARRAY: [[BC:%.+]] = bitcast double* [[VLA2_PTR]] to i8*
+// ARRAY: call void @llvm.memcpy.p0i8.p0i8.i64(i8* align 128 [[BC]], i8* align 128 %{{.+}}, i64 [[SIZE]], i1 false)
+// ARRAY: call void @__kmpc_free(i32 [[GTID]], i8* [[VLA2_VOID_PTR]], i8* inttoptr (i64 8 to i8*))
+// ARRAY-NEXT: ret void
 #endif
 
 

@@ -1,5 +1,8 @@
 // REQUIRES: amdgpu-registered-target
 // RUN: %clang_cc1 -triple amdgcn-unknown-unknown -target-cpu tonga -S -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple amdgcn-unknown-unknown -target-cpu gfx900 -S -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple amdgcn-unknown-unknown -target-cpu gfx1010 -S -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple amdgcn-unknown-unknown -target-cpu gfx1012 -S -emit-llvm -o - %s | FileCheck %s
 
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
@@ -82,10 +85,41 @@ void test_s_memrealtime(global ulong* out)
   *out = __builtin_amdgcn_s_memrealtime();
 }
 
+// CHECK-LABEL: @test_s_dcache_wb()
+// CHECK: call void @llvm.amdgcn.s.dcache.wb()
+void test_s_dcache_wb()
+{
+  __builtin_amdgcn_s_dcache_wb();
+}
+
 // CHECK-LABEL: @test_mov_dpp
-// CHECK: call i32 @llvm.amdgcn.mov.dpp.i32(i32 %src, i32 0, i32 0, i32 0, i1 false)
+// CHECK: call i32 @llvm.amdgcn.update.dpp.i32(i32 undef, i32 %src, i32 0, i32 0, i32 0, i1 false)
 void test_mov_dpp(global int* out, int src)
 {
   *out = __builtin_amdgcn_mov_dpp(src, 0, 0, 0, false);
 }
 
+// CHECK-LABEL: @test_update_dpp
+// CHECK: call i32 @llvm.amdgcn.update.dpp.i32(i32 %arg1, i32 %arg2, i32 0, i32 0, i32 0, i1 false)
+void test_update_dpp(global int* out, int arg1, int arg2)
+{
+  *out = __builtin_amdgcn_update_dpp(arg1, arg2, 0, 0, 0, false);
+}
+
+// CHECK-LABEL: @test_ds_fadd
+// CHECK: call float @llvm.amdgcn.ds.fadd(float addrspace(3)* %out, float %src, i32 0, i32 0, i1 false)
+void test_ds_faddf(local float *out, float src) {
+  *out = __builtin_amdgcn_ds_faddf(out, src, 0, 0, false);
+}
+
+// CHECK-LABEL: @test_ds_fmin
+// CHECK: call float @llvm.amdgcn.ds.fmin(float addrspace(3)* %out, float %src, i32 0, i32 0, i1 false)
+void test_ds_fminf(local float *out, float src) {
+  *out = __builtin_amdgcn_ds_fminf(out, src, 0, 0, false);
+}
+
+// CHECK-LABEL: @test_ds_fmax
+// CHECK: call float @llvm.amdgcn.ds.fmax(float addrspace(3)* %out, float %src, i32 0, i32 0, i1 false)
+void test_ds_fmaxf(local float *out, float src) {
+  *out = __builtin_amdgcn_ds_fmaxf(out, src, 0, 0, false);
+}

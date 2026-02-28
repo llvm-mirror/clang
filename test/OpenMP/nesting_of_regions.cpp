@@ -1,5 +1,8 @@
 // RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s
 
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -verify %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
+
 void bar();
 
 template <class T>
@@ -4073,6 +4076,13 @@ void foo() {
 #pragma omp target
   {
 #pragma omp teams
+    ++a;
+  }
+#pragma omp target // expected-error {{target construct with nested teams region contains statements outside of the teams construct}}
+  {
+#pragma omp teams // expected-note {{directive outside teams construct here}}
+    ++a;
+#pragma omp teams // expected-note {{nested teams construct here}}
     ++a;
   }
 #pragma omp target // expected-error {{target construct with nested teams region contains statements outside of the teams construct}}
@@ -12686,6 +12696,13 @@ void foo() {
 #pragma omp target
   {
 #pragma omp teams
+    ++a;
+  }
+#pragma omp target // expected-error {{target construct with nested teams region contains statements outside of the teams construct}}
+  {
+#pragma omp teams // expected-note {{directive outside teams construct here}}
+    ++a;
+#pragma omp teams // expected-note {{nested teams construct here}}
     ++a;
   }
 #pragma omp target // expected-error {{target construct with nested teams region contains statements outside of the teams construct}}

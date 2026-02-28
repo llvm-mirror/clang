@@ -1,9 +1,8 @@
 //===--- MSVC.h - MSVC ToolChain Implementations ----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,6 +10,7 @@
 #define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_MSVC_H
 
 #include "Cuda.h"
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/ToolChain.h"
@@ -78,18 +78,34 @@ public:
   bool isPIEDefault() const override;
   bool isPICDefaultForced() const override;
 
+  /// Set CodeView as the default debug info format for non-MachO binary
+  /// formats, and to DWARF otherwise. Users can use -gcodeview and -gdwarf to
+  /// override the default.
+  codegenoptions::DebugInfoFormat getDefaultDebugFormat() const override {
+    return getTriple().isOSBinFormatMachO() ? codegenoptions::DIF_DWARF
+                                            : codegenoptions::DIF_CodeView;
+  }
+
+  /// Set the debugger tuning to "default", since we're definitely not tuning
+  /// for GDB.
+  llvm::DebuggerKind getDefaultDebuggerTuning() const override {
+    return llvm::DebuggerKind::Default;
+  }
+
   enum class SubDirectoryType {
     Bin,
     Include,
     Lib,
   };
   std::string getSubDirectoryPath(SubDirectoryType Type,
+                                  llvm::StringRef SubdirParent,
                                   llvm::Triple::ArchType TargetArch) const;
 
   // Convenience overload.
   // Uses the current target arch.
-  std::string getSubDirectoryPath(SubDirectoryType Type) const {
-    return getSubDirectoryPath(Type, getArch());
+  std::string getSubDirectoryPath(SubDirectoryType Type,
+                                  llvm::StringRef SubdirParent = "") const {
+    return getSubDirectoryPath(Type, SubdirParent, getArch());
   }
 
   enum class ToolsetLayout {
@@ -110,7 +126,7 @@ public:
                           llvm::opt::ArgStringList &CC1Args) const override;
 
   bool getWindowsSDKLibraryPath(std::string &path) const;
-  /// \brief Check if Universal CRT should be used if available
+  /// Check if Universal CRT should be used if available
   bool getUniversalCRTLibraryPath(std::string &path) const;
   bool useUniversalCRT() const;
   VersionTuple
@@ -122,6 +138,8 @@ public:
   SanitizerMask getSupportedSanitizers() const override;
 
   void printVerboseInfo(raw_ostream &OS) const override;
+
+  bool FoundMSVCInstall() const { return !VCToolChainPath.empty(); }
 
 protected:
   void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,

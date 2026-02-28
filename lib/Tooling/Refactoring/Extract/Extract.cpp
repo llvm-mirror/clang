@@ -1,25 +1,24 @@
 //===--- Extract.cpp - Clang refactoring library --------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief Implements the "extract" refactoring that can pull code into
+/// Implements the "extract" refactoring that can pull code into
 /// new functions, methods or declare new variables.
 ///
 //===----------------------------------------------------------------------===//
 
 #include "clang/Tooling/Refactoring/Extract/Extract.h"
-#include "SourceExtraction.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Tooling/Refactoring/Extract/SourceExtraction.h"
 
 namespace clang {
 namespace tooling {
@@ -52,7 +51,7 @@ SourceLocation computeFunctionExtractionLocation(const Decl *D) {
     while (const auto *RD = dyn_cast<CXXRecordDecl>(D->getLexicalDeclContext()))
       D = RD;
   }
-  return D->getLocStart();
+  return D->getBeginLoc();
 }
 
 } // end anonymous namespace
@@ -102,8 +101,8 @@ ExtractFunction::createSourceReplacements(RefactoringRuleContext &Context) {
   assert(ParentDecl && "missing parent");
 
   // Compute the source range of the code that should be extracted.
-  SourceRange ExtractedRange(Code[0]->getLocStart(),
-                             Code[Code.size() - 1]->getLocEnd());
+  SourceRange ExtractedRange(Code[0]->getBeginLoc(),
+                             Code[Code.size() - 1]->getEndLoc());
   // FIXME (Alex L): Add code that accounts for macro locations.
 
   ASTContext &AST = Context.getASTContext();

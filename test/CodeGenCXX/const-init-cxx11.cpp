@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -w -triple x86_64-elf-gnu -emit-llvm -o - %s -std=c++11 | FileCheck %s
+// RUN: %clang_cc1 -w -fmerge-all-constants -triple x86_64-elf-gnu -emit-llvm -o - %s -std=c++11 | FileCheck %s
 
 // FIXME: The padding in all these objects should be zero-initialized.
 namespace StructUnion {
@@ -402,7 +402,7 @@ namespace UnemittedTemporaryDecl {
 
 // CHECK: @_ZZN12LocalVarInit3aggEvE1a = internal constant {{.*}} i32 101
 // CHECK: @_ZZN12LocalVarInit4ctorEvE1a = internal constant {{.*}} i32 102
-// CHECK: @_ZZN12LocalVarInit8mutable_EvE1a = private unnamed_addr constant {{.*}} i32 103
+// CHECK: @__const._ZN12LocalVarInit8mutable_Ev.a = private unnamed_addr constant {{.*}} i32 103
 // CHECK: @_ZGRN33ClassTemplateWithStaticDataMember1SIvE1aE_ = linkonce_odr constant i32 5, comdat
 // CHECK: @_ZN33ClassTemplateWithStaticDataMember3useE = constant i32* @_ZGRN33ClassTemplateWithStaticDataMember1SIvE1aE_
 // CHECK: @_ZGRN39ClassTemplateWithHiddenStaticDataMember1SIvE1aE_ = linkonce_odr hidden constant i32 5, comdat
@@ -461,7 +461,7 @@ namespace LocalVarInit {
 
   // CHECK: define {{.*}} @_ZN12LocalVarInit8mutable_Ev
   // CHECK-NOT: call
-  // CHECK: call {{.*}}memcpy{{.*}} @_ZZN12LocalVarInit8mutable_EvE1a
+  // CHECK: call {{.*}}memcpy{{.*}} @__const._ZN12LocalVarInit8mutable_Ev.a
   // CHECK-NOT: call
   // Can't fold return value due to 'mutable'.
   // CHECK-NOT: ret i32 103
@@ -554,7 +554,7 @@ namespace InitFromConst {
     // CHECK: call void @_ZN13InitFromConst7consumeIMNS_1SEiEEvT_(i64 0)
     consume(mp);
 
-    // CHECK: call void @_ZN13InitFromConst7consumeIPKiEEvT_(i32* getelementptr inbounds ([3 x i32], [3 x i32]* @_ZN13InitFromConstL1aE, i32 0, i32 0))
+    // CHECK: call void @_ZN13InitFromConst7consumeIPKiEEvT_(i32* getelementptr inbounds ([3 x i32], [3 x i32]* @_ZN13InitFromConstL1aE, i64 0, i64 0))
     consume(a);
   }
 }

@@ -158,6 +158,8 @@ kernel void enqueue_kernel_tests() {
   enqueue_kernel(default_queue, flags, ndrange, 1, &event_wait_list, &evt); // expected-error{{illegal call to enqueue_kernel, incorrect argument types}}
 
   enqueue_kernel(default_queue, flags, ndrange, 1, 1); // expected-error{{illegal call to enqueue_kernel, incorrect argument types}}
+
+  enqueue_kernel(default_queue, ndrange, ^{}); // expected-error{{too few arguments to function call, expected at least 4, have 3}}
 }
 
 // Diagnostic tests for get_kernel_work_group_size and allowed block parameter types in dynamic parallelism.
@@ -212,7 +214,7 @@ kernel void work_group_size_tests() {
 
 #pragma OPENCL EXTENSION cl_khr_subgroups : enable
 
-kernel void foo(global int *buf)
+kernel void foo(global unsigned int *buf)
 {
   ndrange_t n;
   buf[0] = get_kernel_max_sub_group_size_for_ndrange(n, ^(){});
@@ -220,7 +222,7 @@ kernel void foo(global int *buf)
   buf[0] = get_kernel_max_sub_group_size_for_ndrange(n, 1); // expected-error{{illegal call to 'get_kernel_max_sub_group_size_for_ndrange', expected block argument type}}
 }
 
-kernel void bar(global int *buf)
+kernel void bar(global unsigned int *buf)
 {
   __private ndrange_t n;
   buf[0] = get_kernel_sub_group_count_for_ndrange(n, ^(){});
@@ -230,13 +232,13 @@ kernel void bar(global int *buf)
 
 #pragma OPENCL EXTENSION cl_khr_subgroups : disable
 
-kernel void foo1(global int *buf)
+kernel void foo1(global unsigned int *buf)
 {
   ndrange_t n;
   buf[0] = get_kernel_max_sub_group_size_for_ndrange(n, ^(){}); // expected-error {{use of declaration 'get_kernel_max_sub_group_size_for_ndrange' requires cl_khr_subgroups extension to be enabled}}
 }
 
-kernel void bar1(global int *buf)
+kernel void bar1(global unsigned int *buf)
 {
   ndrange_t n;
   buf[0] = get_kernel_sub_group_count_for_ndrange(n, ^(){}); // expected-error {{use of declaration 'get_kernel_sub_group_count_for_ndrange' requires cl_khr_subgroups extension to be enabled}}

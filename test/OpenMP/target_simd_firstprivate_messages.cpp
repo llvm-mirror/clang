@@ -1,10 +1,29 @@
-// RUN: %clang_cc1 -verify -fopenmp %s
+// RUN: %clang_cc1 -verify -fopenmp %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd %s -Wuninitialized
+
+typedef void **omp_allocator_handle_t;
+extern const omp_allocator_handle_t omp_default_mem_alloc;
+extern const omp_allocator_handle_t omp_large_cap_mem_alloc;
+extern const omp_allocator_handle_t omp_const_mem_alloc;
+extern const omp_allocator_handle_t omp_high_bw_mem_alloc;
+extern const omp_allocator_handle_t omp_low_lat_mem_alloc;
+extern const omp_allocator_handle_t omp_cgroup_mem_alloc;
+extern const omp_allocator_handle_t omp_pteam_mem_alloc;
+extern const omp_allocator_handle_t omp_thread_mem_alloc;
 
 void foo() {
 }
 
 bool foobool(int argc) {
   return argc;
+}
+
+void xxx(int argc) {
+  int fp; // expected-note {{initialize the variable 'fp' to silence this warning}}
+#pragma omp target simd firstprivate(fp) // expected-warning {{variable 'fp' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
 }
 
 struct S1; // expected-note 2 {{declared here}} expected-note 2 {{forward declaration of 'S1'}}
@@ -64,7 +83,7 @@ template <class I, class C>
 int foomain(int argc, char **argv) {
   I e(4);
   C g(5);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp target simd firstprivate // expected-error {{expected '(' after 'firstprivate'}}
   for (int k = 0; k < argc; ++k)
@@ -84,13 +103,13 @@ int foomain(int argc, char **argv) {
 #pragma omp target simd firstprivate(argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k)
     ++k;
-#pragma omp target simd firstprivate(argc)
+#pragma omp target simd firstprivate(argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp target simd firstprivate(S1) // expected-error {{'S1' does not refer to a value}}
   for (int k = 0; k < argc; ++k)
     ++k;
-#pragma omp target simd firstprivate(a, b) // expected-error {{firstprivate variable with incomplete type 'S1'}}
+#pragma omp target simd firstprivate(a, b, z) // expected-error {{firstprivate variable with incomplete type 'S1'}}
   for (int k = 0; k < argc; ++k)
     ++k;
 #pragma omp target simd firstprivate(argv[1]) // expected-error {{expected variable name}}
@@ -106,7 +125,7 @@ int foomain(int argc, char **argv) {
   {
     int v = 0;
     int i;
-#pragma omp target simd firstprivate(i)
+#pragma omp target simd allocate(omp_thread_mem_alloc: i) firstprivate(i) // expected-warning {{allocator with the 'thread' trait access has unspecified behavior on 'target simd' directive}}
     for (int k = 0; k < argc; ++k) {
       i = k;
       v += i;
@@ -124,12 +143,12 @@ int foomain(int argc, char **argv) {
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp parallel private(i)
-#pragma omp target simd firstprivate(i) // expected-note {{defined as firstprivate}}
-  for (i = 0; i < argc; ++i) // expected-error {{loop iteration variable in the associated loop of 'omp target simd' directive may not be firstprivate, predetermined as linear}}
+#pragma omp target simd firstprivate(i) // expected-note 2 {{defined as firstprivate}}
+  for (i = 0; i < argc; ++i) // expected-error 2 {{loop iteration variable in the associated loop of 'omp target simd' directive may not be firstprivate, predetermined as linear}}
     foo();
 #pragma omp parallel reduction(+ : i)
-#pragma omp target simd firstprivate(i) // expected-note {{defined as firstprivate}}
-  for (i = 0; i < argc; ++i) // expected-error {{loop iteration variable in the associated loop of 'omp target simd' directive may not be firstprivate, predetermined as linear}}
+#pragma omp target simd firstprivate(i) // expected-note 2 {{defined as firstprivate}}
+  for (i = 0; i < argc; ++i) // expected-error 2 {{loop iteration variable in the associated loop of 'omp target simd' directive may not be firstprivate, predetermined as linear}}
     foo();
   return 0;
 }
@@ -149,7 +168,7 @@ int main(int argc, char **argv) {
   S5 g(5);
   S3 m;
   S6 n(2);
-  int i;
+  int i, z;
   int &j = i;
 #pragma omp target simd firstprivate // expected-error {{expected '(' after 'firstprivate'}}
   for (i = 0; i < argc; ++i)
@@ -169,7 +188,7 @@ int main(int argc, char **argv) {
 #pragma omp target simd firstprivate(argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (i = 0; i < argc; ++i)
     foo();
-#pragma omp target simd firstprivate(argc)
+#pragma omp target simd firstprivate(argc, z)
   for (i = 0; i < argc; ++i)
     foo();
 #pragma omp target simd firstprivate(S1) // expected-error {{'S1' does not refer to a value}}

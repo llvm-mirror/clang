@@ -22,6 +22,9 @@ namespace dr401 { // dr401: yes
   class B {
   protected:
     typedef int type; // expected-note {{protected}}
+#if __cplusplus == 199711L
+    // expected-note@-2 {{protected}}
+#endif
   };
 
   class C {
@@ -315,8 +318,8 @@ namespace dr420 { // dr420: yes
     q->~id<int>();
     p->id<int>::~id<int>();
     q->id<int>::~id<int>();
-    p->template id<int>::~id<int>(); // expected-error {{expected unqualified-id}}
-    q->template id<int>::~id<int>(); // expected-error {{expected unqualified-id}}
+    p->template id<int>::~id<int>(); // OK since dr2292
+    q->template id<int>::~id<int>(); // OK since dr2292
     p->A::template id<int>::~id<int>();
     q->A::template id<int>::~id<int>();
   }
@@ -530,10 +533,10 @@ namespace dr437 { // dr437: sup 1308
 
 namespace dr444 { // dr444: yes
   struct D;
-  struct B { // expected-note {{candidate is the implicit copy}} expected-note 0-1 {{implicit move}}
+  struct B {                    // expected-note {{candidate function (the implicit copy}} expected-note 0-1 {{implicit move}}
     D &operator=(D &) = delete; // expected-error 0-1{{extension}} expected-note {{deleted}}
   };
-  struct D : B { // expected-note {{candidate is the implicit}} expected-note 0-1 {{implicit move}}
+  struct D : B { // expected-note {{candidate function (the implicit copy}} expected-note 0-1 {{implicit move}}
     using B::operator=;
   } extern d;
   void f() {
@@ -593,10 +596,10 @@ namespace dr447 { // dr447: yes
     U<__builtin_offsetof(A, n)>::type a;
     U<__builtin_offsetof(T, n)>::type b; // expected-error +{{}} expected-warning 0+{{}}
     // as an extension, we allow the member-designator to include array indices
-    g(__builtin_offsetof(A, a[0])).h<int>(); // expected-error {{extension}}
-    g(__builtin_offsetof(A, a[N])).h<int>(); // expected-error {{extension}}
-    U<__builtin_offsetof(A, a[0])>::type c; // expected-error {{extension}}
-    U<__builtin_offsetof(A, a[N])>::type d; // expected-error {{extension}} expected-error +{{}} expected-warning 0+{{}}
+    g(__builtin_offsetof(A, a[0])).h<int>();
+    g(__builtin_offsetof(A, a[N])).h<int>();
+    U<__builtin_offsetof(A, a[0])>::type c;
+    U<__builtin_offsetof(A, a[N])>::type d; // expected-error +{{}} expected-warning 0+{{}}
   }
 }
 
@@ -793,24 +796,9 @@ namespace dr468 { // dr468: yes c++11
 }
 
 namespace dr469 { // dr469: no
-  // FIXME: The core issue here didn't really answer the question. We don't
-  // deduce 'const T' from a function or reference type in a class template...
-  template<typename T> struct X; // expected-note 2{{here}}
+  template<typename T> struct X; // expected-note {{here}}
   template<typename T> struct X<const T> {};
   X<int&> x; // expected-error {{undefined}}
-  X<int()> y; // expected-error {{undefined}}
-
-  // ... but we do in a function template. GCC and EDG fail deduction of 'f'
-  // and the second 'h'.
-  template<typename T> void f(const T *);
-  template<typename T> void g(T *, const T * = 0);
-  template<typename T> void h(T *) { T::error; }
-  template<typename T> void h(const T *);
-  void i() {
-    f(&i);
-    g(&i);
-    h(&i);
-  }
 }
 
 namespace dr470 { // dr470: yes

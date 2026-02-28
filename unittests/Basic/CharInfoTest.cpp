@@ -1,9 +1,8 @@
 //===- unittests/Basic/CharInfoTest.cpp -- ASCII classification tests -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -432,6 +431,7 @@ TEST(CharInfoTest, isValidIdentifier) {
   EXPECT_TRUE(isValidIdentifier("z"));
   EXPECT_TRUE(isValidIdentifier("A"));
   EXPECT_TRUE(isValidIdentifier("Z"));
+  EXPECT_TRUE(isValidIdentifier("$", /*AllowDollar=*/true));
 
   // 2 characters, '_' suffix
   EXPECT_FALSE(isValidIdentifier("._"));
@@ -448,6 +448,7 @@ TEST(CharInfoTest, isValidIdentifier) {
   EXPECT_TRUE(isValidIdentifier("z_"));
   EXPECT_TRUE(isValidIdentifier("A_"));
   EXPECT_TRUE(isValidIdentifier("Z_"));
+  EXPECT_TRUE(isValidIdentifier("$_", /*AllowDollar=*/true));
 
   // 2 characters, '_' prefix
   EXPECT_FALSE(isValidIdentifier("_."));
@@ -464,6 +465,7 @@ TEST(CharInfoTest, isValidIdentifier) {
   EXPECT_TRUE(isValidIdentifier("_z"));
   EXPECT_TRUE(isValidIdentifier("_A"));
   EXPECT_TRUE(isValidIdentifier("_Z"));
+  EXPECT_TRUE(isValidIdentifier("_$", /*AllowDollar=*/true));
 
   // 3 characters, '__' prefix
   EXPECT_FALSE(isValidIdentifier("__."));
@@ -480,6 +482,7 @@ TEST(CharInfoTest, isValidIdentifier) {
   EXPECT_TRUE(isValidIdentifier("__z"));
   EXPECT_TRUE(isValidIdentifier("__A"));
   EXPECT_TRUE(isValidIdentifier("__Z"));
+  EXPECT_TRUE(isValidIdentifier("__$", /*AllowDollar=*/true));
 
   // 3 characters, '_' prefix and suffix
   EXPECT_FALSE(isValidIdentifier("_._"));
@@ -496,4 +499,5 @@ TEST(CharInfoTest, isValidIdentifier) {
   EXPECT_TRUE(isValidIdentifier("_z_"));
   EXPECT_TRUE(isValidIdentifier("_A_"));
   EXPECT_TRUE(isValidIdentifier("_Z_"));
+  EXPECT_TRUE(isValidIdentifier("_$_", /*AllowDollar=*/true));
 }

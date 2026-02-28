@@ -1,14 +1,13 @@
 //===--- RenamingAction.h - Clang refactoring library ---------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief Provides an action to rename every symbol at a point.
+/// Provides an action to rename every symbol at a point.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -55,6 +54,8 @@ public:
 
   static const RefactoringDescriptor &describe();
 
+  const NamedDecl *getRenameDecl() const;
+
 private:
   RenameOccurrences(const NamedDecl *ND, std::string NewName)
       : ND(ND), NewName(std::move(NewName)) {}
@@ -82,7 +83,7 @@ private:
   Expected<AtomicChanges>
   createSourceReplacements(RefactoringRuleContext &Context) override;
 
-  // A NamedDecl which indentifies the the symbol being renamed.
+  // A NamedDecl which identifies the symbol being renamed.
   const NamedDecl *ND;
   // The new qualified name to change the symbol to.
   std::string NewQualifiedName;

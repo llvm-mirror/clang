@@ -1,9 +1,8 @@
 //==- ObjCUnusedIVarsChecker.cpp - Check for unused ivars --------*- C++ -*-==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/Analysis/PathDiagnostic.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
@@ -21,7 +21,6 @@
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 
 using namespace clang;
@@ -95,10 +94,10 @@ static void Scan(IvarUsageMap& M, const ObjCContainerDecl *D) {
 }
 
 static void Scan(IvarUsageMap &M, const DeclContext *C, const FileID FID,
-                 SourceManager &SM) {
+                 const SourceManager &SM) {
   for (const auto *I : C->decls())
     if (const auto *FD = dyn_cast<FunctionDecl>(I)) {
-      SourceLocation L = FD->getLocStart();
+      SourceLocation L = FD->getBeginLoc();
       if (SM.getFileID(L) == FID)
         Scan(M, FD->getBody());
     }
@@ -149,7 +148,7 @@ static void checkObjCUnusedIvar(const ObjCImplementationDecl *D,
   // FIXME: In the future hopefully we can just use the lexical DeclContext
   // to go from the ObjCImplementationDecl to the lexically "nested"
   // C functions.
-  SourceManager &SM = BR.getSourceManager();
+  const SourceManager &SM = BR.getSourceManager();
   Scan(M, D->getDeclContext(), SM.getFileID(D->getLocation()), SM);
 
   // Find ivars that are unused.
@@ -185,4 +184,8 @@ public:
 
 void ento::registerObjCUnusedIvarsChecker(CheckerManager &mgr) {
   mgr.registerChecker<ObjCUnusedIvarsChecker>();
+}
+
+bool ento::shouldRegisterObjCUnusedIvarsChecker(const LangOptions &LO) {
+  return true;
 }

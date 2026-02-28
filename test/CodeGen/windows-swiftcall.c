@@ -5,7 +5,7 @@
 #define ERROR __attribute__((swift_error_result))
 #define CONTEXT __attribute__((swift_context))
 
-// CHECK: [[STRUCT2_RESULT:@.*]] = private {{.*}} constant [[STRUCT2_TYPE:%.*]] { i32 0, i8 0, i8 undef, i8 0, float 0.000000e+00, float 0.000000e+00 }
+// CHECK: [[STRUCT2_RESULT:@.*]] = private {{.*}} constant [[STRUCT2_TYPE:%.*]] { i32 0, i8 0, i8 undef, i8 0, i32 0, i32 0 }
 
 /*****************************************************************************/
 /****************************** PARAMETER ABIS *******************************/
@@ -29,7 +29,7 @@ SWIFTCALL void context_2(void *arg0, CONTEXT void *self) {}
 // CHECK-LABEL: define {{.*}} void @context_2(i8*{{.*}}, i8* swiftself
 
 SWIFTCALL void context_error_1(CONTEXT int *self, ERROR float **error) {}
-// CHECK-LABEL: define {{.*}} void @context_error_1(i32* swiftself{{.*}}, float** swifterror)
+// CHECK-LABEL: define {{.*}} void @context_error_1(i32* swiftself{{.*}}, float** swifterror %0)
 // CHECK:       [[TEMP:%.*]] = alloca float*, align 8
 // CHECK:       [[T0:%.*]] = load float*, float** [[ERRORARG:%.*]], align 8
 // CHECK:       store float* [[T0]], float** [[TEMP]], align 8
@@ -40,7 +40,7 @@ void test_context_error_1() {
   float *error;
   context_error_1(&x, &error);
 }
-// CHECK-LABEL: define void @test_context_error_1()
+// CHECK-LABEL: define dso_local void @test_context_error_1()
 // CHECK:       [[X:%.*]] = alloca i32, align 4
 // CHECK:       [[ERROR:%.*]] = alloca float*, align 8
 // CHECK:       [[TEMP:%.*]] = alloca swifterror float*, align 8
@@ -51,7 +51,7 @@ void test_context_error_1() {
 // CHECK:       store float* [[T0]], float** [[ERROR]], align 8
 
 SWIFTCALL void context_error_2(short s, CONTEXT int *self, ERROR float **error) {}
-// CHECK-LABEL: define {{.*}} void @context_error_2(i16{{.*}}, i32* swiftself{{.*}}, float** swifterror)
+// CHECK-LABEL: define {{.*}} void @context_error_2(i16{{.*}}, i32* swiftself{{.*}}, float** swifterror %0)
 
 /*****************************************************************************/
 /********************************** LOWERING *********************************/
@@ -93,15 +93,13 @@ typedef struct {
   int x;
   char c0;
   char c1;
-  float f0;
-  float f1;
+  int f0;
+  int f1;
 } struct_1;
 TEST(struct_1);
-// CHECK-LABEL: define swiftcc { i64, i64 } @return_struct_1() {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc { i64, i64 } @return_struct_1() {{.*}}{
 // CHECK:   [[RET:%.*]] = alloca [[STRUCT1:%.*]], align 4
-// CHECK:   [[VAR:%.*]] = alloca [[STRUCT1]], align 4
 // CHECK:   call void @llvm.memset
-// CHECK:   call void @llvm.memcpy
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT1]]* %retval to { i64, i64 }*
 // CHECK:   [[GEP0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
 // CHECK:   [[T0:%.*]] = load i64, i64* [[GEP0]], align 4
@@ -111,7 +109,7 @@ TEST(struct_1);
 // CHECK:   [[R1:%.*]] = insertvalue { i64, i64 } [[R0]], i64 [[T1]], 1
 // CHECK:   ret { i64, i64 } [[R1]]
 // CHECK: }
-// CHECK-LABEL: define swiftcc void @take_struct_1(i64, i64) {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc void @take_struct_1(i64 %0, i64 %1) {{.*}}{
 // CHECK:   [[V:%.*]] = alloca [[STRUCT1:%.*]], align 4
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT1]]* [[V]] to { i64, i64 }*
 // CHECK:   [[GEP0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
@@ -120,7 +118,7 @@ TEST(struct_1);
 // CHECK:   store i64 %1, i64* [[GEP1]], align 4
 // CHECK:   ret void
 // CHECK: }
-// CHECK-LABEL: define void @test_struct_1() {{.*}}{
+// CHECK-LABEL: define dso_local void @test_struct_1() {{.*}}{
 // CHECK:   [[AGG:%.*]] = alloca [[STRUCT1:%.*]], align 4
 // CHECK:   [[RET:%.*]] = call swiftcc { i64, i64 } @return_struct_1()
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT1]]* [[AGG]] to { i64, i64 }*
@@ -143,18 +141,14 @@ typedef struct {
   int x;
   char c0;
   __attribute__((aligned(2))) char c1;
-  float f0;
-  float f1;
+  int f0;
+  int f1;
 } struct_2;
 TEST(struct_2);
-// CHECK-LABEL: define swiftcc { i64, i64 } @return_struct_2() {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc { i64, i64 } @return_struct_2() {{.*}}{
 // CHECK:   [[RET:%.*]] = alloca [[STRUCT2_TYPE]], align 4
-// CHECK:   [[VAR:%.*]] = alloca [[STRUCT2_TYPE]], align 4
-// CHECK:   [[CASTVAR:%.*]] = bitcast {{.*}} [[VAR]]
+// CHECK:   [[CASTVAR:%.*]] = bitcast {{.*}} [[RET]]
 // CHECK:   call void @llvm.memcpy{{.*}}({{.*}}[[CASTVAR]], {{.*}}[[STRUCT2_RESULT]]
-// CHECK:   [[CASTRET:%.*]] = bitcast {{.*}} [[RET]]
-// CHECK:   [[CASTVAR:%.*]] = bitcast {{.*}} [[VAR]]
-// CHECK:   call void @llvm.memcpy{{.*}}({{.*}}[[CASTRET]], {{.*}}[[CASTVAR]]
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT2_TYPE]]* [[RET]] to { i64, i64 }*
 // CHECK:   [[GEP0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
 // CHECK:   [[T0:%.*]] = load i64, i64* [[GEP0]], align 4
@@ -164,7 +158,7 @@ TEST(struct_2);
 // CHECK:   [[R1:%.*]] = insertvalue { i64, i64 } [[R0]], i64 [[T1]], 1
 // CHECK:   ret { i64, i64 } [[R1]]
 // CHECK: }
-// CHECK-LABEL: define swiftcc void @take_struct_2(i64, i64) {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc void @take_struct_2(i64 %0, i64 %1) {{.*}}{
 // CHECK:   [[V:%.*]] = alloca [[STRUCT:%.*]], align 4
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT]]* [[V]] to { i64, i64 }*
 // CHECK:   [[GEP0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
@@ -173,7 +167,7 @@ TEST(struct_2);
 // CHECK:   store i64 %1, i64* [[GEP1]], align 4
 // CHECK:   ret void
 // CHECK: }
-// CHECK-LABEL: define void @test_struct_2() {{.*}} {
+// CHECK-LABEL: define dso_local void @test_struct_2() {{.*}} {
 // CHECK:   [[TMP:%.*]] = alloca [[STRUCT2_TYPE]], align 4
 // CHECK:   [[CALL:%.*]] = call swiftcc { i64, i64 } @return_struct_2()
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[STRUCT2_TYPE]]* [[TMP]] to { i64, i64 }*
@@ -203,27 +197,23 @@ typedef struct {
   __attribute__((packed)) float f;
 } struct_misaligned_1;
 TEST(struct_misaligned_1)
-// CHECK-LABEL: define swiftcc i64 @return_struct_misaligned_1()
+// CHECK-LABEL: define dso_local swiftcc i64 @return_struct_misaligned_1()
 // CHECK:  [[RET:%.*]] = alloca [[STRUCT:%.*]], align 1
-// CHECK:  [[RES:%.*]] = alloca [[STRUCT]], align 1
-// CHECK:  [[CAST:%.*]] = bitcast [[STRUCT]]* [[RES]] to i8*
-// CHECK:  call void @llvm.memset{{.*}}(i8* [[CAST]], i8 0, i64 5
-// CHECK:  [[CASTRET:%.*]] = bitcast [[STRUCT]]* [[RET]] to i8*
-// CHECK:  [[CASTRES:%.*]] = bitcast [[STRUCT]]* [[RES]] to i8*
-// CHECK:  call void @llvm.memcpy{{.*}}(i8* [[CASTRET]], i8* [[CASTRES]], i64 5
+// CHECK:  [[CAST:%.*]] = bitcast [[STRUCT]]* [[RET]] to i8*
+// CHECK:  call void @llvm.memset{{.*}}(i8* align 1 [[CAST]], i8 0, i64 5
 // CHECK:  [[CAST:%.*]] = bitcast [[STRUCT]]* [[RET]] to { i64 }*
 // CHECK:  [[GEP:%.*]] = getelementptr inbounds { i64 }, { i64 }* [[CAST]], i32 0, i32 0
 // CHECK:  [[R0:%.*]] = load i64, i64* [[GEP]], align 1
 // CHECK:  ret i64 [[R0]]
 // CHECK:}
-// CHECK-LABEL: define swiftcc void @take_struct_misaligned_1(i64) {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc void @take_struct_misaligned_1(i64 %0) {{.*}}{
 // CHECK:   [[V:%.*]] = alloca [[STRUCT:%.*]], align 1
 // CHECK:   [[CAST:%.*]] = bitcast [[STRUCT]]* [[V]] to { i64 }*
 // CHECK:   [[GEP:%.*]] = getelementptr inbounds { i64 }, { i64 }* [[CAST]], i32 0, i32 0
 // CHECK:   store i64 %0, i64* [[GEP]], align 1
 // CHECK:   ret void
 // CHECK: }
-// CHECK: define void @test_struct_misaligned_1() {{.*}}{
+// CHECK: define dso_local void @test_struct_misaligned_1() {{.*}}{
 // CHECK:   [[AGG:%.*]] = alloca [[STRUCT:%.*]], align 1
 // CHECK:   [[CALL:%.*]] = call swiftcc i64 @return_struct_misaligned_1()
 // CHECK:   [[T0:%.*]] = bitcast [[STRUCT]]* [[AGG]] to { i64 }*
@@ -256,26 +246,22 @@ typedef union {
   double d;
 } union_het_fp;
 TEST(union_het_fp)
-// CHECK-LABEL: define swiftcc i64 @return_union_het_fp()
+// CHECK-LABEL: define dso_local swiftcc i64 @return_union_het_fp()
 // CHECK:  [[RET:%.*]] = alloca [[UNION:%.*]], align 8
-// CHECK:  [[RES:%.*]] = alloca [[UNION]], align 8
-// CHECK:  [[CAST:%.*]] = bitcast [[UNION]]* [[RES]] to i8*
-// CHECK:  call void @llvm.memcpy{{.*}}(i8* [[CAST]]
-// CHECK:  [[CASTRET:%.*]] = bitcast [[UNION]]* [[RET]] to i8*
-// CHECK:  [[CASTRES:%.*]] = bitcast [[UNION]]* [[RES]] to i8*
-// CHECK:  call void @llvm.memcpy{{.*}}(i8* [[CASTRET]], i8* [[CASTRES]]
+// CHECK:  [[CAST:%.*]] = bitcast [[UNION]]* [[RET]] to i8*
+// CHECK:  call void @llvm.memcpy{{.*}}(i8* align {{[0-9]+}} [[CAST]]
 // CHECK:  [[CAST:%.*]] = bitcast [[UNION]]* [[RET]] to { i64 }*
 // CHECK:  [[GEP:%.*]] = getelementptr inbounds { i64 }, { i64 }* [[CAST]], i32 0, i32 0
 // CHECK:  [[R0:%.*]] = load i64, i64* [[GEP]], align 8
 // CHECK:  ret i64 [[R0]]
-// CHECK-LABEL: define swiftcc void @take_union_het_fp(i64) {{.*}}{
+// CHECK-LABEL: define dso_local swiftcc void @take_union_het_fp(i64 %0) {{.*}}{
 // CHECK:   [[V:%.*]] = alloca [[UNION:%.*]], align 8
 // CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[V]] to { i64 }*
 // CHECK:   [[GEP:%.*]] = getelementptr inbounds { i64 }, { i64 }* [[CAST]], i32 0, i32 0
 // CHECK:   store i64 %0, i64* [[GEP]], align 8
 // CHECK:   ret void
 // CHECK: }
-// CHECK-LABEL: define void @test_union_het_fp() {{.*}}{
+// CHECK-LABEL: define dso_local void @test_union_het_fp() {{.*}}{
 // CHECK:   [[AGG:%.*]] = alloca [[UNION:%.*]], align 8
 // CHECK:   [[CALL:%.*]] = call swiftcc i64 @return_union_het_fp()
 // CHECK:   [[T0:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64 }*
@@ -294,7 +280,7 @@ typedef union {
   float f2;
 } union_hom_fp;
 TEST(union_hom_fp)
-// CHECK-LABEL: define void @test_union_hom_fp()
+// CHECK-LABEL: define dso_local void @test_union_hom_fp()
 // CHECK:   [[TMP:%.*]] = alloca [[REC:%.*]], align 4
 // CHECK:   [[CALL:%.*]] = call [[SWIFTCC]] float @return_union_hom_fp()
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[TMP]] to [[AGG:{ float }]]*
@@ -311,22 +297,32 @@ typedef union {
   float4 fv2;
 } union_hom_fp_partial;
 TEST(union_hom_fp_partial)
-// CHECK: define void @test_union_hom_fp_partial()
+// CHECK: define dso_local void @test_union_hom_fp_partial()
 // CHECK:   [[AGG:%.*]] = alloca [[UNION:%.*]], align 16
-// CHECK:   [[CALL:%.*]] = call swiftcc { i64, i64 } @return_union_hom_fp_partial()
-// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, i64 }*
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
-// CHECK:   [[T1:%.*]] = extractvalue { i64, i64 } [[CALL]], 0
-// CHECK:   store i64 [[T1]], i64* [[T0]], align 16
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 1
-// CHECK:   [[T1:%.*]] = extractvalue { i64, i64 } [[CALL]], 1
-// CHECK:   store i64 [[T1]], i64* [[T0]], align 8
-// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, i64 }*
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
-// CHECK:   [[V0:%.*]] = load i64, i64* [[T0]], align 16
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 1
-// CHECK:   [[V1:%.*]] = load i64, i64* [[T0]], align 8
-// CHECK:   call swiftcc void @take_union_hom_fp_partial(i64 [[V0]], i64 [[V1]])
+// CHECK:   [[CALL:%.*]] = call swiftcc { float, float, float, float } @return_union_hom_fp_partial()
+// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { float, float, float, float }*
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 0
+// CHECK:   [[T1:%.*]] = extractvalue { float, float, float, float } [[CALL]], 0
+// CHECK:   store float [[T1]], float* [[T0]], align 16
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 1
+// CHECK:   [[T1:%.*]] = extractvalue { float, float, float, float } [[CALL]], 1
+// CHECK:   store float [[T1]], float* [[T0]], align 4
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 2
+// CHECK:   [[T1:%.*]] = extractvalue { float, float, float, float } [[CALL]], 2
+// CHECK:   store float [[T1]], float* [[T0]], align 8
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 3
+// CHECK:   [[T1:%.*]] = extractvalue { float, float, float, float } [[CALL]], 3
+// CHECK:   store float [[T1]], float* [[T0]], align 4
+// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { float, float, float, float }*
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 0
+// CHECK:   [[V0:%.*]] = load float, float* [[T0]], align 16
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 1
+// CHECK:   [[V1:%.*]] = load float, float* [[T0]], align 4
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 2
+// CHECK:   [[V2:%.*]] = load float, float* [[T0]], align 8
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { float, float, float, float }, { float, float, float, float }* [[CAST]], i32 0, i32 3
+// CHECK:   [[V3:%.*]] = load float, float* [[T0]], align 4
+// CHECK:   call swiftcc void @take_union_hom_fp_partial(float [[V0]], float [[V1]], float [[V2]], float [[V3]])
 // CHECK:   ret void
 // CHECK: }
 
@@ -335,22 +331,27 @@ typedef union {
   float4 fv2;
 } union_het_fpv_partial;
 TEST(union_het_fpv_partial)
-// CHECK-LABEL: define void @test_union_het_fpv_partial()
+// CHECK-LABEL: define dso_local void @test_union_het_fpv_partial()
 // CHECK:   [[AGG:%.*]] = alloca [[UNION:%.*]], align 16
-// CHECK:   [[CALL:%.*]] = call swiftcc { i64, i64 } @return_union_het_fpv_partial()
-// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, i64 }*
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
-// CHECK:   [[T1:%.*]] = extractvalue { i64, i64 } [[CALL]], 0
+// CHECK:   [[CALL:%.*]] = call swiftcc { i64, float, float } @return_union_het_fpv_partial()
+// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, float, float }*
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 0
+// CHECK:   [[T1:%.*]] = extractvalue { i64, float, float } [[CALL]], 0
 // CHECK:   store i64 [[T1]], i64* [[T0]], align 16
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 1
-// CHECK:   [[T1:%.*]] = extractvalue { i64, i64 } [[CALL]], 1
-// CHECK:   store i64 [[T1]], i64* [[T0]], align 8
-// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, i64 }*
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 0
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 1
+// CHECK:   [[T1:%.*]] = extractvalue { i64, float, float } [[CALL]], 1
+// CHECK:   store float [[T1]], float* [[T0]], align 8
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 2
+// CHECK:   [[T1:%.*]] = extractvalue { i64, float, float } [[CALL]], 2
+// CHECK:   store float [[T1]], float* [[T0]], align 4
+// CHECK:   [[CAST:%.*]] = bitcast [[UNION]]* [[AGG]] to { i64, float, float }*
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 0
 // CHECK:   [[V0:%.*]] = load i64, i64* [[T0]], align 16
-// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, i64 }, { i64, i64 }* [[CAST]], i32 0, i32 1
-// CHECK:   [[V1:%.*]] = load i64, i64* [[T0]], align 8
-// CHECK:   call swiftcc void @take_union_het_fpv_partial(i64 [[V0]], i64 [[V1]])
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 1
+// CHECK:   [[V1:%.*]] = load float, float* [[T0]], align 8
+// CHECK:   [[T0:%.*]] = getelementptr inbounds { i64, float, float }, { i64, float, float }* [[CAST]], i32 0, i32 2
+// CHECK:   [[V2:%.*]] = load float, float* [[T0]], align 4
+// CHECK:   call swiftcc void @take_union_het_fpv_partial(i64 [[V0]], float [[V1]], float [[V2]])
 // CHECK:   ret void
 // CHECK: }
 
@@ -377,7 +378,7 @@ TEST(int8)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ <4 x i32>, <4 x i32> }]] undef, <4 x i32> [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], <4 x i32> [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_int8(<4 x i32>, <4 x i32>)
+// CHECK-LABEL: define {{.*}} @take_int8(<4 x i32> %0, <4 x i32> %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -385,7 +386,7 @@ TEST(int8)
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 1
 // CHECK:   store <4 x i32> %1, <4 x i32>* [[T0]], align
 // CHECK:   ret void
-// CHECK-LABEL: define void @test_int8()
+// CHECK-LABEL: define dso_local void @test_int8()
 // CHECK:   [[TMP1:%.*]] = alloca [[REC]], align
 // CHECK:   [[TMP2:%.*]] = alloca [[REC]], align
 // CHECK:   [[CALL:%.*]] = call [[SWIFTCC]] [[UAGG]] @return_int8()
@@ -421,7 +422,7 @@ TEST(int5)
 // CHECK:   [[T0:%.*]] = insertvalue [[UAGG:{ <4 x i32>, i32 }]] undef, <4 x i32> [[FIRST]], 0
 // CHECK:   [[T1:%.*]] = insertvalue [[UAGG]] [[T0]], i32 [[SECOND]], 1
 // CHECK:   ret [[UAGG]] [[T1]]
-// CHECK-LABEL: define {{.*}} @take_int5(<4 x i32>, i32)
+// CHECK-LABEL: define {{.*}} @take_int5(<4 x i32> %0, i32 %1)
 // CHECK:   [[V:%.*]] = alloca [[REC]], align
 // CHECK:   [[CAST_TMP:%.*]] = bitcast [[REC]]* [[V]] to [[AGG]]*
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 0
@@ -429,7 +430,7 @@ TEST(int5)
 // CHECK:   [[T0:%.*]] = getelementptr inbounds [[AGG]], [[AGG]]* [[CAST_TMP]], i32 0, i32 1
 // CHECK:   store i32 %1, i32* [[T0]], align
 // CHECK:   ret void
-// CHECK-LABEL: define void @test_int5()
+// CHECK-LABEL: define dso_local void @test_int5()
 // CHECK:   [[TMP1:%.*]] = alloca [[REC]], align
 // CHECK:   [[TMP2:%.*]] = alloca [[REC]], align
 // CHECK:   [[CALL:%.*]] = call [[SWIFTCC]] [[UAGG]] @return_int5()
@@ -455,4 +456,4 @@ typedef struct {
   int3 v __attribute__((packed));
 } misaligned_int3;
 TEST(misaligned_int3)
-// CHECK-LABEL: define swiftcc void @take_misaligned_int3(i64, i64)
+// CHECK-LABEL: define dso_local swiftcc void @take_misaligned_int3(i64 %0, i64 %1)

@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 %s --std=c++11 -triple x86_64-unknown-linux -emit-llvm -o - \
 // RUN:   -verify -verify-ignore-unexpected=note
+// RUN: %clang_cc1 %s --std=c++11 -triple x86_64-unknown-linux -emit-llvm -o - \
+// RUN:   -verify -verify-ignore-unexpected=note -fopenmp
 
 // Note: This test won't work with -fsyntax-only, because some of these errors
 // are emitted during codegen.
@@ -37,7 +39,7 @@ __host__ __device__ void T::hd3() {
 }
 
 template <typename T> __host__ __device__ void hd2() { device_fn(); }
-// expected-error@-1 {{reference to __device__ function 'device_fn' in __host__ __device__ function}}
+// expected-error@-1 2 {{reference to __device__ function 'device_fn' in __host__ __device__ function}}
 void host_fn() { hd2<int>(); }
 
 __host__ __device__ void hd() { device_fn(); }
@@ -83,3 +85,15 @@ template <typename T>
 __host__ __device__ void fn_ptr_template() {
   auto* ptr = &device_fn;  // Not an error because the template isn't instantiated.
 }
+
+// Launching a kernel from a host function does not result in code generation
+// for it, so calling HD function which calls a D function should not trigger
+// errors.
+static __host__ __device__ void hd_func() { device_fn(); }
+__global__ void kernel() { hd_func(); }
+void host_func(void) { kernel<<<1, 1>>>(); }
+
+// Should allow host function call kernel template with device function argument.
+__device__ void f();
+template<void(*F)()> __global__ void t() { F(); }
+__host__ void g() { t<f><<<1,1>>>(); }

@@ -1,4 +1,13 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -triple x86_64-unknown-unknown -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -triple x86_64-unknown-unknown -verify %s -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -triple x86_64-unknown-unknown -verify %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp taskloop simd
+  for (int i = 0; i < 10; ++i)
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp taskloop simd'}}
 #pragma omp taskloop simd
@@ -344,6 +353,10 @@ void test_firstprivate() {
     ;
 #pragma omp parallel
 #pragma omp taskloop simd lastprivate(x, y, z) firstprivate(x, y, z)
+  for (i = 0; i < 16; ++i)
+    ;
+// expected-error@+1 {{the value of 'simdlen' parameter must be less than or equal to the value of the 'safelen' parameter}}
+#pragma omp taskloop simd simdlen(64) safelen(8)
   for (i = 0; i < 16; ++i)
     ;
 }

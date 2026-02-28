@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -triple spir-unknown-unknown -emit-llvm %s -o - | opt -instnamer -S | FileCheck -enable-var-scope %s
+// RUN: %clang_cc1 -triple spir-unknown-unknown -emit-llvm %s -o - -fno-experimental-new-pass-manager | opt -instnamer -S | FileCheck -enable-var-scope %s --check-prefixes=CHECK,CHECK-LEGACY
+// RUN: %clang_cc1 -triple spir-unknown-unknown -emit-llvm %s -o - -fexperimental-new-pass-manager | opt -instnamer -S | FileCheck -enable-var-scope %s --check-prefixes=CHECK,CHECK-NEWPM
 
 // This is initially assumed convergent, but can be deduced to not require it.
 
@@ -117,7 +118,12 @@ void test_unroll() {
 // CHECK: [[for_body]]:
 // CHECK:  tail call spir_func void @nodupfun() #[[attr5:[0-9]+]]
 // CHECK-NOT: call spir_func void @nodupfun()
-// CHECK:  br i1 %{{.+}}, label %[[for_body]], label %[[for_cond_cleanup]]
+
+// The new PM produces a slightly different IR for the loop from the legacy PM,
+// but the test still checks that the loop is not unrolled.
+// CHECK-LEGACY:  br i1 %{{.+}}, label %[[for_body]], label %[[for_cond_cleanup]]
+// CHECK-NEW:     br i1 %{{.+}}, label %[[for_body_crit_edge:.+]], label %[[for_cond_cleanup]]
+// CHECK-NEW:     [[for_body_crit_edge]]:
 
 void test_not_unroll() {
   for (int i = 0; i < 10; i++)
@@ -126,9 +132,17 @@ void test_not_unroll() {
 
 // CHECK: declare spir_func void @nodupfun(){{[^#]*}} #[[attr3:[0-9]+]]
 
-// CHECK: attributes #0 = { noinline norecurse nounwind "
+// CHECK-LABEL: @assume_convergent_asm
+// CHECK: tail call void asm sideeffect "s_barrier", ""() #5
+kernel void assume_convergent_asm()
+{
+  __asm__ volatile("s_barrier");
+}
+
+// CHECK: attributes #0 = { nofree noinline norecurse nounwind "
 // CHECK: attributes #1 = { {{[^}]*}}convergent{{[^}]*}} }
 // CHECK: attributes #2 = { {{[^}]*}}convergent{{[^}]*}} }
 // CHECK: attributes #3 = { {{[^}]*}}convergent noduplicate{{[^}]*}} }
 // CHECK: attributes #4 = { {{[^}]*}}convergent{{[^}]*}} }
-// CHECK: attributes #5 = { {{[^}]*}}convergent noduplicate{{[^}]*}} }
+// CHECK: attributes #5 = { {{[^}]*}}convergent{{[^}]*}} }
+// CHECK: attributes #6 = { {{[^}]*}}convergent noduplicate{{[^}]*}} }

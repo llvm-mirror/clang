@@ -48,22 +48,6 @@ template <class T> void foo5() {} // expected-error {{redefinition of 'foo5'}}
 
               
 
-namespace Inner_Outer_same_template_param_name {              
-
-template <class T>
-class Outmost {
-public:
-    template <class T>
-    class Inner {
-    public:
-        void f() {
-            T* var;
-        }
-   };
-};
-
-}
-
 
 namespace PR11931 {
 
@@ -181,3 +165,33 @@ static void h() {
 }
 
 }
+
+struct PR38460 {
+  template <typename>
+  struct T {
+    static void foo() {
+      struct U {
+        void dummy() {
+          use_delayed_identifier();
+        }
+      };
+    }
+  };
+};
+void use_delayed_identifier();
+void trigger_PR38460() {
+  PR38460::T<int>::foo();
+}
+
+template <typename> struct PR38460_2 {
+  struct p {
+    struct G {
+      bool operator()(int) {}
+    };
+  };
+  static void as() {
+    typename p::G g;
+    g(0);
+  }
+};
+template struct PR38460_2<int>;

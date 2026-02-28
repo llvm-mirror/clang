@@ -1,9 +1,8 @@
-//===--- StmtVisitor.h - Visitor for Stmt subclasses ------------*- C++ -*-===//
+//===- StmtVisitor.h - Visitor for Stmt subclasses --------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,15 +16,17 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/ExprOpenMP.h"
+#include "clang/AST/Stmt.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/StmtOpenMP.h"
+#include "clang/Basic/LLVM.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <utility>
 
 namespace clang {
-
-template <typename T> struct make_ptr       { typedef       T *type; };
-template <typename T> struct make_const_ptr { typedef const T *type; };
-
 /// StmtVisitorBase - This class implements a simple visitor for Stmt
 /// subclasses. Since Expr derives from Stmt, this also includes support for
 /// visiting Exprs.
@@ -33,14 +34,12 @@ template<template <typename> class Ptr, typename ImplClass, typename RetTy=void,
          class... ParamTys>
 class StmtVisitorBase {
 public:
-
 #define PTR(CLASS) typename Ptr<CLASS>::type
 #define DISPATCH(NAME, CLASS) \
   return static_cast<ImplClass*>(this)->Visit ## NAME( \
     static_cast<PTR(CLASS)>(S), std::forward<ParamTys>(P)...)
 
   RetTy Visit(PTR(Stmt) S, ParamTys... P) {
-
     // If we have a binary expr, dispatch to the subcode of the binop.  A smart
     // optimizer (e.g. LLVM) will fold this comparison into the switch stmt
     // below.
@@ -62,6 +61,7 @@ public:
       case BO_GE:        DISPATCH(BinGE,        BinaryOperator);
       case BO_EQ:        DISPATCH(BinEQ,        BinaryOperator);
       case BO_NE:        DISPATCH(BinNE,        BinaryOperator);
+      case BO_Cmp:       DISPATCH(BinCmp,       BinaryOperator);
 
       case BO_And:       DISPATCH(BinAnd,       BinaryOperator);
       case BO_Xor:       DISPATCH(BinXor,       BinaryOperator);
@@ -129,6 +129,8 @@ public:
 
   BINOP_FALLBACK(LT)    BINOP_FALLBACK(GT)   BINOP_FALLBACK(LE)
   BINOP_FALLBACK(GE)    BINOP_FALLBACK(EQ)   BINOP_FALLBACK(NE)
+  BINOP_FALLBACK(Cmp)
+
   BINOP_FALLBACK(And)   BINOP_FALLBACK(Xor)  BINOP_FALLBACK(Or)
   BINOP_FALLBACK(LAnd)  BINOP_FALLBACK(LOr)
 
@@ -176,54 +178,20 @@ public:
 ///
 /// This class does not preserve constness of Stmt pointers (see also
 /// ConstStmtVisitor).
-template<typename ImplClass, typename RetTy=void, typename... ParamTys>
+template <typename ImplClass, typename RetTy = void, typename... ParamTys>
 class StmtVisitor
- : public StmtVisitorBase<make_ptr, ImplClass, RetTy, ParamTys...> {};
+    : public StmtVisitorBase<std::add_pointer, ImplClass, RetTy, ParamTys...> {
+};
 
 /// ConstStmtVisitor - This class implements a simple visitor for Stmt
 /// subclasses. Since Expr derives from Stmt, this also includes support for
 /// visiting Exprs.
 ///
 /// This class preserves constness of Stmt pointers (see also StmtVisitor).
-template<typename ImplClass, typename RetTy=void, typename... ParamTys>
-class ConstStmtVisitor
- : public StmtVisitorBase<make_const_ptr, ImplClass, RetTy, ParamTys...> {};
+template <typename ImplClass, typename RetTy = void, typename... ParamTys>
+class ConstStmtVisitor : public StmtVisitorBase<llvm::make_const_ptr, ImplClass,
+                                                RetTy, ParamTys...> {};
 
-/// \brief This class implements a simple visitor for OMPClause
-/// subclasses.
-template<class ImplClass, template <typename> class Ptr, typename RetTy>
-class OMPClauseVisitorBase {
-public:
-#define PTR(CLASS) typename Ptr<CLASS>::type
-#define DISPATCH(CLASS) \
-  return static_cast<ImplClass*>(this)->Visit##CLASS(static_cast<PTR(CLASS)>(S))
+} // namespace clang
 
-#define OPENMP_CLAUSE(Name, Class)                              \
-  RetTy Visit ## Class (PTR(Class) S) { DISPATCH(Class); }
-#include "clang/Basic/OpenMPKinds.def"
-
-  RetTy Visit(PTR(OMPClause) S) {
-    // Top switch clause: visit each OMPClause.
-    switch (S->getClauseKind()) {
-    default: llvm_unreachable("Unknown clause kind!");
-#define OPENMP_CLAUSE(Name, Class)                              \
-    case OMPC_ ## Name : return Visit ## Class(static_cast<PTR(Class)>(S));
-#include "clang/Basic/OpenMPKinds.def"
-    }
-  }
-  // Base case, ignore it. :)
-  RetTy VisitOMPClause(PTR(OMPClause) Node) { return RetTy(); }
-#undef PTR
-#undef DISPATCH
-};
-
-template<class ImplClass, typename RetTy = void>
-class OMPClauseVisitor :
-      public OMPClauseVisitorBase <ImplClass, make_ptr, RetTy> {};
-template<class ImplClass, typename RetTy = void>
-class ConstOMPClauseVisitor :
-      public OMPClauseVisitorBase <ImplClass, make_const_ptr, RetTy> {};
-
-}  // end namespace clang
-
-#endif
+#endif // LLVM_CLANG_AST_STMTVISITOR_H

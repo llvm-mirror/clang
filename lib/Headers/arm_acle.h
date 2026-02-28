@@ -1,22 +1,8 @@
 /*===---- arm_acle.h - ARM Non-Neon intrinsics -----------------------------===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
@@ -611,6 +597,14 @@ __crc32cd(uint32_t __a, uint64_t __b) {
 }
 #endif
 
+/* Armv8.3-A Javascript conversion intrinsic */
+#if __ARM_64BIT_STATE && defined(__ARM_FEATURE_JCVT)
+static __inline__ int32_t __attribute__((__always_inline__, __nodebug__))
+__jcvt(double __a) {
+  return __builtin_arm_jcvt(__a);
+}
+#endif
+
 /* 10.1 Special register intrinsics */
 #define __arm_rsr(sysreg) __builtin_arm_rsr(sysreg)
 #define __arm_rsr64(sysreg) __builtin_arm_rsr64(sysreg)
@@ -618,6 +612,38 @@ __crc32cd(uint32_t __a, uint64_t __b) {
 #define __arm_wsr(sysreg, v) __builtin_arm_wsr(sysreg, v)
 #define __arm_wsr64(sysreg, v) __builtin_arm_wsr64(sysreg, v)
 #define __arm_wsrp(sysreg, v) __builtin_arm_wsrp(sysreg, v)
+
+/* Memory Tagging Extensions (MTE) Intrinsics */
+#if __ARM_FEATURE_MEMORY_TAGGING
+#define __arm_mte_create_random_tag(__ptr, __mask)  __builtin_arm_irg(__ptr, __mask)
+#define __arm_mte_increment_tag(__ptr, __tag_offset)  __builtin_arm_addg(__ptr, __tag_offset)
+#define __arm_mte_exclude_tag(__ptr, __excluded)  __builtin_arm_gmi(__ptr, __excluded)
+#define __arm_mte_get_tag(__ptr) __builtin_arm_ldg(__ptr)
+#define __arm_mte_set_tag(__ptr) __builtin_arm_stg(__ptr)
+#define __arm_mte_ptrdiff(__ptra, __ptrb) __builtin_arm_subp(__ptra, __ptrb)
+#endif
+
+/* Transactional Memory Extension (TME) Intrinsics */
+#if __ARM_FEATURE_TME
+
+#define _TMFAILURE_REASON  0x00007fffu
+#define _TMFAILURE_RTRY    0x00008000u
+#define _TMFAILURE_CNCL    0x00010000u
+#define _TMFAILURE_MEM     0x00020000u
+#define _TMFAILURE_IMP     0x00040000u
+#define _TMFAILURE_ERR     0x00080000u
+#define _TMFAILURE_SIZE    0x00100000u
+#define _TMFAILURE_NEST    0x00200000u
+#define _TMFAILURE_DBG     0x00400000u
+#define _TMFAILURE_INT     0x00800000u
+#define _TMFAILURE_TRIVIAL 0x01000000u
+
+#define __tstart()        __builtin_arm_tstart()
+#define __tcommit()       __builtin_arm_tcommit()
+#define __tcancel(__arg)  __builtin_arm_tcancel(__arg)
+#define __ttest()         __builtin_arm_ttest()
+
+#endif /* __ARM_FEATURE_TME */
 
 #if defined(__cplusplus)
 }

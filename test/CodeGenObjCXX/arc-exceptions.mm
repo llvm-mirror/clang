@@ -17,11 +17,11 @@ void test0(void) {
 // CHECK:      [[T0:%.*]] = call i8* @objc_begin_catch(
 // CHECK-NEXT: [[T1:%.*]] = bitcast i8* [[T0]] to [[ETY]]*
 // CHECK-NEXT: [[T2:%.*]] = bitcast [[ETY]]* [[T1]] to i8*
-// CHECK-NEXT: [[T3:%.*]] = call i8* @objc_retain(i8* [[T2]]) [[NUW:#[0-9]+]]
+// CHECK-NEXT: [[T3:%.*]] = call i8* @llvm.objc.retain(i8* [[T2]]) [[NUW:#[0-9]+]]
 // CHECK-NEXT: [[T4:%.*]] = bitcast i8* [[T3]] to [[ETY]]*
 // CHECK-NEXT: store [[ETY]]* [[T4]], [[ETY]]** [[E]]
 // CHECK-NEXT: [[T0:%.*]] = bitcast [[ETY]]** [[E]] to i8**
-// CHECK-NEXT: call void @objc_storeStrong(i8** [[T0]], i8* null) [[NUW]]
+// CHECK-NEXT: call void @llvm.objc.storeStrong(i8** [[T0]], i8* null) [[NUW]]
 // CHECK-NEXT: call void @objc_end_catch() [[NUW]]
 
 void test1_helper(void);
@@ -38,9 +38,9 @@ void test1(void) {
 // CHECK-NEXT: [[T1:%.*]] = bitcast i8* [[T0]] to [[ETY]]*
 // CHECK-NEXT: [[T2:%.*]] = bitcast [[ETY]]** [[E]] to i8**
 // CHECK-NEXT: [[T3:%.*]] = bitcast [[ETY]]* [[T1]] to i8*
-// CHECK-NEXT: call i8* @objc_initWeak(i8** [[T2]], i8* [[T3]]) [[NUW]]
+// CHECK-NEXT: call i8* @llvm.objc.initWeak(i8** [[T2]], i8* [[T3]]) [[NUW]]
 // CHECK-NEXT: [[T0:%.*]] = bitcast [[ETY]]** [[E]] to i8**
-// CHECK-NEXT: call void @objc_destroyWeak(i8** [[T0]]) [[NUW]]
+// CHECK-NEXT: call void @llvm.objc.destroyWeak(i8** [[T0]]) [[NUW]]
 // CHECK-NEXT: call void @objc_end_catch() [[NUW]]
 
 void test2_helper(void);
@@ -56,11 +56,11 @@ void test2(void) {
 // CHECK:      [[T0:%.*]] = call i8* @__cxa_begin_catch(
 // CHECK-NEXT: [[T1:%.*]] = bitcast i8* [[T0]] to [[ETY]]*
 // CHECK-NEXT: [[T2:%.*]] = bitcast [[ETY]]* [[T1]] to i8*
-// CHECK-NEXT: [[T3:%.*]] = call i8* @objc_retain(i8* [[T2]]) [[NUW]]
+// CHECK-NEXT: [[T3:%.*]] = call i8* @llvm.objc.retain(i8* [[T2]]) [[NUW]]
 // CHECK-NEXT: [[T4:%.*]] = bitcast i8* [[T3]] to [[ETY]]*
 // CHECK-NEXT: store [[ETY]]* [[T4]], [[ETY]]** [[E]]
 // CHECK-NEXT: [[T0:%.*]] = bitcast [[ETY]]** [[E]] to i8**
-// CHECK-NEXT: call void @objc_storeStrong(i8** [[T0]], i8* null) [[NUW]]
+// CHECK-NEXT: call void @llvm.objc.storeStrong(i8** [[T0]], i8* null) [[NUW]]
 // CHECK-NEXT: call void @__cxa_end_catch() [[NUW]]
 
 void test3_helper(void);
@@ -77,9 +77,9 @@ void test3(void) {
 // CHECK-NEXT: [[T1:%.*]] = bitcast i8* [[T0]] to [[ETY]]*
 // CHECK-NEXT: [[T2:%.*]] = bitcast [[ETY]]** [[E]] to i8**
 // CHECK-NEXT: [[T3:%.*]] = bitcast [[ETY]]* [[T1]] to i8*
-// CHECK-NEXT: call i8* @objc_initWeak(i8** [[T2]], i8* [[T3]]) [[NUW]]
+// CHECK-NEXT: call i8* @llvm.objc.initWeak(i8** [[T2]], i8* [[T3]]) [[NUW]]
 // CHECK-NEXT: [[T0:%.*]] = bitcast [[ETY]]** [[E]] to i8**
-// CHECK-NEXT: call void @objc_destroyWeak(i8** [[T0]]) [[NUW]]
+// CHECK-NEXT: call void @llvm.objc.destroyWeak(i8** [[T0]]) [[NUW]]
 // CHECK-NEXT: call void @__cxa_end_catch() [[NUW]]
 
 namespace test4 {
@@ -101,7 +101,7 @@ namespace test4 {
   //   Construct array.
   // CHECK-NEXT: [[ARRAY:%.*]] = getelementptr inbounds [[A]], [[A]]* [[THIS]], i32 0, i32 1
   // CHECK-NEXT: [[T0:%.*]] = bitcast [2 x [3 x i8*]]* [[ARRAY]] to i8*
-  // CHECK-NEXT: call void @llvm.memset.p0i8.i64(i8* [[T0]], i8 0, i64 48, i32 8, i1 false)
+  // CHECK-NEXT: call void @llvm.memset.p0i8.i64(i8* align 8 [[T0]], i8 0, i64 48, i1 false)
   //   throw 0;
   // CHECK:      invoke void @__cxa_throw(
   //   Landing pad from throw site:
@@ -112,11 +112,11 @@ namespace test4 {
   // CHECK-NEXT: br label
   // CHECK:      [[AFTER:%.*]] = phi i8** [ [[ARRAYEND]], {{%.*}} ], [ [[ELT:%.*]], {{%.*}} ]
   // CHECK-NEXT: [[ELT]] = getelementptr inbounds i8*, i8** [[AFTER]], i64 -1
-  // CHECK-NEXT: call void @objc_storeStrong(i8** [[ELT]], i8* null) [[NUW]]
+  // CHECK-NEXT: call void @llvm.objc.storeStrong(i8** [[ELT]], i8* null) [[NUW]]
   // CHECK-NEXT: [[DONE:%.*]] = icmp eq i8** [[ELT]], [[ARRAYBEGIN]]
   // CHECK-NEXT: br i1 [[DONE]],
   //     - Next, destroy single.
-  // CHECK:      call void @objc_storeStrong(i8** [[SINGLE]], i8* null) [[NUW]]
+  // CHECK:      call void @llvm.objc.storeStrong(i8** [[SINGLE]], i8* null) [[NUW]]
   // CHECK:      br label
   // CHECK:      resume
 }

@@ -29,7 +29,7 @@ B::Inner2 pre_bi; // expected-error +{{must be imported}}
 // expected-note@defs.h:4 +{{here}}
 // expected-note@defs.h:17 +{{here}}
 void pre_bfi(B b) { // expected-error +{{must be imported}}
-  b.f<int>(); // expected-error +{{}}
+  b.f<int>();
 }
 
 C_Base<1> pre_cb1; // expected-error +{{must be imported}}
@@ -48,7 +48,7 @@ int pre_e = E(0); // expected-error {{must be imported}}
 // expected-note@defs.h:32 +{{here}}
 
 int pre_ff = F<int>().f(); // expected-error +{{must be imported}}
-int pre_fg = F<int>().g<int>(); // expected-error +{{must be imported}} expected-error 2{{expected}}
+int pre_fg = F<int>().g<int>(); // expected-error +{{must be imported}}
 // expected-note@defs.h:34 +{{here}}
 
 G::A pre_ga // expected-error +{{must be imported}}
@@ -65,7 +65,7 @@ using pre_i = I<>; // expected-error +{{must be imported}}
 
 J<> pre_j; // expected-error {{declaration of 'J' must be imported}}
 #ifdef IMPORT_USE_2
-// expected-error-re@-2 {{default argument of 'J' must be imported from one of {{.*}}stuff.use{{.*}}stuff.use-2}}
+// expected-error-re@-2 {{default argument of 'J' must be imported from one of {{.*}}stuff.use-2{{.*}}stuff.use}}
 #elif EARLY_INDIRECT_INCLUDE
 // expected-error@-4 {{default argument of 'J' must be imported from module 'merged-defs'}}
 #else

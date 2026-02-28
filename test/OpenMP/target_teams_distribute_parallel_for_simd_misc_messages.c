@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -verify %s -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -verify %s -Wuninitialized
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp target teams distribute parallel for simd'}}
 #pragma omp target teams distribute parallel for simd
@@ -162,8 +164,8 @@ void test_collapse() {
     ;
 
 // expected-error@+4 {{OpenMP constructs may not be nested inside a simd region}}
-#pragma omp target teams distribute parallel for simd collapse(2) firstprivate(i)
-  for (i = 0; i < 16; ++i)
+#pragma omp target teams distribute parallel for simd collapse(2) firstprivate(i) // expected-note {{defined as firstprivate}}
+  for (i = 0; i < 16; ++i) // expected-error {{loop iteration variable in the associated loop of 'omp target teams distribute parallel for simd' directive may not be firstprivate, predetermined as lastprivate}}
     for (int j = 0; j < 16; ++j)
 #pragma omp parallel for reduction(+ : i, j)
       for (int k = 0; k < 16; ++k)
@@ -285,13 +287,20 @@ void test_firstprivate() {
     ;
 
   int x, y, z;
+// expected-error@+1 {{lastprivate variable cannot be firstprivate}} expected-note@+1 {{defined as lastprivate}}
 #pragma omp target teams distribute parallel for simd lastprivate(x) firstprivate(x)
   for (i = 0; i < 16; ++i)
     ;
+// expected-error@+1 2 {{lastprivate variable cannot be firstprivate}} expected-note@+1 2 {{defined as lastprivate}}
 #pragma omp target teams distribute parallel for simd lastprivate(x, y) firstprivate(x, y)
   for (i = 0; i < 16; ++i)
     ;
+// expected-error@+1 3 {{lastprivate variable cannot be firstprivate}} expected-note@+1 3 {{defined as lastprivate}}
 #pragma omp target teams distribute parallel for simd lastprivate(x, y, z) firstprivate(x, y, z)
+  for (i = 0; i < 16; ++i)
+    ;
+// expected-error@+1 {{the value of 'simdlen' parameter must be less than or equal to the value of the 'safelen' parameter}}
+#pragma omp target teams distribute parallel for simd simdlen(64) safelen(8)
   for (i = 0; i < 16; ++i)
     ;
 }

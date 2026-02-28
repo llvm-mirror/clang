@@ -1,5 +1,7 @@
 // RUN: %clang_analyze_cc1 -w -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,cplusplus.NewDelete -analyzer-store=region -verify %s
 // RUN: %clang_analyze_cc1 -triple i386-unknown-linux-gnu -w -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,cplusplus.NewDelete -analyzer-store=region -verify %s
+// RUN: %clang_analyze_cc1 -w -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,cplusplus.NewDelete -analyzer-store=region -DTEST_INLINABLE_ALLOCATORS -verify %s
+// RUN: %clang_analyze_cc1 -triple i386-unknown-linux-gnu -w -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,cplusplus.NewDelete -analyzer-store=region -DTEST_INLINABLE_ALLOCATORS -verify %s
 
 #include "Inputs/system-header-simulator-cxx.h"
 
@@ -139,3 +141,26 @@ char* test_cxa_demangle(const char* sym) {
   }
   return funcname; // no-warning
 }
+
+namespace argument_leak {
+class A {
+  char *name;
+
+public:
+  char *getName() {
+    if (!name) {
+      name = static_cast<char *>(malloc(10));
+    }
+    return name;
+  }
+  ~A() {
+    if (name) {
+      delete[] name;
+    }
+  }
+};
+
+void test(A a) {
+  (void)a.getName();
+}
+} // namespace argument_leak

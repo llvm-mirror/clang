@@ -1,9 +1,8 @@
 //===- lib/Tooling/Execution.cpp - Implements tool execution framework. ---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,15 +15,15 @@ LLVM_INSTANTIATE_REGISTRY(clang::tooling::ToolExecutorPluginRegistry)
 namespace clang {
 namespace tooling {
 
-static llvm::cl::opt<std::string>
+llvm::cl::opt<std::string>
     ExecutorName("executor", llvm::cl::desc("The name of the executor to use."),
                  llvm::cl::init("standalone"));
 
 void InMemoryToolResults::addResult(StringRef Key, StringRef Value) {
-  KVResults.push_back({Key.str(), Value.str()});
+  KVResults.push_back({Strings.save(Key), Strings.save(Value)});
 }
 
-std::vector<std::pair<std::string, std::string>>
+std::vector<std::pair<llvm::StringRef, llvm::StringRef>>
 InMemoryToolResults::AllKVResults() {
   return KVResults;
 }
@@ -96,10 +95,13 @@ createExecutorFromCommandLineArgs(int &argc, const char **argv,
 }
 
 // This anchor is used to force the linker to link in the generated object file
-// and thus register the StandaloneToolExecutorPlugin.
+// and thus register the StandaloneToolExecutorPlugin etc.
 extern volatile int StandaloneToolExecutorAnchorSource;
+extern volatile int AllTUsToolExecutorAnchorSource;
 static int LLVM_ATTRIBUTE_UNUSED StandaloneToolExecutorAnchorDest =
     StandaloneToolExecutorAnchorSource;
+static int LLVM_ATTRIBUTE_UNUSED AllTUsToolExecutorAnchorDest =
+    AllTUsToolExecutorAnchorSource;
 
 } // end namespace tooling
 } // end namespace clang

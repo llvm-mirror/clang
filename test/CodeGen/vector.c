@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -ffreestanding -triple i386-apple-darwin9 -O1 -target-cpu core2 -debug-info-kind=limited -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -ffreestanding -triple i386-apple-darwin9 -O1 -target-cpu corei7 -debug-info-kind=limited -emit-llvm %s -o - | FileCheck %s
 typedef short __v4hi __attribute__ ((__vector_size__ (8)));
 
 void test1() {
@@ -45,13 +45,13 @@ int test4(int argc, char *argv[]) {
 
 unsigned long test_epi8(__m128i x) { return _mm_extract_epi8(x, 4); }
 // CHECK: @test_epi8
-// CHECK: extractelement <16 x i8> {{.*}}, i32 4
+// CHECK: extractelement <16 x i8> {{.*}}, {{i32|i64}} 4
 // CHECK: zext i8 {{.*}} to i32
 
 unsigned long test_epi16(__m128i x) { return _mm_extract_epi16(x, 3); }
 
 // CHECK: @test_epi16
-// CHECK: extractelement <8 x i16> {{.*}}, i32 3
+// CHECK: extractelement <8 x i16> {{.*}}, {{i32|i64}} 3
 // CHECK: zext i16 {{.*}} to i32
 
 void extractinttypes() {
@@ -70,7 +70,7 @@ vec_int1 lax_vector_compare1(int x, vec_int1 y) {
 }
 
 // CHECK: define i32 @lax_vector_compare1(i32 {{.*}}, i32 {{.*}})
-// CHECK: icmp eq <1 x i32>
+// CHECK: icmp eq i32
 
 typedef int vec_int2 __attribute__((vector_size(8)));
 vec_int2 lax_vector_compare2(long long x, vec_int2 y) {

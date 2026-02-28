@@ -1,9 +1,8 @@
 //===- DynamicTypePropagation.cpp ------------------------------*- C++ -*--===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -21,15 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/AST/ParentMap.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/Builtins.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/DynamicTypeMap.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/DynamicType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
 
 using namespace clang;
@@ -58,7 +58,7 @@ class DynamicTypePropagation:
   const ObjCObjectType *getObjectTypeForAllocAndNew(const ObjCMessageExpr *MsgE,
                                                     CheckerContext &C) const;
 
-  /// \brief Return a better dynamic type if one can be derived from the cast.
+  /// Return a better dynamic type if one can be derived from the cast.
   const ObjCObjectPointerType *getBetterObjCType(const Expr *CastE,
                                                  CheckerContext &C) const;
 
@@ -73,7 +73,7 @@ class DynamicTypePropagation:
           new BugType(this, "Generics", categories::CoreFoundationObjectiveC));
   }
 
-  class GenericsBugVisitor : public BugReporterVisitorImpl<GenericsBugVisitor> {
+  class GenericsBugVisitor : public BugReporterVisitor {
   public:
     GenericsBugVisitor(SymbolRef S) : Sym(S) {}
 
@@ -83,10 +83,9 @@ class DynamicTypePropagation:
       ID.AddPointer(Sym);
     }
 
-    std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
-                                                   const ExplodedNode *PrevN,
-                                                   BugReporterContext &BRC,
-                                                   BugReport &BR) override;
+    PathDiagnosticPieceRef VisitNode(const ExplodedNode *N,
+                                     BugReporterContext &BRC,
+                                     PathSensitiveBugReport &BR) override;
 
   private:
     // The tracked symbol.
@@ -114,19 +113,7 @@ public:
 
 void DynamicTypePropagation::checkDeadSymbols(SymbolReaper &SR,
                                               CheckerContext &C) const {
-  ProgramStateRef State = C.getState();
-  DynamicTypeMapImpl TypeMap = State->get<DynamicTypeMap>();
-  for (DynamicTypeMapImpl::iterator I = TypeMap.begin(), E = TypeMap.end();
-       I != E; ++I) {
-    if (!SR.isLiveRegion(I->first)) {
-      State = State->remove<DynamicTypeMap>(I->first);
-    }
-  }
-
-  if (!SR.hasDeadSymbols()) {
-    C.addTransition(State);
-    return;
-  }
+  ProgramStateRef State = removeDeadTypes(C.getState(), SR);
 
   MostSpecializedTypeArgsMapTy TyArgMap =
       State->get<MostSpecializedTypeArgsMap>();
@@ -150,7 +137,7 @@ static void recordFixedType(const MemRegion *Region, const CXXMethodDecl *MD,
   QualType Ty = Ctx.getPointerType(Ctx.getRecordType(MD->getParent()));
 
   ProgramStateRef State = C.getState();
-  State = setDynamicTypeInfo(State, Region, Ty, /*CanBeSubclass=*/false);
+  State = setDynamicTypeInfo(State, Region, Ty, /*CanBeSubClassed=*/false);
   C.addTransition(State);
 }
 
@@ -262,8 +249,19 @@ void DynamicTypePropagation::checkPostCall(const CallEvent &Call,
       if (const MemRegion *Target = Ctor->getCXXThisVal().getAsRegion()) {
         // We just finished a base constructor. Now we can use the subclass's
         // type when resolving virtual calls.
-        const Decl *D = C.getLocationContext()->getDecl();
-        recordFixedType(Target, cast<CXXConstructorDecl>(D), C);
+        const LocationContext *LCtx = C.getLocationContext();
+
+        // FIXME: In C++17 classes with non-virtual bases may be treated as
+        // aggregates, and in such case no top-frame constructor will be called.
+        // Figure out if we need to do anything in this case.
+        // FIXME: Instead of relying on the ParentMap, we should have the
+        // trigger-statement (InitListExpr in this case) available in this
+        // callback, ideally as part of CallEvent.
+        if (dyn_cast_or_null<InitListExpr>(
+                LCtx->getParentMap().getParent(Ctor->getOriginExpr())))
+          return;
+
+        recordFixedType(Target, cast<CXXConstructorDecl>(LCtx->getDecl()), C);
       }
       return;
     }
@@ -302,7 +300,7 @@ void DynamicTypePropagation::checkPostStmt(const CXXNewExpr *NewE,
     return;
 
   C.addTransition(setDynamicTypeInfo(C.getState(), MR, NewE->getType(),
-                                     /*CanBeSubclass=*/false));
+                                     /*CanBeSubClassed=*/false));
 }
 
 const ObjCObjectType *
@@ -396,11 +394,11 @@ static const ObjCObjectPointerType *getMostInformativeDerivedClassImpl(
   }
 
   const auto *SuperOfTo =
-      To->getObjectType()->getSuperClassType()->getAs<ObjCObjectType>();
+      To->getObjectType()->getSuperClassType()->castAs<ObjCObjectType>();
   assert(SuperOfTo);
   QualType SuperPtrOfToQual =
       C.getObjCObjectPointerType(QualType(SuperOfTo, 0));
-  const auto *SuperPtrOfTo = SuperPtrOfToQual->getAs<ObjCObjectPointerType>();
+  const auto *SuperPtrOfTo = SuperPtrOfToQual->castAs<ObjCObjectPointerType>();
   if (To->isUnspecialized())
     return getMostInformativeDerivedClassImpl(From, SuperPtrOfTo, SuperPtrOfTo,
                                               C);
@@ -546,38 +544,38 @@ void DynamicTypePropagation::checkPostStmt(const CastExpr *CE,
   OrigObjectPtrType = OrigObjectPtrType->stripObjCKindOfTypeAndQuals(ASTCtxt);
   DestObjectPtrType = DestObjectPtrType->stripObjCKindOfTypeAndQuals(ASTCtxt);
 
-  // TODO: erase tracked information when there is a cast to unrelated type
-  //       and everything is unspecialized statically.
   if (OrigObjectPtrType->isUnspecialized() &&
       DestObjectPtrType->isUnspecialized())
     return;
 
-  SymbolRef Sym = State->getSVal(CE, C.getLocationContext()).getAsSymbol();
+  SymbolRef Sym = C.getSVal(CE).getAsSymbol();
   if (!Sym)
     return;
+
+  const ObjCObjectPointerType *const *TrackedType =
+      State->get<MostSpecializedTypeArgsMap>(Sym);
+
+  if (isa<ExplicitCastExpr>(CE)) {
+    // Treat explicit casts as an indication from the programmer that the
+    // Objective-C type system is not rich enough to express the needed
+    // invariant. In such cases, forget any existing information inferred
+    // about the type arguments. We don't assume the casted-to specialized
+    // type here because the invariant the programmer specifies in the cast
+    // may only hold at this particular program point and not later ones.
+    // We don't want a suppressing cast to require a cascade of casts down the
+    // line.
+    if (TrackedType) {
+      State = State->remove<MostSpecializedTypeArgsMap>(Sym);
+      C.addTransition(State, AfterTypeProp);
+    }
+    return;
+  }
 
   // Check which assignments are legal.
   bool OrigToDest =
       ASTCtxt.canAssignObjCInterfaces(DestObjectPtrType, OrigObjectPtrType);
   bool DestToOrig =
       ASTCtxt.canAssignObjCInterfaces(OrigObjectPtrType, DestObjectPtrType);
-  const ObjCObjectPointerType *const *TrackedType =
-      State->get<MostSpecializedTypeArgsMap>(Sym);
-
-  // Downcasts and upcasts handled in an uniform way regardless of being
-  // explicit. Explicit casts however can happen between mismatched types.
-  if (isa<ExplicitCastExpr>(CE) && !OrigToDest && !DestToOrig) {
-    // Mismatched types. If the DestType specialized, store it. Forget the
-    // tracked type otherwise.
-    if (DestObjectPtrType->isSpecialized()) {
-      State = State->set<MostSpecializedTypeArgsMap>(Sym, DestObjectPtrType);
-      C.addTransition(State, AfterTypeProp);
-    } else if (TrackedType) {
-      State = State->remove<MostSpecializedTypeArgsMap>(Sym);
-      C.addTransition(State, AfterTypeProp);
-    }
-    return;
-  }
 
   // The tracked type should be the sub or super class of the static destination
   // type. When an (implicit) upcast or a downcast happens according to static
@@ -619,7 +617,7 @@ static const Expr *stripCastsAndSugar(const Expr *E) {
 }
 
 static bool isObjCTypeParamDependent(QualType Type) {
-  // It is illegal to typedef parameterized types inside an interface. Therfore
+  // It is illegal to typedef parameterized types inside an interface. Therefore
   // an Objective-C type can only be dependent on a type parameter when the type
   // parameter structurally present in the type itself.
   class IsObjCTypeParamDependentTypeVisitor
@@ -829,16 +827,15 @@ void DynamicTypePropagation::checkPostObjCMessage(const ObjCMethodCall &M,
   if (MessageExpr->getReceiverKind() == ObjCMessageExpr::Class &&
       Sel.getAsString() == "class") {
     QualType ReceiverType = MessageExpr->getClassReceiver();
-    const auto *ReceiverClassType = ReceiverType->getAs<ObjCObjectType>();
+    const auto *ReceiverClassType = ReceiverType->castAs<ObjCObjectType>();
+    if (!ReceiverClassType->isSpecialized())
+      return;
+
     QualType ReceiverClassPointerType =
         C.getASTContext().getObjCObjectPointerType(
             QualType(ReceiverClassType, 0));
-
-    if (!ReceiverClassType->isSpecialized())
-      return;
     const auto *InferredType =
-        ReceiverClassPointerType->getAs<ObjCObjectPointerType>();
-    assert(InferredType);
+        ReceiverClassPointerType->castAs<ObjCObjectPointerType>();
 
     State = State->set<MostSpecializedTypeArgsMap>(RetSym, InferredType);
     C.addTransition(State);
@@ -877,12 +874,12 @@ void DynamicTypePropagation::checkPostObjCMessage(const ObjCMethodCall &M,
   // When there is an entry available for the return symbol in DynamicTypeMap,
   // the call was inlined, and the information in the DynamicTypeMap is should
   // be precise.
-  if (RetRegion && !State->get<DynamicTypeMap>(RetRegion)) {
+  if (RetRegion && !getRawDynamicTypeInfo(State, RetRegion)) {
     // TODO: we have duplicated information in DynamicTypeMap and
     // MostSpecializedTypeArgsMap. We should only store anything in the later if
     // the stored data differs from the one stored in the former.
     State = setDynamicTypeInfo(State, RetRegion, ResultType,
-                               /*CanBeSubclass=*/true);
+                               /*CanBeSubClassed=*/true);
     Pred = C.addTransition(State);
   }
 
@@ -914,22 +911,20 @@ void DynamicTypePropagation::reportGenericsBug(
   OS << "' to incompatible type '";
   QualType::print(To, Qualifiers(), OS, C.getLangOpts(), llvm::Twine());
   OS << "'";
-  std::unique_ptr<BugReport> R(
-      new BugReport(*ObjCGenericsBugType, OS.str(), N));
+  auto R = std::make_unique<PathSensitiveBugReport>(*ObjCGenericsBugType,
+                                                    OS.str(), N);
   R->markInteresting(Sym);
-  R->addVisitor(llvm::make_unique<GenericsBugVisitor>(Sym));
+  R->addVisitor(std::make_unique<GenericsBugVisitor>(Sym));
   if (ReportedNode)
     R->addRange(ReportedNode->getSourceRange());
   C.emitReport(std::move(R));
 }
 
-std::shared_ptr<PathDiagnosticPiece>
-DynamicTypePropagation::GenericsBugVisitor::VisitNode(const ExplodedNode *N,
-                                                      const ExplodedNode *PrevN,
-                                                      BugReporterContext &BRC,
-                                                      BugReport &BR) {
+PathDiagnosticPieceRef DynamicTypePropagation::GenericsBugVisitor::VisitNode(
+    const ExplodedNode *N, BugReporterContext &BRC,
+    PathSensitiveBugReport &BR) {
   ProgramStateRef state = N->getState();
-  ProgramStateRef statePrev = PrevN->getState();
+  ProgramStateRef statePrev = N->getFirstPred()->getState();
 
   const ObjCObjectPointerType *const *TrackedType =
       state->get<MostSpecializedTypeArgsMap>(Sym);
@@ -942,7 +937,7 @@ DynamicTypePropagation::GenericsBugVisitor::VisitNode(const ExplodedNode *N,
     return nullptr;
 
   // Retrieve the associated statement.
-  const Stmt *S = PathDiagnosticLocation::getStmt(N);
+  const Stmt *S = N->getStmtForDiagnostics();
   if (!S)
     return nullptr;
 
@@ -977,17 +972,23 @@ DynamicTypePropagation::GenericsBugVisitor::VisitNode(const ExplodedNode *N,
   // Generate the extra diagnostic.
   PathDiagnosticLocation Pos(S, BRC.getSourceManager(),
                              N->getLocationContext());
-  return std::make_shared<PathDiagnosticEventPiece>(Pos, OS.str(), true,
-                                                    nullptr);
+  return std::make_shared<PathDiagnosticEventPiece>(Pos, OS.str(), true);
 }
 
 /// Register checkers.
 void ento::registerObjCGenericsChecker(CheckerManager &mgr) {
-  DynamicTypePropagation *checker =
-      mgr.registerChecker<DynamicTypePropagation>();
+  DynamicTypePropagation *checker = mgr.getChecker<DynamicTypePropagation>();
   checker->CheckGenerics = true;
+}
+
+bool ento::shouldRegisterObjCGenericsChecker(const LangOptions &LO) {
+  return true;
 }
 
 void ento::registerDynamicTypePropagation(CheckerManager &mgr) {
   mgr.registerChecker<DynamicTypePropagation>();
+}
+
+bool ento::shouldRegisterDynamicTypePropagation(const LangOptions &LO) {
+  return true;
 }

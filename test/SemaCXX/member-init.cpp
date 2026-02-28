@@ -13,10 +13,10 @@ public:
 
 bool b();
 int k;
-struct Recurse {
+struct Recurse { // expected-error {{initializer for 'n' needed}}
   int &n = // expected-note {{declared here}}
       b() ?
-      Recurse().n : // expected-error {{initializer for 'n' needed}}
+      Recurse().n : // expected-note {{in evaluation of exception spec}}
       k;
 };
 
@@ -51,7 +51,7 @@ struct CheckExcSpec {
   int n = 0;
 };
 struct CheckExcSpecFail {
-  CheckExcSpecFail() noexcept(true) = default; // expected-error {{exception specification of explicitly defaulted default constructor does not match the calculated one}}
+  CheckExcSpecFail() noexcept(true) = default; // ok, but calls terminate() on exception
   ThrowCtor tc = 123;
 };
 
@@ -86,9 +86,8 @@ namespace PR14838 {
   };
   struct thing {};
   struct another {
-    another() : r(thing()) {}
+    another() : r(thing()) {} // expected-error {{binds to a temporary object}}
     // expected-error@-1 {{temporary of type 'PR14838::function' has private destructor}}
-    // expected-warning@-2 {{binding reference member 'r' to a temporary value}}
     const function &r; // expected-note {{reference member declared here}}
   } af;
 }
@@ -101,7 +100,7 @@ namespace rdar14084171 {
   struct Sprite {
     Point location = Point(0,0); // expected-error {{no matching constructor for initialization of 'rdar14084171::Point'}}
   };
-  void f(Sprite& x) { x = x; }
+  void f(Sprite& x) { x = x; } // expected-warning {{explicitly assigning value of variable}}
 }
 
 namespace PR18560 {
@@ -128,19 +127,19 @@ A::A() {}
 namespace template_default_ctor {
 struct A {
   template <typename T>
-  struct B {
+  struct B { // expected-error {{initializer for 'm1' needed}}
     int m1 = 0; // expected-note {{declared here}}
   };
-  enum { NOE = noexcept(B<int>()) }; // expected-error {{initializer for 'm1' needed}}
+  enum { NOE = noexcept(B<int>()) }; // expected-note {{in evaluation of exception spec}}
 };
 }
 
 namespace default_ctor {
 struct A {
-  struct B {
+  struct B { // expected-error {{initializer for 'm1' needed}}
     int m1 = 0; // expected-note {{declared here}}
   };
-  enum { NOE = noexcept(B()) }; // expected-error {{initializer for 'm1' needed}}
+  enum { NOE = noexcept(B()) }; // expected-note {{in evaluation of exception spec}}
 };
 }
 
@@ -148,17 +147,17 @@ namespace member_template {
 struct A {
   template <typename T>
   struct B {
-    struct C {
+    struct C { // expected-error {{initializer for 'm1' needed}}
       int m1 = 0; // expected-note {{declared here}}
     };
     template <typename U>
-    struct D {
+    struct D { // expected-error {{initializer for 'm1' needed}}
       int m1 = 0; // expected-note {{declared here}}
     };
   };
   enum {
-    NOE1 = noexcept(B<int>::C()), // expected-error {{initializer for 'm1' needed}}
-    NOE2 = noexcept(B<int>::D<int>()) // expected-error {{initializer for 'm1' needed}}
+    NOE1 = noexcept(B<int>::C()), // expected-note {{in evaluation of exception spec}}
+    NOE2 = noexcept(B<int>::D<int>()) // expected-note {{in evaluation of exception spec}}
   };
 };
 }
@@ -185,7 +184,7 @@ void g() { f<int>(); } // expected-note {{in instantiation of function template 
 namespace PR22056 {
 template <int N>
 struct S {
-  int x[3] = {[N] = 3};
+  int x[3] = {[N] = 3}; // expected-warning {{C99 extension}}
 };
 }
 

@@ -102,7 +102,7 @@ void test_unreachable_templates_harness() {
   test_unreachable_templates<TestUnreachableB>(); 
 }
 
-// Do warn about explict template specializations, as they represent
+// Do warn about explicit template specializations, as they represent
 // actual concrete functions that somebody wrote.
 
 template <typename T> void funcToSpecialize() {}
@@ -393,6 +393,9 @@ void tautological_compare(bool x, int y) {
   else
     calledFun();        // expected-warning {{will never be executed}}
 
+  if (y == -1 && y != -1)  // expected-note {{silence}}
+    calledFun();        // expected-warning {{will never be executed}}
+
   // TODO: Extend warning to the following code:
   if (x < -1)
     calledFun();
@@ -408,6 +411,4 @@ void tautological_compare(bool x, int y) {
   else
     calledFun();
 
-  if (y == -1 && y != -1)
-    calledFun();
 }

@@ -1,9 +1,8 @@
 //===- unittest/Format/FormatTestSelective.cpp - Formatting unit tests ----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,8 +20,8 @@ namespace {
 class FormatTestSelective : public ::testing::Test {
 protected:
   std::string format(llvm::StringRef Code, unsigned Offset, unsigned Length) {
-    DEBUG(llvm::errs() << "---\n");
-    DEBUG(llvm::errs() << Code << "\n\n");
+    LLVM_DEBUG(llvm::errs() << "---\n");
+    LLVM_DEBUG(llvm::errs() << Code << "\n\n");
     std::vector<tooling::Range> Ranges(1, tooling::Range(Offset, Length));
     FormattingAttemptStatus Status;
     tooling::Replacements Replaces =
@@ -30,7 +29,7 @@ protected:
     EXPECT_TRUE(Status.FormatComplete) << Code << "\n\n";
     auto Result = applyAllReplacements(Code, Replaces);
     EXPECT_TRUE(static_cast<bool>(Result));
-    DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
+    LLVM_DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
     return *Result;
   }
 
@@ -99,7 +98,7 @@ TEST_F(FormatTestSelective, ReformatsMovedLines) {
 }
 
 TEST_F(FormatTestSelective, FormatsIfWithoutCompoundStatement) {
-  Style.AllowShortIfStatementsOnASingleLine = true;
+  Style.AllowShortIfStatementsOnASingleLine = FormatStyle::SIS_WithoutElse;
   EXPECT_EQ("if (a) return;", format("if(a)\nreturn;", 7, 1));
   EXPECT_EQ("if (a) return; // comment",
             format("if(a)\nreturn; // comment", 20, 1));
@@ -175,6 +174,72 @@ TEST_F(FormatTestSelective, FormatsCommentsLocally) {
                    "int xx; //\n"
                    "int xxxxx; //",
                    0, 0));
+}
+
+TEST_F(FormatTestSelective, ContinueReindenting) {
+  // When we change an indent, we continue formatting as long as following
+  // lines are not indented correctly.
+  EXPECT_EQ("int   i;\n"
+            "int b;\n"
+            "int c;\n"
+            "int d;\n"
+            "int e;\n"
+            "  int f;\n",
+            format("int   i;\n"
+                   "  int b;\n"
+                   " int   c;\n"
+                   "  int d;\n"
+                   "int e;\n"
+                   "  int f;\n",
+                   11, 0));
+}
+
+TEST_F(FormatTestSelective, ReindentClosingBrace) {
+  EXPECT_EQ("int   i;\n"
+            "int f() {\n"
+            "  int a;\n"
+            "  int b;\n"
+            "}\n"
+            " int c;\n",
+            format("int   i;\n"
+                   "  int f(){\n"
+                   "int a;\n"
+                   "int b;\n"
+                   "  }\n"
+                   " int c;\n",
+                   11, 0));
+  EXPECT_EQ("void f() {\n"
+            "  if (foo) {\n"
+            "    b();\n"
+            "  } else {\n"
+            "    c();\n"
+            "  }\n"
+            "int d;\n"
+            "}\n",
+            format("void f() {\n"
+                   "  if (foo) {\n"
+                   "b();\n"
+                   "}else{\n"
+                   "c();\n"
+                   "}\n"
+                   "int d;\n"
+                   "}\n",
+                   13, 0));
+  EXPECT_EQ("int i = []() {\n"
+            "  class C {\n"
+            "    int a;\n"
+            "    int b;\n"
+            "  };\n"
+            "  int c;\n"
+            "};\n",
+            format("int i = []() {\n"
+                   "  class C{\n"
+                   "int a;\n"
+                   "int b;\n"
+                   "};\n"
+                   "int c;\n"
+                   "  };\n",
+                   17, 0));
 }
 
 TEST_F(FormatTestSelective, IndividualStatementsOfNestedBlocks) {
@@ -503,7 +568,7 @@ TEST_F(FormatTestSelective, StopFormattingWhenLeavingScope) {
       "  if (a) {\n"
       "    g();\n"
       "    h();\n"
-      "}\n"
+      "  }\n"
       "\n"
       "void g() {\n"
       "}",

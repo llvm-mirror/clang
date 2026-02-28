@@ -1,14 +1,13 @@
 //===--- tools/extra/clang-rename/ClangRename.cpp - Clang rename tool -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements a clang-rename tool that automatically finds and
+/// This file implements a clang-rename tool that automatically finds and
 /// renames symbols in C++ code.
 ///
 //===----------------------------------------------------------------------===//
@@ -39,7 +38,7 @@
 using namespace llvm;
 using namespace clang;
 
-/// \brief An oldname -> newname rename.
+/// An oldname -> newname rename.
 struct RenameAllInfo {
   unsigned Offset = 0;
   std::string QualifiedName;
@@ -51,7 +50,7 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(RenameAllInfo)
 namespace llvm {
 namespace yaml {
 
-/// \brief Specialized MappingTraits to describe how a RenameAllInfo is
+/// Specialized MappingTraits to describe how a RenameAllInfo is
 /// (de)serialized.
 template <> struct MappingTraits<RenameAllInfo> {
   static void mapping(IO &IO, RenameAllInfo &Info) {
@@ -138,7 +137,7 @@ int main(int argc, const char **argv) {
   // Check if NewNames is a valid identifier in C++17.
   LangOptions Options;
   Options.CPlusPlus = true;
-  Options.CPlusPlus1z = true;
+  Options.CPlusPlus17 = true;
   IdentifierTable Table(Options);
   for (const auto &NewName : NewNames) {
     auto NewNameTokKind = Table.get(NewName).getTokenID();
@@ -189,7 +188,7 @@ int main(int argc, const char **argv) {
 
     if (!ExportFixes.empty()) {
       std::error_code EC;
-      llvm::raw_fd_ostream OS(ExportFixes, EC, llvm::sys::fs::F_None);
+      llvm::raw_fd_ostream OS(ExportFixes, EC, llvm::sys::fs::OF_None);
       if (EC) {
         llvm::errs() << "Error opening output file: " << EC.message() << '\n';
         return 1;
@@ -223,8 +222,8 @@ int main(int argc, const char **argv) {
 
     Tool.applyAllReplacements(Rewrite);
     for (const auto &File : Files) {
-      const auto *Entry = FileMgr.getFile(File);
-      const auto ID = Sources.getOrCreateFileID(Entry, SrcMgr::C_User);
+      auto Entry = FileMgr.getFile(File);
+      const auto ID = Sources.getOrCreateFileID(*Entry, SrcMgr::C_User);
       Rewrite.getEditBuffer(ID).write(outs());
     }
   }

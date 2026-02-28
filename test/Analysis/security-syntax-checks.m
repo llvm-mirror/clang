@@ -1,17 +1,49 @@
-// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 -DUSE_BUILTINS -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 -DVARIANT -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 -DUSE_BUILTINS -DVARIANT -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi -DUSE_BUILTINS -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi -DVARIANT -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
-// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi -DUSE_BUILTINS -DVARIANT -analyzer-checker=security.insecureAPI,security.FloatLoopCounter %s -verify
+// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 %s -verify \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 %s -verify \
+// RUN:   -DUSE_BUILTINS \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 %s -verify \
+// RUN:   -DVARIANT \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 %s -verify \
+// RUN:   -DUSE_BUILTINS -DVARIANT \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi %s -verify \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi %s -verify \
+// RUN:   -DUSE_BUILTINS \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi %s -verify \
+// RUN:   -DVARIANT \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
+
+// RUN: %clang_analyze_cc1 -triple x86_64-unknown-cloudabi %s -verify \
+// RUN:   -DUSE_BUILTINS -DVARIANT \
+// RUN:   -analyzer-checker=security.insecureAPI \
+// RUN:   -analyzer-checker=security.FloatLoopCounter
 
 #ifdef USE_BUILTINS
 # define BUILTIN(f) __builtin_ ## f
 #else /* USE_BUILTINS */
 # define BUILTIN(f) f
 #endif /* USE_BUILTINS */
+
+#include "Inputs/system-header-simulator-for-valist.h"
+#include "Inputs/system-header-simulator-for-simple-stream.h"
 
 typedef typeof(sizeof(int)) size_t;
 
@@ -35,6 +67,27 @@ void test_float_condition() {
   
   typedef float FooType;
   for (FooType x = 100000001.0f; x <= 100000010.0f; x++ ) {} // expected-warning{{Variable 'x' with floating point type 'FooType'}}
+}
+
+// Obsolete function bcmp
+int bcmp(const void *, const void *, size_t);
+
+int test_bcmp(void *a, void *b, size_t n) {
+  return bcmp(a, b, n); // expected-warning{{The bcmp() function is obsoleted by memcmp()}}
+}
+
+// Obsolete function bcopy
+void bcopy(void *, void *, size_t);
+
+void test_bcopy(void *a, void *b, size_t n) {
+  bcopy(a, b, n); // expected-warning{{The bcopy() function is obsoleted by memcpy() or memmove(}}
+}
+
+// Obsolete function bzero
+void bzero(void *, size_t);
+
+void test_bzero(void *a, size_t n) {
+  bzero(a, n); // expected-warning{{The bzero() function is obsoleted by memset()}}
 }
 
 // <rdar://problem/6335715> rule request: gets() buffer overflow
@@ -146,6 +199,21 @@ void test_strcpy() {
   strcpy(x, y); //expected-warning{{Call to function 'strcpy' is insecure as it does not provide bounding of the memory buffer. Replace unbounded copy functions with analogous functions that support length arguments such as 'strlcpy'. CWE-119}}
 }
 
+void test_strcpy_2() {
+  char x[4];
+  strcpy(x, "abcd"); //expected-warning{{Call to function 'strcpy' is insecure as it does not provide bounding of the memory buffer. Replace unbounded copy functions with analogous functions that support length arguments such as 'strlcpy'. CWE-119}}
+}
+
+void test_strcpy_safe() {
+  char x[5];
+  strcpy(x, "abcd");
+}
+
+void test_strcpy_safe_2() {
+  struct {char s1[100];} s;
+  strcpy(s.s1, "hello");
+}
+
 //===----------------------------------------------------------------------===
 // strcat()
 //===----------------------------------------------------------------------===
@@ -202,3 +270,82 @@ void test_mkstemp() {
   mkdtemp("XXXXXX");
 }
 
+
+//===----------------------------------------------------------------------===
+// deprecated or unsafe buffer handling
+//===----------------------------------------------------------------------===
+typedef int wchar_t;
+
+int sprintf(char *str, const char *format, ...);
+//int vsprintf (char *s, const char *format, va_list arg);
+int scanf(const char *format, ...);
+int wscanf(const wchar_t *format, ...);
+int fscanf(FILE *stream, const char *format, ...);
+int fwscanf(FILE *stream, const wchar_t *format, ...);
+int vscanf(const char *format, va_list arg);
+int vwscanf(const wchar_t *format, va_list arg);
+int vfscanf(FILE *stream, const char *format, va_list arg);
+int vfwscanf(FILE *stream, const wchar_t *format, va_list arg);
+int sscanf(const char *s, const char *format, ...);
+int swscanf(const wchar_t *ws, const wchar_t *format, ...);
+int vsscanf(const char *s, const char *format, va_list arg);
+int vswscanf(const wchar_t *ws, const wchar_t *format, va_list arg);
+int swprintf(wchar_t *ws, size_t len, const wchar_t *format, ...);
+int snprintf(char *s, size_t n, const char *format, ...);
+int vswprintf(wchar_t *ws, size_t len, const wchar_t *format, va_list arg);
+int vsnprintf(char *s, size_t n, const char *format, va_list arg);
+void *memcpy(void *destination, const void *source, size_t num);
+void *memmove(void *destination, const void *source, size_t num);
+char *strncpy(char *destination, const char *source, size_t num);
+char *strncat(char *destination, const char *source, size_t num);
+void *memset(void *ptr, int value, size_t num);
+
+void test_deprecated_or_unsafe_buffer_handling_1() {
+  char buf [5];
+  wchar_t wbuf [5];
+  int a;
+  FILE *file;
+  sprintf(buf, "a"); // expected-warning{{Call to function 'sprintf' is insecure}}
+  scanf("%d", &a); // expected-warning{{Call to function 'scanf' is insecure}}
+  scanf("%s", buf); // expected-warning{{Call to function 'scanf' is insecure}}
+  scanf("%4s", buf); // expected-warning{{Call to function 'scanf' is insecure}}
+  wscanf((const wchar_t*) L"%s", buf); // expected-warning{{Call to function 'wscanf' is insecure}}
+  fscanf(file, "%d", &a); // expected-warning{{Call to function 'fscanf' is insecure}}
+  fscanf(file, "%s", buf); // expected-warning{{Call to function 'fscanf' is insecure}}
+  fscanf(file, "%4s", buf); // expected-warning{{Call to function 'fscanf' is insecure}}
+  fwscanf(file, (const wchar_t*) L"%s", wbuf); // expected-warning{{Call to function 'fwscanf' is insecure}}
+  sscanf("5", "%d", &a); // expected-warning{{Call to function 'sscanf' is insecure}}
+  sscanf("5", "%s", buf); // expected-warning{{Call to function 'sscanf' is insecure}}
+  sscanf("5", "%4s", buf); // expected-warning{{Call to function 'sscanf' is insecure}}
+  swscanf(L"5", (const wchar_t*) L"%s", wbuf); // expected-warning{{Call to function 'swscanf' is insecure}}
+  swprintf(L"5", 1, (const wchar_t*) L"%s", wbuf); // expected-warning{{Call to function 'swprintf' is insecure}}
+  snprintf("5", 1, "%s", buf); // expected-warning{{Call to function 'snprintf' is insecure}}
+  memcpy(buf, wbuf, 1); // expected-warning{{Call to function 'memcpy' is insecure}}
+  memmove(buf, wbuf, 1); // expected-warning{{Call to function 'memmove' is insecure}}
+  strncpy(buf, "a", 1); // expected-warning{{Call to function 'strncpy' is insecure}}
+  strncat(buf, "a", 1); // expected-warning{{Call to function 'strncat' is insecure}}
+  memset(buf, 'a', 1); // expected-warning{{Call to function 'memset' is insecure}}
+}
+
+void test_deprecated_or_unsafe_buffer_handling_2(const char *format, ...) {
+  char buf [5];
+  FILE *file;
+  va_list args;
+  va_start(args, format);
+  vsprintf(buf, format, args); // expected-warning{{Call to function 'vsprintf' is insecure}}
+  vscanf(format, args); // expected-warning{{Call to function 'vscanf' is insecure}}
+  vfscanf(file, format, args); // expected-warning{{Call to function 'vfscanf' is insecure}}
+  vsscanf("a", format, args); // expected-warning{{Call to function 'vsscanf' is insecure}}
+  vsnprintf("a", 1, format, args); // expected-warning{{Call to function 'vsnprintf' is insecure}}
+}
+
+void test_deprecated_or_unsafe_buffer_handling_3(const wchar_t *format, ...) {
+  wchar_t wbuf [5];
+  FILE *file;
+  va_list args;
+  va_start(args, format);
+  vwscanf(format, args); // expected-warning{{Call to function 'vwscanf' is insecure}}
+  vfwscanf(file, format, args); // expected-warning{{Call to function 'vfwscanf' is insecure}}
+  vswscanf(L"a", format, args); // expected-warning{{Call to function 'vswscanf' is insecure}}
+  vswprintf(L"a", 1, format, args); // expected-warning{{Call to function 'vswprintf' is insecure}}
+}

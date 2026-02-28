@@ -1,9 +1,8 @@
 //===-- BlockInCriticalSectionChecker.cpp -----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -127,7 +126,7 @@ bool BlockInCriticalSectionChecker::isLockFunction(const CallEvent &Call) const 
 
 bool BlockInCriticalSectionChecker::isUnlockFunction(const CallEvent &Call) const {
   if (const auto *Dtor = dyn_cast<CXXDestructorCall>(&Call)) {
-    const auto *DRecordDecl = dyn_cast<CXXRecordDecl>(Dtor->getDecl()->getParent());
+    const auto *DRecordDecl = cast<CXXRecordDecl>(Dtor->getDecl()->getParent());
     auto IdentifierInfo = DRecordDecl->getIdentifier();
     if (IdentifierInfo == IILockGuard || IdentifierInfo == IIUniqueLock)
       return true;
@@ -174,7 +173,8 @@ void BlockInCriticalSectionChecker::reportBlockInCritSection(
   llvm::raw_string_ostream os(msg);
   os << "Call to blocking function '" << Call.getCalleeIdentifier()->getName()
      << "' inside of critical section";
-  auto R = llvm::make_unique<BugReport>(*BlockInCritSectionBugType, os.str(), ErrNode);
+  auto R = std::make_unique<PathSensitiveBugReport>(*BlockInCritSectionBugType,
+                                                    os.str(), ErrNode);
   R->addRange(Call.getSourceRange());
   R->markInteresting(BlockDescSym);
   C.emitReport(std::move(R));
@@ -182,4 +182,8 @@ void BlockInCriticalSectionChecker::reportBlockInCritSection(
 
 void ento::registerBlockInCriticalSectionChecker(CheckerManager &mgr) {
   mgr.registerChecker<BlockInCriticalSectionChecker>();
+}
+
+bool ento::shouldRegisterBlockInCriticalSectionChecker(const LangOptions &LO) {
+  return true;
 }

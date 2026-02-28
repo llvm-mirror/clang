@@ -1,9 +1,8 @@
 //===--- AtomicChange.cpp - AtomicChange implementation -----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,7 +14,7 @@
 LLVM_YAML_IS_SEQUENCE_VECTOR(clang::tooling::AtomicChange)
 
 namespace {
-/// \brief Helper to (de)serialize an AtomicChange since we don't have direct
+/// Helper to (de)serialize an AtomicChange since we don't have direct
 /// access to its data members.
 /// Data members of a normalized AtomicChange can be directly mapped from/to
 /// YAML string.
@@ -50,7 +49,7 @@ struct NormalizedAtomicChange {
 namespace llvm {
 namespace yaml {
 
-/// \brief Specialized MappingTraits to describe how an AtomicChange is
+/// Specialized MappingTraits to describe how an AtomicChange is
 /// (de)serialized.
 template <> struct MappingTraits<NormalizedAtomicChange> {
   static void mapping(IO &Io, NormalizedAtomicChange &Doc) {
@@ -63,7 +62,7 @@ template <> struct MappingTraits<NormalizedAtomicChange> {
   }
 };
 
-/// \brief Specialized MappingTraits to describe how an AtomicChange is
+/// Specialized MappingTraits to describe how an AtomicChange is
 /// (de)serialized.
 template <> struct MappingTraits<clang::tooling::AtomicChange> {
   static void mapping(IO &Io, clang::tooling::AtomicChange &Doc) {

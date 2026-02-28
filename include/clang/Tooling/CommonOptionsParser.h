@@ -1,9 +1,8 @@
 //===- CommonOptionsParser.h - common options for clang tools -*- C++ -*-=====//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -34,7 +33,7 @@
 
 namespace clang {
 namespace tooling {
-/// \brief A parser for options common to all command-line Clang tools.
+/// A parser for options common to all command-line Clang tools.
 ///
 /// Parses a common subset of command-line arguments, locates and loads a
 /// compilation commands database and runs a tool with user-specified action. It
@@ -52,7 +51,7 @@ namespace tooling {
 ///
 /// static cl::OptionCategory MyToolCategory("My tool options");
 /// static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
-/// static cl::extrahelp MoreHelp("\nMore help text...");
+/// static cl::extrahelp MoreHelp("\nMore help text...\n");
 /// static cl::opt<bool> YourOwnOption(...);
 /// ...
 ///
@@ -65,7 +64,7 @@ namespace tooling {
 /// \endcode
 class CommonOptionsParser {
 public:
-  /// \brief Parses command-line, initializes a compilation database.
+  /// Parses command-line, initializes a compilation database.
   ///
   /// This constructor can change argc and argv contents, e.g. consume
   /// command-line options used for creating FixedCompilationDatabase.
@@ -79,7 +78,7 @@ public:
       : CommonOptionsParser(argc, argv, Category, llvm::cl::OneOrMore,
                             Overview) {}
 
-  /// \brief Parses command-line, initializes a compilation database.
+  /// Parses command-line, initializes a compilation database.
   ///
   /// This constructor can change argc and argv contents, e.g. consume
   /// command-line options used for creating FixedCompilationDatabase.
@@ -92,7 +91,7 @@ public:
                       llvm::cl::NumOccurrencesFlag OccurrencesFlag,
                       const char *Overview = nullptr);
 
-  /// \brief A factory method that is similar to the above constructor, except
+  /// A factory method that is similar to the above constructor, except
   /// this returns an error instead exiting the program on error.
   static llvm::Expected<CommonOptionsParser>
   create(int &argc, const char **argv, llvm::cl::OptionCategory &Category,

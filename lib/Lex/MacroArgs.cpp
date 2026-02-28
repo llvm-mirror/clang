@@ -1,9 +1,8 @@
 //===--- MacroArgs.cpp - Formal argument info for Macros ------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -29,7 +28,7 @@ MacroArgs *MacroArgs::create(const MacroInfo *MI,
          "Can't have args for an object-like macro!");
   MacroArgs **ResultEnt = nullptr;
   unsigned ClosestMatch = ~0U;
-  
+
   // See if we have an entry with a big enough argument list to reuse on the
   // free list.  If so, reuse it.
   for (MacroArgs **Entry = &PP.MacroArgCache; *Entry;
@@ -37,7 +36,7 @@ MacroArgs *MacroArgs::create(const MacroInfo *MI,
     if ((*Entry)->NumUnexpArgTokens >= UnexpArgTokens.size() &&
         (*Entry)->NumUnexpArgTokens < ClosestMatch) {
       ResultEnt = Entry;
-      
+
       // If we have an exact match, use it.
       if ((*Entry)->NumUnexpArgTokens == UnexpArgTokens.size())
         break;
@@ -49,7 +48,8 @@ MacroArgs *MacroArgs::create(const MacroInfo *MI,
   if (!ResultEnt) {
     // Allocate memory for a MacroArgs object with the lexer tokens at the end,
     // and construct the MacroArgs object.
-    Result = new (std::malloc(totalSizeToAlloc<Token>(UnexpArgTokens.size())))
+    Result = new (
+        llvm::safe_malloc(totalSizeToAlloc<Token>(UnexpArgTokens.size())))
         MacroArgs(UnexpArgTokens.size(), VarargsElided, MI->getNumParams());
   } else {
     Result = *ResultEnt;
@@ -76,13 +76,11 @@ MacroArgs *MacroArgs::create(const MacroInfo *MI,
 /// destroy - Destroy and deallocate the memory for this object.
 ///
 void MacroArgs::destroy(Preprocessor &PP) {
-  StringifiedArgs.clear();
-
   // Don't clear PreExpArgTokens, just clear the entries.  Clearing the entries
   // would deallocate the element vectors.
   for (unsigned i = 0, e = PreExpArgTokens.size(); i != e; ++i)
     PreExpArgTokens[i].clear();
-  
+
   // Add this to the preprocessor's free list.
   ArgCache = PP.MacroArgCache;
   PP.MacroArgCache = this;
@@ -92,14 +90,14 @@ void MacroArgs::destroy(Preprocessor &PP) {
 /// its freelist.
 MacroArgs *MacroArgs::deallocate() {
   MacroArgs *Next = ArgCache;
-  
+
   // Run the dtor to deallocate the vectors.
   this->~MacroArgs();
   // Release the memory for the object.
   static_assert(std::is_trivially_destructible<Token>::value,
                 "assume trivially destructible and forego destructors");
   free(this);
-  
+
   return Next;
 }
 
@@ -124,7 +122,7 @@ const Token *MacroArgs::getUnexpArgument(unsigned Arg) const {
   // in memory.
   const Token *Start = getTrailingObjects<Token>();
   const Token *Result = Start;
-  
+
   // Scan to find Arg.
   for (; Arg; ++Result) {
     assert(Result < Start+NumUnexpArgTokens && "Invalid arg #");
@@ -135,15 +133,12 @@ const Token *MacroArgs::getUnexpArgument(unsigned Arg) const {
   return Result;
 }
 
-// This function assumes that the variadic arguments are the tokens
-// corresponding to the last parameter (ellipsis) - and since tokens are
-// separated by the 'eof' token, if that is the only token corresponding to that
-// last parameter, we know no variadic arguments were supplied.
-bool MacroArgs::invokedWithVariadicArgument(const MacroInfo *const MI) const {
+bool MacroArgs::invokedWithVariadicArgument(const MacroInfo *const MI,
+                                            Preprocessor &PP) {
   if (!MI->isVariadic())
     return false;
   const int VariadicArgIndex = getNumMacroArguments() - 1;
-  return getUnexpArgument(VariadicArgIndex)->isNot(tok::eof);
+  return getPreExpArgument(VariadicArgIndex, PP).front().isNot(tok::eof);
 }
 
 /// ArgNeedsPreexpansion - If we can prove that the argument won't be affected
@@ -170,7 +165,7 @@ const std::vector<Token> &MacroArgs::getPreExpArgument(unsigned Arg,
   // If we have already computed this, return it.
   if (PreExpArgTokens.size() < getNumMacroArguments())
     PreExpArgTokens.resize(getNumMacroArguments());
-  
+
   std::vector<Token> &Result = PreExpArgTokens[Arg];
   if (!Result.empty()) return Result;
 
@@ -184,7 +179,7 @@ const std::vector<Token> &MacroArgs::getPreExpArgument(unsigned Arg,
   // list.  With this installed, we lex expanded tokens until we hit the EOF
   // token at the end of the unexp list.
   PP.EnterTokenStream(AT, NumToks, false /*disable expand*/,
-                      false /*owns tokens*/);
+                      false /*owns tokens*/, false /*is reinject*/);
 
   // Lex all of the macro-expanded tokens into Result.
   do {
@@ -272,7 +267,7 @@ Token MacroArgs::StringifyArgument(const Token *ArgToks,
   // If the last character of the string is a \, and if it isn't escaped, this
   // is an invalid string literal, diagnose it as specified in C99.
   if (Result.back() == '\\') {
-    // Count the number of consequtive \ characters.  If even, then they are
+    // Count the number of consecutive \ characters.  If even, then they are
     // just escaped backslashes, otherwise it's an error.
     unsigned FirstNonSlash = Result.size()-2;
     // Guaranteed to find the starting " if nothing else.
@@ -309,22 +304,4 @@ Token MacroArgs::StringifyArgument(const Token *ArgToks,
   PP.CreateString(Result, Tok,
                   ExpansionLocStart, ExpansionLocEnd);
   return Tok;
-}
-
-/// getStringifiedArgument - Compute, cache, and return the specified argument
-/// that has been 'stringified' as required by the # operator.
-const Token &MacroArgs::getStringifiedArgument(unsigned ArgNo,
-                                               Preprocessor &PP,
-                                               SourceLocation ExpansionLocStart,
-                                               SourceLocation ExpansionLocEnd) {
-  assert(ArgNo < getNumMacroArguments() && "Invalid argument number!");
-  if (StringifiedArgs.empty())
-    StringifiedArgs.resize(getNumMacroArguments(), {});
-
-  if (StringifiedArgs[ArgNo].isNot(tok::string_literal))
-    StringifiedArgs[ArgNo] = StringifyArgument(getUnexpArgument(ArgNo), PP,
-                                               /*Charify=*/false,
-                                               ExpansionLocStart,
-                                               ExpansionLocEnd);
-  return StringifiedArgs[ArgNo];
 }

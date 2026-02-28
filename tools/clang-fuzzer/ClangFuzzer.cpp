@@ -1,14 +1,13 @@
 //===-- ClangFuzzer.cpp - Fuzz Clang --------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements a function that runs Clang on a single
+/// This file implements a function that runs Clang on a single
 ///  input. This function is then linked into the Fuzzer library.
 ///
 //===----------------------------------------------------------------------===//
@@ -21,6 +20,6 @@ extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) { return 0; }
 
 extern "C" int LLVMFuzzerTestOneInput(uint8_t *data, size_t size) {
   std::string s((const char *)data, size);
-  HandleCXX(s, {"-O2"});
+  HandleCXX(s, "./test.cc", {"-O2"});
   return 0;
 }

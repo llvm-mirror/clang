@@ -1,9 +1,8 @@
 //===--- AMDGPU.cpp - AMDGPU ToolChain Implementations ----------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,6 +10,7 @@
 #include "CommonArgs.h"
 #include "InputInfo.h"
 #include "clang/Driver/Compilation.h"
+#include "clang/Driver/DriverDiagnostic.h"
 #include "llvm/Option/ArgList.h"
 
 using namespace clang::driver;
@@ -31,8 +31,29 @@ void amdgpu::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-shared");
   CmdArgs.push_back("-o");
   CmdArgs.push_back(Output.getFilename());
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Args.MakeArgString(Linker),
+  C.addCommand(std::make_unique<Command>(JA, *this, Args.MakeArgString(Linker),
                                           CmdArgs, Inputs));
+}
+
+void amdgpu::getAMDGPUTargetFeatures(const Driver &D,
+                                     const llvm::opt::ArgList &Args,
+                                     std::vector<StringRef> &Features) {
+  if (const Arg *dAbi = Args.getLastArg(options::OPT_mamdgpu_debugger_abi))
+    D.Diag(diag::err_drv_clang_unsupported) << dAbi->getAsString(Args);
+
+  if (Args.getLastArg(options::OPT_mwavefrontsize64)) {
+    Features.push_back("-wavefrontsize16");
+    Features.push_back("-wavefrontsize32");
+    Features.push_back("+wavefrontsize64");
+  }
+  if (Args.getLastArg(options::OPT_mno_wavefrontsize64)) {
+    Features.push_back("-wavefrontsize16");
+    Features.push_back("+wavefrontsize32");
+    Features.push_back("-wavefrontsize64");
+  }
+
+  handleTargetFeaturesGroup(
+    Args, Features, options::OPT_m_amdgpu_Features_Group);
 }
 
 /// AMDGPU Toolchain
@@ -79,4 +100,18 @@ AMDGPUToolChain::TranslateArgs(const DerivedArgList &Args, StringRef BoundArch,
   }
 
   return DAL;
+}
+
+void AMDGPUToolChain::addClangTargetOptions(
+    const llvm::opt::ArgList &DriverArgs,
+    llvm::opt::ArgStringList &CC1Args,
+    Action::OffloadKind DeviceOffloadingKind) const {
+  // Default to "hidden" visibility, as object level linking will not be
+  // supported for the foreseeable future.
+  if (!DriverArgs.hasArg(options::OPT_fvisibility_EQ,
+                         options::OPT_fvisibility_ms_compat)) {
+    CC1Args.push_back("-fvisibility");
+    CC1Args.push_back("hidden");
+    CC1Args.push_back("-fapply-global-visibility-to-externs");
+  }
 }

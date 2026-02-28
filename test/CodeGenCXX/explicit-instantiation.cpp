@@ -119,14 +119,14 @@ namespace NestedClasses {
   // definition of Inner.
   template struct Outer<int>;
   // CHECK: define weak_odr void @_ZN13NestedClasses5OuterIiE5Inner1fEv
-  // CHECK-MS: define weak_odr x86_thiscallcc void @"\01?f@Inner@?$Outer@H@NestedClasses@@QAEXXZ"
+  // CHECK-MS: define weak_odr dso_local x86_thiscallcc void @"?f@Inner@?$Outer@H@NestedClasses@@QAEXXZ"
 
   // Explicit instantiation declaration of Outer causes explicit instantiation
   // declaration of Inner, but not in MSVC mode.
   extern template struct Outer<char>;
   auto use = &Outer<char>::Inner::f;
   // CHECK: {{declare|define available_externally}} void @_ZN13NestedClasses5OuterIcE5Inner1fEv
-  // CHECK-MS: define linkonce_odr x86_thiscallcc void @"\01?f@Inner@?$Outer@D@NestedClasses@@QAEXXZ"
+  // CHECK-MS: define linkonce_odr dso_local x86_thiscallcc void @"?f@Inner@?$Outer@D@NestedClasses@@QAEXXZ"
 }
 
 // Check that we emit definitions from explicit instantiations even when they
@@ -169,4 +169,23 @@ extern template void f<int>();
 void use() {
   f<int>();
 }
+}
+
+namespace DefaultedMembers {
+  struct B { B(); B(const B&); ~B(); };
+  template<typename T> struct A : B {
+    A() = default;
+    ~A() = default;
+  };
+  extern template struct A<int>;
+
+  // CHECK-LABEL: define {{.*}} @_ZN16DefaultedMembers1AIiEC2Ev
+  // CHECK-LABEL: define {{.*}} @_ZN16DefaultedMembers1AIiED2Ev
+  A<int> ai;
+
+  // CHECK-LABEL: define {{.*}} @_ZN16DefaultedMembers1AIiEC2ERKS1_
+  A<int> ai2(ai);
+
+  // CHECK-NOT: @_ZN16DefaultedMembers1AIcE
+  template struct A<char>;
 }

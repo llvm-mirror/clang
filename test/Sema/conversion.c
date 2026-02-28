@@ -233,7 +233,7 @@ void test8(int v) {
   takes_int(v);
   takes_long(v);
   takes_longlong(v);
-  takes_float(v);
+  takes_float(v); // expected-warning {{implicit conversion from 'int' to 'float' may lose precision}}
   takes_double(v);
   takes_longdouble(v);
 }
@@ -244,8 +244,8 @@ void test9(long v) {
   takes_int(v); // expected-warning {{implicit conversion loses integer precision}}
   takes_long(v);
   takes_longlong(v);
-  takes_float(v);
-  takes_double(v);
+  takes_float(v);  // expected-warning {{implicit conversion from 'long' to 'float' may lose precision}}
+  takes_double(v); // expected-warning {{implicit conversion from 'long' to 'double' may lose precision}}
   takes_longdouble(v);
 }
 
@@ -255,8 +255,8 @@ void test10(long long v) {
   takes_int(v); // expected-warning {{implicit conversion loses integer precision}}
   takes_long(v);
   takes_longlong(v);
-  takes_float(v);
-  takes_double(v);
+  takes_float(v);  // expected-warning {{implicit conversion from 'long long' to 'float' may lose precision}}
+  takes_double(v); // expected-warning {{implicit conversion from 'long long' to 'double' may lose precision}}
   takes_longdouble(v);
 }
 
@@ -359,7 +359,7 @@ void f7676608(int);
 void test_7676608(void) {
   float q = 0.7f;
   char c = 5;
-  f7676608(c *= q);
+  f7676608(c *= q); // expected-warning {{conversion}}
 }
 
 // <rdar://problem/7904686>
@@ -428,4 +428,23 @@ void test27(ushort16 constants) {
     uint8 pairedConstants = (uint8) constants;
     ushort16 crCbScale = pairedConstants.s4; // expected-warning {{implicit conversion loses integer precision: 'uint32_t' (aka 'unsigned int') to 'ushort16'}}
     ushort16 brBias = pairedConstants.s6; // expected-warning {{implicit conversion loses integer precision: 'uint32_t' (aka 'unsigned int') to 'ushort16'}}
+}
+
+
+float double2float_test1(double a) {
+    return a; // expected-warning {{implicit conversion loses floating-point precision: 'double' to 'float'}}
+}
+
+void double2float_test2(double a, float *b) {
+  *b += a; // expected-warning {{implicit conversion when assigning computation result loses floating-point precision: 'double' to 'float'}}
+}
+
+float sinf (float x);
+double double2float_test3(double a) {
+    return sinf(a); // expected-warning {{implicit conversion loses floating-point precision: 'double' to 'float'}}
+}
+
+float double2float_test4(double a, float b) {
+  b -= a; // expected-warning {{implicit conversion when assigning computation result loses floating-point precision: 'double' to 'float'}}
+  return b;
 }

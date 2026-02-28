@@ -29,7 +29,7 @@
 // RUN: ls %t.2 | count 2
 //
 // Next, build with sanitization, and check that a new module isn't built.
-// RUN: %clang_cc1 -fsanitize=cfi-vcall,unsigned-integer-overflow,nullability-arg,null -fmodules \
+// RUN: %clang_cc1 -fsanitize=cfi-vcall,float-divide-by-zero,unsigned-integer-overflow,nullability-arg,null -fmodules \
 // RUN:   -fmodules-cache-path=%t.2 \
 // RUN:   -fmodule-map-file=%S/Inputs/check-for-sanitizer-feature/map \
 // RUN:   -I %S/Inputs/check-for-sanitizer-feature -verify %s
@@ -43,7 +43,7 @@
 //
 // Import the PCH without ASan enabled (we expect an error).
 // RUN: not %clang_cc1 -x c -include-pch %t.asan_pch %s -verify 2>&1 | FileCheck %s --check-prefix=PCH_MISMATCH
-// PCH_MISMATCH: AST file was compiled with the target feature'-fsanitize=address' but the current translation unit is not
+// PCH_MISMATCH: AST file was compiled with the target feature '-fsanitize=address' but the current translation unit is not
 //
 // Emit a PCH with UBSan enabled.
 // RUN: %clang_cc1 -x c -fsanitize=null %S/Inputs/check-for-sanitizer-feature/check.h -emit-pch -o %t.ubsan_pch

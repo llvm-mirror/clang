@@ -1,8 +1,9 @@
 // RUN: %clang_cc1 -emit-llvm -triple %itanium_abi_triple -debug-info-kind=limited %s -o - | FileCheck %s
 
-// Run again with -gline-tables-only and verify we don't crash.  We won't output
+// Run again with -gline-tables-only or -gline-directives-only and verify we don't crash.  We won't output
 // type info at all.
 // RUN: %clang_cc1 -emit-llvm -triple %itanium_abi_triple -debug-info-kind=line-tables-only %s -o - | FileCheck %s -check-prefix LINES-ONLY
+// RUN: %clang_cc1 -emit-llvm -triple %itanium_abi_triple -debug-info-kind=line-directives-only %s -o - | FileCheck %s -check-prefix LINES-ONLY
 
 // LINES-ONLY-NOT: !DICompositeType(tag: DW_TAG_structure_type
 
@@ -104,7 +105,12 @@ struct j {
 };
 extern template class j<int>;
 j<int> jj;
+template <typename T>
+struct j_wrap {
+};
+j_wrap<j<int>> j_wrap_j;
 // CHECK: DICompositeType(tag: DW_TAG_structure_type, name: "j<int, int>"
+// CHECK: DICompositeType(tag: DW_TAG_structure_type, name: "j_wrap<j<int, int> >"
 
 template <typename T>
 struct k {

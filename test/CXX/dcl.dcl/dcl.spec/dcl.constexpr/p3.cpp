@@ -1,5 +1,6 @@
-// RUN: %clang_cc1 -verify -fcxx-exceptions -triple=x86_64-linux-gnu -std=c++11 -Werror=c++1y-extensions %s
-// RUN: %clang_cc1 -verify -fcxx-exceptions -triple=x86_64-linux-gnu -std=c++1y -DCXX1Y %s
+// RUN: %clang_cc1 -verify -fcxx-exceptions -triple=x86_64-linux-gnu -std=c++11 -Werror=c++1y-extensions -Werror=c++2a-extensions %s
+// RUN: %clang_cc1 -verify -fcxx-exceptions -triple=x86_64-linux-gnu -std=c++1y -DCXX1Y -Werror=c++2a-extensions %s
+// RUN: %clang_cc1 -verify -fcxx-exceptions -triple=x86_64-linux-gnu -std=c++2a -DCXX1Y -DCXX2A %s
 
 namespace N {
   typedef char C;
@@ -19,7 +20,10 @@ struct Literal {
 };
 
 struct S {
-  virtual int ImplicitlyVirtual() const = 0; // expected-note {{overridden virtual function}}
+  virtual int ImplicitlyVirtual() const = 0;
+#if __cplusplus <= 201703L
+  // expected-note@-2 {{overridden virtual function}}
+#endif
 };
 struct SS : S {
   int ImplicitlyVirtual() const;
@@ -31,12 +35,21 @@ struct T : SS, NonLiteral {
   constexpr T();
   constexpr int f() const;
 
-  //  - it shall not be virtual;
-  virtual constexpr int ExplicitlyVirtual() const { return 0; } // expected-error {{virtual function cannot be constexpr}}
+  //  - it shall not be virtual; [until C++20]
+  virtual constexpr int ExplicitlyVirtual() const { return 0; }
+#if __cplusplus <= 201703L
+  // expected-error@-2 {{virtual function cannot be constexpr}}
+#endif
 
-  constexpr int ImplicitlyVirtual() const { return 0; } // expected-error {{virtual function cannot be constexpr}}
+  constexpr int ImplicitlyVirtual() const { return 0; }
+#if __cplusplus <= 201703L
+  // expected-error@-2 {{virtual function cannot be constexpr}}
+#endif
 
-  virtual constexpr int OutOfLineVirtual() const; // expected-error {{virtual function cannot be constexpr}}
+  virtual constexpr int OutOfLineVirtual() const;
+#if __cplusplus <= 201703L
+  // expected-error@-2 {{virtual function cannot be constexpr}}
+#endif
 
   //  - its return type shall be a literal type;
   constexpr NonLiteral NonLiteralReturn() const { return {}; } // expected-error {{constexpr function's return type 'NonLiteral' is not a literal type}}
@@ -44,7 +57,10 @@ struct T : SS, NonLiteral {
 #ifndef CXX1Y
   // expected-error@-2 {{constexpr function's return type 'void' is not a literal type}}
 #endif
-  constexpr ~T(); // expected-error {{destructor cannot be marked constexpr}}
+  constexpr ~T();
+#ifndef CXX2A
+  // expected-error@-2 {{destructor cannot be declared constexpr}}
+#endif
   typedef NonLiteral F() const;
   constexpr F NonLiteralReturn2; // ok until definition
 
@@ -78,7 +94,12 @@ struct T2 {
 };
 struct T3 {
   constexpr T3 &operator=(const T3&) const = default;
-  // expected-error@-1 {{an explicitly-defaulted copy assignment operator may not have 'const' or 'volatile' qualifiers}}
+#ifndef CXX2A
+  // expected-error@-2 {{an explicitly-defaulted copy assignment operator may not have 'const' or 'volatile' qualifiers}}
+#else
+  // expected-warning@-4 {{explicitly defaulted copy assignment operator is implicitly deleted}}
+  // expected-note@-5 {{function is implicitly deleted because its declared type does not match the type of an implicit copy assignment operator}}
+#endif
 };
 #endif
 struct U {
@@ -118,9 +139,13 @@ constexpr int AllowedStmtsCXX11() {
 }
 
 //  or a compound-statement that does not contain [CXX1Y]
-constexpr int DisallowedStmtsCXX1Y_1() {
+constexpr int DisallowedStmtsCXX1Y_1(bool b) {
   //  - an asm-definition
-  asm("int3"); // expected-error {{statement not allowed in constexpr function}}
+  if (b)
+    asm("int3");
+#if !defined(CXX2A)
+  // expected-error@-2 {{use of this statement in a constexpr function is a C++2a extension}}
+#endif
   return 0;
 }
 constexpr int DisallowedStmtsCXX1Y_2() {
@@ -129,9 +154,19 @@ constexpr int DisallowedStmtsCXX1Y_2() {
 x:
   return 0;
 }
+constexpr int DisallowedStmtsCXX1Y_2_1() {
+  try {
+    return 0;
+  } catch (...) {
+  merp: goto merp; // expected-error {{statement not allowed in constexpr function}}
+  }
+}
 constexpr int DisallowedStmtsCXX1Y_3() {
   //  - a try-block,
-  try {} catch (...) {} // expected-error {{statement not allowed in constexpr function}}
+  try {} catch (...) {}
+#if !defined(CXX2A)
+  // expected-error@-2 {{use of this statement in a constexpr function is a C++2a extension}}
+#endif
   return 0;
 }
 constexpr int DisallowedStmtsCXX1Y_4() {
@@ -151,7 +186,10 @@ constexpr int DisallowedStmtsCXX1Y_6() {
 }
 constexpr int DisallowedStmtsCXX1Y_7() {
   //  - a definition of a variable for which no initialization is performed
-  int n; // expected-error {{variables defined in a constexpr function must be initialized}}
+  int n;
+#ifndef CXX2A
+  // expected-error@-2 {{uninitialized variable in a constexpr function}}
+#endif
   return 0;
 }
 
@@ -283,7 +321,10 @@ namespace std_example {
     return value;
   }
   constexpr int uninit() {
-    int a; // expected-error {{must be initialized}}
+    int a;
+#ifndef CXX2A
+    // expected-error@-2 {{uninitialized}}
+#endif
     return a;
   }
   constexpr int prev(int x) {

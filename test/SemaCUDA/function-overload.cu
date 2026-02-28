@@ -119,7 +119,7 @@ __host__ void hostf() {
   HostReturnTy ret_cdh = cdh();
 
   GlobalFnPtr fp_g = g;
-  g(); // expected-error {{call to global function g not configured}}
+  g(); // expected-error {{call to global function 'g' not configured}}
   g<<<0, 0>>>();
 }
 
@@ -202,7 +202,7 @@ __host__ __device__ void hostdevicef() {
 #if defined (__CUDA_ARCH__)
   // expected-error@-2 {{reference to __global__ function 'g' in __host__ __device__ function}}
 #else
-  // expected-error@-4 {{call to global function g not configured}}
+  // expected-error@-4 {{call to global function 'g' not configured}}
 #endif
 
   g<<<0,0>>>();
@@ -401,4 +401,21 @@ __host__ void test_host_template_overload() {
 }
 __device__ void test_device_template_overload() {
   template_overload(1); // OK. Attribute-based overloading picks __device__ variant.
+}
+
+// Two classes with `operator-` defined. One of them is device only.
+struct C1;
+struct C2;
+__device__
+int operator-(const C1 &x, const C1 &y);
+int operator-(const C2 &x, const C2 &y);
+
+template <typename T>
+__host__ __device__ int constexpr_overload(const T &x, const T &y) {
+  return x - y;
+}
+
+// Verify that function overloading doesn't prune candidate wrongly.
+int test_constexpr_overload(C2 &x, C2 &y) {
+  return constexpr_overload(x, y);
 }

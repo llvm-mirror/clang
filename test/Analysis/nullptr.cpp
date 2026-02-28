@@ -128,22 +128,15 @@ void shouldNotCrash() {
   decltype(nullptr) p; // expected-note{{'p' declared without an initial value}}
   if (getSymbol()) // expected-note   {{Assuming the condition is false}}
                    // expected-note@-1{{Taking false branch}}
-                   // expected-note@-2{{Assuming the condition is false}}
-                   // expected-note@-3{{Taking false branch}}
-                   // expected-note@-4{{Assuming the condition is true}}
-                   // expected-note@-5{{Taking true branch}}
-    invokeF(p); // expected-warning{{1st function call argument is an uninitialized value}}
-                // expected-note@-1{{1st function call argument is an uninitialized value}}
-  if (getSymbol()) // expected-note   {{Assuming the condition is false}}
-                   // expected-note@-1{{Taking false branch}}
                    // expected-note@-2{{Assuming the condition is true}}
                    // expected-note@-3{{Taking true branch}}
-    invokeF(nullptr); // expected-note   {{Calling 'invokeF'}}
-                      // expected-note@-1{{Passing null pointer value via 1st parameter 'x'}}
+    invokeF(p);    // expected-note   {{Calling 'invokeF'}}
+                   // expected-note@-1{{Passing null pointer value via 1st parameter 'x'}}
   if (getSymbol()) {  // expected-note  {{Assuming the condition is true}}
                       // expected-note@-1{{Taking true branch}}
-    X *x = Type().x; // expected-note{{'x' initialized to a null pointer value}}
-    x->f(); // expected-warning{{Called C++ object pointer is null}}
+    X *xx = Type().x; // expected-note   {{Null pointer value stored to field 'x'}}
+                      // expected-note@-1{{'xx' initialized to a null pointer value}}
+    xx->f(); // expected-warning{{Called C++ object pointer is null}}
             // expected-note@-1{{Called C++ object pointer is null}}
   }
 }

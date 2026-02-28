@@ -1,3 +1,7 @@
+import os
+from clang.cindex import Config
+if 'CLANG_LIBRARY_PATH' in os.environ:
+    Config.set_library_path(os.environ['CLANG_LIBRARY_PATH'])
 
 from clang.cindex import LinkageKind
 from clang.cindex import Cursor
@@ -6,25 +10,29 @@ from clang.cindex import TranslationUnit
 from .util import get_cursor
 from .util import get_tu
 
-def test_linkage():
-    """Ensure that linkage specifers are available on cursors"""
+import unittest
 
-    tu = get_tu("""
+
+class TestLinkage(unittest.TestCase):
+    def test_linkage(self):
+        """Ensure that linkage specifers are available on cursors"""
+
+        tu = get_tu("""
 void foo() { int no_linkage; }
 static int internal;
-namespace { extern int unique_external; }
+namespace { struct unique_external_type {} }
+unique_external_type unique_external;
 extern int external;
 """, lang = 'cpp')
 
-    no_linkage = get_cursor(tu.cursor, 'no_linkage')
-    assert no_linkage.linkage == LinkageKind.NO_LINKAGE;
+        no_linkage = get_cursor(tu.cursor, 'no_linkage')
+        self.assertEqual(no_linkage.linkage, LinkageKind.NO_LINKAGE)
 
-    internal = get_cursor(tu.cursor, 'internal')
-    assert internal.linkage == LinkageKind.INTERNAL
+        internal = get_cursor(tu.cursor, 'internal')
+        self.assertEqual(internal.linkage, LinkageKind.INTERNAL)
 
-    unique_external = get_cursor(tu.cursor, 'unique_external')
-    assert unique_external.linkage == LinkageKind.UNIQUE_EXTERNAL
+        unique_external = get_cursor(tu.cursor, 'unique_external')
+        self.assertEqual(unique_external.linkage, LinkageKind.UNIQUE_EXTERNAL)
 
-    external = get_cursor(tu.cursor, 'external')
-    assert external.linkage == LinkageKind.EXTERNAL
-
+        external = get_cursor(tu.cursor, 'external')
+        self.assertEqual(external.linkage, LinkageKind.EXTERNAL)

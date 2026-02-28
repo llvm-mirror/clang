@@ -1,15 +1,16 @@
-// REQUIRES: crash-recovery, shell, non-ms-sdk, non-ps4-sdk
+// REQUIRES: crash-recovery, shell
+// UNSUPPORTED: ms-sdk, ps4
 
 // FIXME: Canonicalizing paths to remove relative traversal components
 // currenty fails a unittest on windows and is disable by default.
 // FIXME: This XFAIL is cargo-culted from crash-report.c. Do we need it?
-// XFAIL: mingw32
+// XFAIL: windows-gnu
 
 // RUN: rm -rf %t
 // RUN: mkdir -p %t/i %t/m %t
 
-// RUN: not env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
-// RUN: %clang -fsyntax-only %s -I %S/Inputs/crash-recovery -isysroot %/t/i/    \
+// RUN: env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
+// RUN: not %clang -fsyntax-only %s -I %S/Inputs/crash-recovery -isysroot %/t/i/ \
 // RUN: -fmodules -fmodules-cache-path=%t/m/ 2>&1 | FileCheck %s
 
 // RUN: FileCheck --check-prefix=CHECKSRC %s -input-file %t/crash-vfs-*.m

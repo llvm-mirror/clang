@@ -1,4 +1,7 @@
 // RUN: %clang_cc1 -fsyntax-only -verify -std=c++14 %s
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++2a %s
+
+typedef __SIZE_TYPE__ size_t;
 
 namespace basic {
 // Ensuring that __bos can be used in constexpr functions without anything
@@ -96,4 +99,17 @@ void tooSmallBuf() {
   SmallStruct small;
   copy5CharsIntoStrict(small.buf); // expected-error{{no matching function for call}}
 }
+}
+
+namespace InvalidBase {
+  // Ensure this doesn't crash.
+  struct S { const char *name; };
+  S invalid_base();
+  constexpr size_t bos_name = __builtin_object_size(invalid_base().name, 1);
+  static_assert(bos_name == -1, "");
+
+  struct T { ~T(); };
+  T invalid_base_2();
+  constexpr size_t bos_dtor = __builtin_object_size(&(T&)(T&&)invalid_base_2(), 0);
+  static_assert(bos_dtor == -1, "");
 }

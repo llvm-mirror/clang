@@ -1,9 +1,8 @@
 //===--- RefactoringActionRulesInternal.h - Clang refactoring library -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,7 +47,7 @@ template <typename RuleType, typename... RequirementTypes, size_t... Is>
 void invokeRuleAfterValidatingRequirements(
     RefactoringResultConsumer &Consumer, RefactoringRuleContext &Context,
     const std::tuple<RequirementTypes...> &Requirements,
-    llvm::index_sequence<Is...>) {
+    std::index_sequence<Is...>) {
   // Check if the requirements we're interested in can be evaluated.
   auto Values =
       std::make_tuple(std::get<Is>(Requirements).evaluate(Context)...);
@@ -88,7 +87,7 @@ template <typename... RequirementTypes, size_t... Is>
 void visitRefactoringOptions(
     RefactoringOptionVisitor &Visitor,
     const std::tuple<RequirementTypes...> &Requirements,
-    llvm::index_sequence<Is...>) {
+    std::index_sequence<Is...>) {
   visitRefactoringOptionsImpl(Visitor, std::get<Is>(Requirements)...);
 }
 
@@ -132,7 +131,7 @@ createRefactoringActionRule(const RequirementTypes &... Requirements) {
                 RefactoringRuleContext &Context) override {
       internal::invokeRuleAfterValidatingRequirements<RuleType>(
           Consumer, Context, Requirements,
-          llvm::index_sequence_for<RequirementTypes...>());
+          std::index_sequence_for<RequirementTypes...>());
     }
 
     bool hasSelectionRequirement() override {
@@ -143,13 +142,13 @@ createRefactoringActionRule(const RequirementTypes &... Requirements) {
     void visitRefactoringOptions(RefactoringOptionVisitor &Visitor) override {
       internal::visitRefactoringOptions(
           Visitor, Requirements,
-          llvm::index_sequence_for<RequirementTypes...>());
+          std::index_sequence_for<RequirementTypes...>());
     }
   private:
     std::tuple<RequirementTypes...> Requirements;
   };
 
-  return llvm::make_unique<Rule>(std::make_tuple(Requirements...));
+  return std::make_unique<Rule>(std::make_tuple(Requirements...));
 }
 
 } // end namespace tooling

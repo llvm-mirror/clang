@@ -1,5 +1,5 @@
 import os
-from subprocess import check_output, check_call
+from subprocess import check_call
 import sys
 
 
@@ -37,18 +37,6 @@ def which(command, paths=None):
     return None
 
 
-class flushfile(object):
-    """
-    Wrapper to flush the output after every print statement.
-    """
-    def __init__(self, f):
-        self.f = f
-
-    def write(self, x):
-        self.f.write(x)
-        self.f.flush()
-
-
 def hasNoExtension(FileName):
     (Root, Ext) = os.path.splitext(FileName)
     return (Ext == "")
@@ -59,26 +47,15 @@ def isValidSingleInputFile(FileName):
     return Ext in (".i", ".ii", ".c", ".cpp", ".m", "")
 
 
-def getSDKPath(SDKName):
-    """
-    Get the path to the SDK for the given SDK name. Returns None if
-    the path cannot be determined.
-    """
-    if which("xcrun") is None:
-        return None
-
-    Cmd = "xcrun --sdk " + SDKName + " --show-sdk-path"
-    return check_output(Cmd, shell=True).rstrip()
-
-
-def runScript(ScriptPath, PBuildLogFile, Cwd):
+def runScript(ScriptPath, PBuildLogFile, Cwd, Stdout=sys.stdout,
+              Stderr=sys.stderr):
     """
     Run the provided script if it exists.
     """
     if os.path.exists(ScriptPath):
         try:
             if Verbose == 1:
-                print "  Executing: %s" % (ScriptPath,)
+                Stdout.write("  Executing: %s\n" % (ScriptPath,))
             check_call("chmod +x '%s'" % ScriptPath, cwd=Cwd,
                        stderr=PBuildLogFile,
                        stdout=PBuildLogFile,
@@ -88,8 +65,8 @@ def runScript(ScriptPath, PBuildLogFile, Cwd):
                        stdout=PBuildLogFile,
                        shell=True)
         except:
-            print "Error: Running %s failed. See %s for details." % (
-                  ScriptPath, PBuildLogFile.name)
+            Stderr.write("Error: Running %s failed. See %s for details.\n" % (
+                         ScriptPath, PBuildLogFile.name))
             sys.exit(-1)
 
 

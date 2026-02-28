@@ -1,9 +1,8 @@
 //===--- CommentSema.cpp - Doxygen comment semantic analysis --------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -215,7 +214,7 @@ void Sema::checkContainerDecl(const BlockCommandComment *Comment) {
     << Comment->getSourceRange();
 }
 
-/// \brief Turn a string into the corresponding PassDirection or -1 if it's not
+/// Turn a string into the corresponding PassDirection or -1 if it's not
 /// valid.
 static int getParamPassDirection(StringRef Arg) {
   return llvm::StringSwitch<int>(Arg)
@@ -589,6 +588,8 @@ void Sema::checkReturnsCommand(const BlockCommandComment *Command) {
   if (isObjCPropertyDecl())
     return;
   if (isFunctionDecl() || isFunctionOrBlockPointerVarLikeDecl()) {
+    assert(!ThisDeclInfo->ReturnType.isNull() &&
+           "should have a valid return type");
     if (ThisDeclInfo->ReturnType->isVoidType()) {
       unsigned DiagKind;
       switch (ThisDeclInfo->CommentDecl->getKind()) {
@@ -703,10 +704,9 @@ void Sema::checkDeprecatedCommand(const BlockCommandComment *Command) {
 
     SmallString<64> TextToInsert(" ");
     TextToInsert += AttributeSpelling;
-    Diag(FD->getLocEnd(),
-         diag::note_add_deprecation_attr)
-      << FixItHint::CreateInsertion(FD->getLocEnd().getLocWithOffset(1),
-                                    TextToInsert);
+    Diag(FD->getEndLoc(), diag::note_add_deprecation_attr)
+        << FixItHint::CreateInsertion(FD->getEndLoc().getLocWithOffset(1),
+                                      TextToInsert);
   }
 }
 
@@ -875,6 +875,12 @@ bool Sema::isFunctionOrBlockPointerVarLikeDecl() {
   // can be ignored.
   if (QT->getAs<TypedefType>())
     return false;
+  if (const auto *P = QT->getAs<PointerType>())
+    if (P->getPointeeType()->getAs<TypedefType>())
+      return false;
+  if (const auto *P = QT->getAs<BlockPointerType>())
+    if (P->getPointeeType()->getAs<TypedefType>())
+      return false;
   return QT->isFunctionPointerType() || QT->isBlockPointerType();
 }
 

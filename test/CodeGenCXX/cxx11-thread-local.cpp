@@ -1,7 +1,14 @@
 // RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
+// RUN: %clang_cc1 -std=c++11 -emit-llvm %s -O2 -disable-llvm-passes -o - -triple x86_64-linux-gnu | FileCheck --check-prefix=CHECK --check-prefix=LINUX --check-prefix=CHECK-OPT %s
 // RUN: %clang_cc1 -std=c++11 -femulated-tls -emit-llvm %s -o - \
 // RUN:     -triple x86_64-linux-gnu 2>&1 | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
 // RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -triple x86_64-apple-darwin12 | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
+
+// RUN: %clang_cc1 -std=c++11 -fno-use-cxa-atexit -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
+// RUN: %clang_cc1 -std=c++11 -fno-use-cxa-atexit -emit-llvm %s -O2 -disable-llvm-passes -o - -triple x86_64-linux-gnu | FileCheck --check-prefix=CHECK --check-prefix=LINUX --check-prefix=CHECK-OPT %s
+// RUN: %clang_cc1 -std=c++11 -fno-use-cxa-atexit -femulated-tls -emit-llvm %s -o - \
+// RUN:     -triple x86_64-linux-gnu 2>&1 | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
+// RUN: %clang_cc1 -std=c++11 -fno-use-cxa-atexit -emit-llvm %s -o - -triple x86_64-apple-darwin12 | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
 
 int f();
 int g();
@@ -84,15 +91,16 @@ void *e2 = V<char>::m + W<char>::m + &X<char>::m;
 
 // LINUX-DAG: @_ZTH1a = alias void (), void ()* @__tls_init
 // DARWIN-DAG: @_ZTH1a = internal alias void (), void ()* @__tls_init
-// CHECK-DAG: @_ZTHL1d = internal alias void (), void ()* @__tls_init
 // LINUX-DAG: @_ZTHN1U1mE = alias void (), void ()* @__tls_init
 // DARWIN-DAG: @_ZTHN1U1mE = internal alias void (), void ()* @__tls_init
 // CHECK-DAG: @_ZTHN1VIiE1mE = linkonce_odr alias void (), void ()* @[[V_M_INIT:[^, ]*]]
-// CHECK-NOT: @_ZTHN1WIiE1mE =
 // CHECK-DAG: @_ZTHN1XIiE1mE = linkonce_odr alias void (), void ()* @[[X_M_INIT:[^, ]*]]
 // CHECK-DAG: @_ZTHN1VIfE1mE = weak_odr alias void (), void ()* @[[VF_M_INIT:[^, ]*]]
-// CHECK-NOT: @_ZTHN1WIfE1mE =
 // CHECK-DAG: @_ZTHN1XIfE1mE = weak_odr alias void (), void ()* @[[XF_M_INIT:[^, ]*]]
+// FIXME: We really want a CHECK-DAG-NOT for these.
+// CHECK-NOT: @_ZTHN1WIiE1mE =
+// CHECK-NOT: @_ZTHN1WIfE1mE =
+// CHECK-NOT: @_ZTHL1d =
 
 
 // Individual variable initialization functions:
@@ -123,7 +131,7 @@ int f() {
 // CHECK-NEXT: load i32, i32* %{{.*}}, align 4
 // CHECK-NEXT: store i32 %{{.*}}, i32* @c, align 4
 
-// LINUX-LABEL: define weak_odr hidden i32* @_ZTW1b()
+// LINUX-LABEL: define linkonce_odr hidden i32* @_ZTW1b()
 // LINUX: br i1 icmp ne (void ()* @_ZTH1b, void ()* null),
 // not null:
 // LINUX: call void @_ZTH1b()
@@ -166,7 +174,8 @@ int f() {
 // DARWIN: call cxx_fast_tlscc void @_ZTHN1XIiE1mE()
 // CHECK: ret {{.*}}* @_ZN1XIiE1mE
 
-// CHECK: define internal {{.*}} @[[VF_M_INIT]]()
+// LINUX: define internal void @[[VF_M_INIT]]()
+// DARWIN: define internal cxx_fast_tlscc void @[[VF_M_INIT]]()
 // LINUX-SAME: comdat($_ZN1VIfE1mE)
 // DARWIN-NOT: comdat
 // CHECK: load i8, i8* bitcast (i64* @_ZGVN1VIfE1mE to i8*)
@@ -178,7 +187,8 @@ int f() {
 // CHECK: store i64 1, i64* @_ZGVN1VIfE1mE
 // CHECK: br label
 
-// CHECK: define internal {{.*}} @[[XF_M_INIT]]()
+// LINUX: define internal void @[[XF_M_INIT]]()
+// DARWIN: define internal cxx_fast_tlscc void @[[XF_M_INIT]]()
 // LINUX-SAME: comdat($_ZN1XIfE1mE)
 // DARWIN-NOT: comdat
 // CHECK: load i8, i8* bitcast (i64* @_ZGVN1XIfE1mE to i8*)
@@ -194,21 +204,21 @@ int f() {
 // DARWIN: declare i32 @_tlv_atexit(void (i8*)*, i8*, i8*)
 
 // DARWIN: declare cxx_fast_tlscc i32* @_ZTWN1VIcE1mE()
-// LINUX: define weak_odr hidden i32* @_ZTWN1VIcE1mE()
+// LINUX: define linkonce_odr hidden i32* @_ZTWN1VIcE1mE()
 // LINUX-NOT: comdat
 // LINUX: br i1 icmp ne (void ()* @_ZTHN1VIcE1mE,
 // LINUX: call void @_ZTHN1VIcE1mE()
 // LINUX: ret i32* @_ZN1VIcE1mE
 
 // DARWIN: declare cxx_fast_tlscc i32* @_ZTWN1WIcE1mE()
-// LINUX: define weak_odr hidden i32* @_ZTWN1WIcE1mE()
+// LINUX: define linkonce_odr hidden i32* @_ZTWN1WIcE1mE()
 // LINUX-NOT: comdat
 // LINUX: br i1 icmp ne (void ()* @_ZTHN1WIcE1mE,
 // LINUX: call void @_ZTHN1WIcE1mE()
 // LINUX: ret i32* @_ZN1WIcE1mE
 
 // DARWIN: declare cxx_fast_tlscc {{.*}}* @_ZTWN1XIcE1mE()
-// LINUX: define weak_odr hidden {{.*}}* @_ZTWN1XIcE1mE()
+// LINUX: define linkonce_odr hidden {{.*}}* @_ZTWN1XIcE1mE()
 // LINUX-NOT: comdat
 // LINUX: br i1 icmp ne (void ()* @_ZTHN1XIcE1mE,
 // LINUX: call void @_ZTHN1XIcE1mE()
@@ -260,7 +270,7 @@ int PR19254::f() {
 }
 
 namespace {
-thread_local int anon_i{1};
+thread_local int anon_i{f()};
 }
 void set_anon_i() {
   anon_i = 2;
@@ -268,7 +278,8 @@ void set_anon_i() {
 // LINUX-LABEL: define internal i32* @_ZTWN12_GLOBAL__N_16anon_iE()
 // DARWIN-LABEL: define internal cxx_fast_tlscc i32* @_ZTWN12_GLOBAL__N_16anon_iE()
 
-// CHECK: define internal {{.*}} @[[V_M_INIT]]()
+// LINUX: define internal void @[[V_M_INIT]]()
+// DARWIN: define internal cxx_fast_tlscc void @[[V_M_INIT]]()
 // LINUX-SAME: comdat($_ZN1VIiE1mE)
 // DARWIN-NOT: comdat
 // CHECK: load i8, i8* bitcast (i64* @_ZGVN1VIiE1mE to i8*)
@@ -280,7 +291,8 @@ void set_anon_i() {
 // CHECK: store i64 1, i64* @_ZGVN1VIiE1mE
 // CHECK: br label
 
-// CHECK: define internal {{.*}} @[[X_M_INIT]]()
+// LINUX: define internal void @[[X_M_INIT]]()
+// DARWIN: define internal cxx_fast_tlscc void @[[X_M_INIT]]()
 // LINUX-SAME: comdat($_ZN1XIiE1mE)
 // DARWIN-NOT: comdat
 // CHECK: load i8, i8* bitcast (i64* @_ZGVN1XIiE1mE to i8*)
@@ -303,6 +315,7 @@ void set_anon_i() {
 // CHECK: br i1 %[[NEED_TLS_INIT]],
 // init:
 // CHECK: store i8 1, i8* @__tls_guard
+// CHECK-OPT: call {}* @llvm.invariant.start.p0i8(i64 1, i8* @__tls_guard)
 // CHECK-NOT: call void @[[V_M_INIT]]()
 // CHECK: call void @[[A_INIT]]()
 // CHECK-NOT: call void @[[V_M_INIT]]()
@@ -312,7 +325,7 @@ void set_anon_i() {
 // CHECK-NOT: call void @[[V_M_INIT]]()
 
 
-// LIUNX: define weak_odr hidden i32* @_ZTW1a() {
+// LINUX: define weak_odr hidden i32* @_ZTW1a()
 // DARWIN: define cxx_fast_tlscc i32* @_ZTW1a()
 // LINUX:   call void @_ZTH1a()
 // DARWIN: call cxx_fast_tlscc void @_ZTH1a()
@@ -320,19 +333,17 @@ void set_anon_i() {
 // CHECK: }
 
 
-// LINUX: declare extern_weak void @_ZTH1b() [[ATTR:#[0-9]+]]
-
-
-// LINUX-LABEL: define internal i32* @_ZTWL1d()
-// DARWIN-LABEL: define internal cxx_fast_tlscc i32* @_ZTWL1d()
-// LINUX: call void @_ZTHL1d()
-// DARWIN: call cxx_fast_tlscc void @_ZTHL1d()
-// CHECK: ret i32* @_ZL1d
+// Should not emit a thread wrapper for internal-linkage unused variable 'd'.
+// We separately check that 'd' does in fact get initialized with the other
+// thread-local variables in this TU.
+// CHECK-NOT: define {{.*}} @_ZTWL1d()
 
 // LINUX-LABEL: define weak_odr hidden i32* @_ZTWN1U1mE()
 // DARWIN-LABEL: define cxx_fast_tlscc i32* @_ZTWN1U1mE()
 // LINUX: call void @_ZTHN1U1mE()
 // DARWIN: call cxx_fast_tlscc void @_ZTHN1U1mE()
 // CHECK: ret i32* @_ZN1U1mE
+
+// LINUX: declare extern_weak void @_ZTH1b() [[ATTR:#[0-9]+]]
 
 // LINUX: attributes [[ATTR]] = { {{.+}} }

@@ -1,7 +1,46 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=core,unix.cstring,alpha.unix.cstring,debug.ExprInspection -analyzer-store=region -Wno-null-dereference -verify %s
-// RUN: %clang_analyze_cc1 -DUSE_BUILTINS -analyzer-checker=core,unix.cstring,alpha.unix.cstring,debug.ExprInspection -analyzer-store=region -Wno-null-dereference -verify %s
-// RUN: %clang_analyze_cc1 -DVARIANT -analyzer-checker=core,unix.cstring,alpha.unix.cstring,debug.ExprInspection -analyzer-store=region -Wno-null-dereference -verify %s
-// RUN: %clang_analyze_cc1 -DUSE_BUILTINS -DVARIANT -analyzer-checker=alpha.security.taint,core,unix.cstring,alpha.unix.cstring,debug.ExprInspection -analyzer-store=region -Wno-null-dereference -verify %s
+// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
+// RUN:   -analyzer-checker=core \
+// RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.unix.cstring \
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-config eagerly-assume=false
+//
+// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference -DUSE_BUILTINS \
+// RUN:   -analyzer-checker=core \
+// RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.unix.cstring \
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-config eagerly-assume=false
+//
+// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference -DVARIANT \
+// RUN:   -analyzer-checker=core \
+// RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.unix.cstring \
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-config eagerly-assume=false
+//
+// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
+// RUN:   -DUSE_BUILTINS -DVARIANT \
+// RUN:   -analyzer-checker=core \
+// RUN:   -analyzer-checker=alpha.security.taint \
+// RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.unix.cstring \
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-config eagerly-assume=false
+//
+// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
+// RUN:   -DSUPPRESS_OUT_OF_BOUND \
+// RUN:   -analyzer-checker=core \
+// RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.unix.cstring.BufferOverlap \
+// RUN:   -analyzer-checker=alpha.unix.cstring.NotNullTerminated \
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-config eagerly-assume=false
 
 //===----------------------------------------------------------------------===
 // Declarations
@@ -30,6 +69,8 @@ typedef typeof(sizeof(int)) size_t;
 void clang_analyzer_eval(int);
 
 int scanf(const char *restrict format, ...);
+void *malloc(size_t);
+void free(void *);
 
 //===----------------------------------------------------------------------===
 // strlen()
@@ -109,7 +150,7 @@ void strlen_global() {
   if (a == 0) {
     clang_analyzer_eval(b == 0); // expected-warning{{TRUE}}
     // Make sure clang_analyzer_eval does not invalidate globals.
-    clang_analyzer_eval(strlen(global_str) == 0); // expected-warning{{TRUE}}    
+    clang_analyzer_eval(strlen(global_str) == 0); // expected-warning{{TRUE}}
   }
 
   // Call a function with unknown effects, which should invalidate globals.
@@ -308,11 +349,13 @@ void strcpy_effects(char *x, char *y) {
   clang_analyzer_eval(globalInt == 42); // expected-warning{{TRUE}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
 void strcpy_overflow(char *y) {
   char x[4];
   if (strlen(y) == 4)
     strcpy(x, y); // expected-warning{{String copy function overflows destination buffer}}
 }
+#endif
 
 void strcpy_no_overflow(char *y) {
   char x[4];
@@ -347,11 +390,13 @@ void stpcpy_effect(char *x, char *y) {
   clang_analyzer_eval(a == x[0]); // expected-warning{{UNKNOWN}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
 void stpcpy_overflow(char *y) {
   char x[4];
   if (strlen(y) == 4)
     stpcpy(x, y); // expected-warning{{String copy function overflows destination buffer}}
 }
+#endif
 
 void stpcpy_no_overflow(char *y) {
   char x[4];
@@ -402,6 +447,7 @@ void strcat_effects(char *y) {
   clang_analyzer_eval((int)strlen(x) == (orig_len + strlen(y))); // expected-warning{{TRUE}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
 void strcat_overflow_0(char *y) {
   char x[4] = "12";
   if (strlen(y) == 4)
@@ -419,6 +465,7 @@ void strcat_overflow_2(char *y) {
   if (strlen(y) == 2)
     strcat(x, y); // expected-warning{{String copy function overflows destination buffer}}
 }
+#endif
 
 void strcat_no_overflow(char *y) {
   char x[5] = "12";
@@ -495,16 +542,31 @@ void strncpy_effects(char *x, char *y) {
   clang_analyzer_eval(a == x[0]); // expected-warning{{UNKNOWN}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
+// Enabling the malloc checker enables some of the buffer-checking portions
+// of the C-string checker.
+void cstringchecker_bounds_nocrash() {
+  char *p = malloc(2);
+  strncpy(p, "AAA", sizeof("AAA")); // expected-warning {{Size argument is greater than the length of the destination buffer}}
+  free(p);
+}
+
 void strncpy_overflow(char *y) {
   char x[4];
   if (strlen(y) == 4)
     strncpy(x, y, 5); // expected-warning{{Size argument is greater than the length of the destination buffer}}
+#ifndef VARIANT
+  // expected-warning@-2{{size argument is too large; destination buffer has size 4, but size argument is 5}}
+#endif
 }
 
 void strncpy_no_overflow(char *y) {
   char x[4];
   if (strlen(y) == 3)
     strncpy(x, y, 5); // expected-warning{{Size argument is greater than the length of the destination buffer}}
+#ifndef VARIANT
+  // expected-warning@-2{{size argument is too large; destination buffer has size 4, but size argument is 5}}
+#endif
 }
 
 void strncpy_no_overflow2(char *y, int n) {
@@ -515,6 +577,7 @@ void strncpy_no_overflow2(char *y, int n) {
   if (strlen(y) == 3)
     strncpy(x, y, n); // expected-warning{{Size argument is greater than the length of the destination buffer}}
 }
+#endif
 
 void strncpy_truncate(char *y) {
   char x[4];
@@ -591,6 +654,7 @@ void strncat_effects(char *y) {
   clang_analyzer_eval(strlen(x) == (orig_len + strlen(y))); // expected-warning{{TRUE}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
 void strncat_overflow_0(char *y) {
   char x[4] = "12";
   if (strlen(y) == 4)
@@ -614,6 +678,8 @@ void strncat_overflow_3(char *y) {
   if (strlen(y) == 4)
     strncat(x, y, 2); // expected-warning{{Size argument is greater than the free space in the destination buffer}}
 }
+#endif
+
 void strncat_no_overflow_1(char *y) {
   char x[5] = "12";
   if (strlen(y) == 2)
@@ -631,6 +697,7 @@ void strncat_symbolic_dst_length(char *dst) {
   clang_analyzer_eval(strlen(dst) >= 4); // expected-warning{{TRUE}}
 }
 
+#ifndef SUPPRESS_OUT_OF_BOUND
 void strncat_symbolic_src_length(char *src) {
   char dst[8] = "1234";
   strncat(dst, src, 3);
@@ -648,6 +715,7 @@ void strncat_unknown_src_length(char *src, int offset) {
   char dst2[8] = "1234";
   strncat(dst2, &src[offset], 4); // expected-warning{{Size argument is greater than the free space in the destination buffer}}
 }
+#endif
 
 // There is no strncat_unknown_dst_length because if we can't get a symbolic
 // length for the "before" strlen, we won't be able to set one for "after".
@@ -1160,18 +1228,273 @@ void strsep_changes_input_string() {
 }
 
 //===----------------------------------------------------------------------===
+// memset() / explicit_bzero() / bzero()
+//===----------------------------------------------------------------------===
+
+void *memset(void *dest, int ch, size_t count);
+
+void bzero(void *dst, size_t count);
+void explicit_bzero(void *dest, size_t count);
+
+void *malloc(size_t size);
+void free(void *);
+
+void memset1_char_array_null() {
+  char str[] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  memset(str, '\0', 2);
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{TRUE}}
+}
+
+void memset2_char_array_null() {
+  char str[] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  memset(str, '\0', strlen(str) + 1);
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(str[2] == 0);      // expected-warning{{TRUE}}
+}
+
+void memset3_char_malloc_null() {
+  char *str = (char *)malloc(10 * sizeof(char));
+  memset(str + 1, '\0', 8);
+  clang_analyzer_eval(str[1] == 0); // expected-warning{{UNKNOWN}}
+  free(str);
+}
+
+void memset4_char_malloc_null() {
+  char *str = (char *)malloc(10 * sizeof(char));
+  //void *str = malloc(10 * sizeof(char));
+  memset(str, '\0', 10);
+  clang_analyzer_eval(str[1] == 0);      // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{TRUE}}
+  free(str);
+}
+
+#ifdef SUPPRESS_OUT_OF_BOUND
+void memset5_char_malloc_overflow_null() {
+  char *str = (char *)malloc(10 * sizeof(char));
+  memset(str, '\0', 12);
+  clang_analyzer_eval(str[1] == 0); // expected-warning{{UNKNOWN}}
+  free(str);
+}
+#endif
+
+void memset6_char_array_nonnull() {
+  char str[] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  memset(str, '0', 2);
+  clang_analyzer_eval(str[0] == 'a');    // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{UNKNOWN}}
+}
+
+#ifdef SUPPRESS_OUT_OF_BOUND
+void memset8_char_array_nonnull() {
+  char str[5] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  memset(str, '0', 10); // expected-warning{{'memset' will always overflow; destination buffer has size 5, but size argument is 10}}
+  clang_analyzer_eval(str[0] != '0');     // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen(str) >= 10); // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) < 10);  // expected-warning{{FALSE}}
+}
+#endif
+
+struct POD_memset {
+  int num;
+  char c;
+};
+
+void memset10_struct() {
+  struct POD_memset pod;
+  char *str = (char *)&pod;
+  pod.num = 1;
+  pod.c = 1;
+  clang_analyzer_eval(pod.num == 0); // expected-warning{{FALSE}}
+  memset(str, 0, sizeof(struct POD_memset));
+  clang_analyzer_eval(pod.num == 0); // expected-warning{{TRUE}}
+}
+
+#ifdef SUPPRESS_OUT_OF_BOUND
+void memset11_struct_field() {
+  struct POD_memset pod;
+  pod.num = 1;
+  pod.c = '1';
+  memset(&pod.num, 0, sizeof(struct POD_memset));
+
+  clang_analyzer_eval(pod.num == 0);  // expected-warning{{TRUE}}
+  clang_analyzer_eval(pod.c == '\0'); // expected-warning{{TRUE}}
+}
+
+void memset12_struct_field() {
+  struct POD_memset pod;
+  pod.num = 1;
+  pod.c = '1';
+  memset(&pod.c, 0, sizeof(struct POD_memset)); // expected-warning {{'memset' will always overflow; destination buffer has size 4, but size argument is 8}}
+  clang_analyzer_eval(pod.num == 0); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(pod.c == 0);   // expected-warning{{UNKNOWN}}
+}
+
+union U_memset {
+  int i;
+  double d;
+  char c;
+};
+
+void memset13_union_field() {
+  union U_memset u;
+  u.i = 5;
+  memset(&u.i, '\0', sizeof(union U_memset));
+  // Note: This should be TRUE, analyzer can't handle union perfectly now.
+  clang_analyzer_eval(u.d == 0); // expected-warning{{UNKNOWN}}
+}
+#endif
+
+void memset14_region_cast() {
+  char *str = (char *)malloc(10 * sizeof(int));
+  int *array = (int *)str;
+  memset(array, 0, 10 * sizeof(int));
+  clang_analyzer_eval(str[10] == '\0');            // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen((char *)array) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) == 0);           // expected-warning{{TRUE}}
+  free(str);
+}
+
+void memset15_region_cast() {
+  char *str = (char *)malloc(10 * sizeof(int));
+  int *array = (int *)str;
+  memset(array, 0, 5 * sizeof(int));
+  clang_analyzer_eval(str[10] == '\0');            // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen((char *)array) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) == 0);           // expected-warning{{TRUE}}
+  free(str);
+}
+
+int memset20_scalar() {
+  int *x = malloc(sizeof(int));
+  *x = 10;
+  memset(x, 0, sizeof(int));
+  int num = 1 / *x; // expected-warning{{Division by zero}}
+  free(x);
+  return num;
+}
+
+int memset21_scalar() {
+  int *x = malloc(sizeof(int));
+  memset(x, 0, 1);
+  int num = 1 / *x;
+  free(x);
+  return num;
+}
+
+void memset22_array() {
+  int array[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+  clang_analyzer_eval(array[1] == 2); // expected-warning{{TRUE}}
+  memset(array, 0, sizeof(array));
+  clang_analyzer_eval(array[1] == 0); // expected-warning{{TRUE}}
+}
+
+void memset23_array_pod_object() {
+  struct POD_memset array[10];
+  array[1].num = 10;
+  array[1].c = 'c';
+  clang_analyzer_eval(array[1].num == 10); // expected-warning{{TRUE}}
+  memset(&array[1], 0, sizeof(struct POD_memset));
+  clang_analyzer_eval(array[1].num == 0); // expected-warning{{UNKNOWN}}
+}
+
+void memset24_array_pod_object() {
+  struct POD_memset array[10];
+  array[1].num = 10;
+  array[1].c = 'c';
+  clang_analyzer_eval(array[1].num == 10); // expected-warning{{TRUE}}
+  memset(array, 0, sizeof(array));
+  clang_analyzer_eval(array[1].num == 0); // expected-warning{{TRUE}}
+}
+
+void memset25_symbol(char c) {
+  char array[10] = {1};
+  if (c != 0)
+    return;
+
+  memset(array, c, 10);
+
+  clang_analyzer_eval(strlen(array) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(array[4] == 0); // expected-warning{{TRUE}}
+}
+
+void memset26_upper_UCHAR_MAX() {
+  char array[10] = {1};
+
+  memset(array, 1024, 10);
+
+  clang_analyzer_eval(strlen(array) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(array[4] == 0); // expected-warning{{TRUE}}
+}
+
+void bzero1_null() {
+  char *a = NULL;
+
+  bzero(a, 10); // expected-warning{{Null pointer argument in call to memory clearance function}}
+}
+
+void bzero2_char_array_null() {
+  char str[] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  bzero(str, 2);
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{TRUE}}
+}
+
+void bzero3_char_ptr_null() {
+  char *str = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  bzero(str + 2, 2);
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{FALSE}}
+}
+
+void explicit_bzero1_null() {
+  char *a = NULL;
+
+  explicit_bzero(a, 10); // expected-warning{{Null pointer argument in call to memory clearance function}}
+}
+
+void explicit_bzero2_clear_mypassword() {
+  char passwd[7] = "passwd";
+
+  explicit_bzero(passwd, sizeof(passwd)); // no-warning
+
+  clang_analyzer_eval(strlen(passwd) == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(passwd[0] == '\0'); // expected-warning{{TRUE}}
+}
+
+void explicit_bzero3_out_ofbound() {
+  char *privkey = (char *)malloc(7);
+  const char newprivkey[10] = "mysafekey";
+
+  strcpy(privkey, "random");
+  explicit_bzero(privkey, sizeof(newprivkey));
+#ifndef SUPPRESS_OUT_OF_BOUND
+  // expected-warning@-2 {{Memory clearance function accesses out-of-bound array element}}
+#endif
+  clang_analyzer_eval(privkey[0] == '\0');
+#ifdef SUPPRESS_OUT_OF_BOUND
+  // expected-warning@-2 {{UNKNOWN}}
+#endif
+  free(privkey);
+}
+
+//===----------------------------------------------------------------------===
 // FIXMEs
 //===----------------------------------------------------------------------===
 
-// The analyzer_eval call below should evaluate to true. We are being too 
-// aggressive in marking the (length of) src symbol dead. The length of dst 
-// depends on src. This could be explicitely specified in the checker or the 
+// The analyzer_eval call below should evaluate to true. We are being too
+// aggressive in marking the (length of) src symbol dead. The length of dst
+// depends on src. This could be explicitly specified in the checker or the
 // logic for handling MetadataSymbol in SymbolManager needs to change.
 void strcat_symbolic_src_length(char *src) {
 	char dst[8] = "1234";
 	strcat(dst, src);
   clang_analyzer_eval(strlen(dst) >= 4); // expected-warning{{UNKNOWN}}
 }
+
 
 // The analyzer_eval call below should evaluate to true. Most likely the same
 // issue as the test above.
@@ -1184,4 +1507,100 @@ void strncpy_exactly_matching_buffer2(char *y) {
 
 	// This time, we know that y fits in x anyway.
   clang_analyzer_eval(strlen(x) <= 3); // expected-warning{{UNKNOWN}}
+}
+
+void memset7_char_array_nonnull() {
+  char str[5] = "abcd";
+  clang_analyzer_eval(strlen(str) == 4); // expected-warning{{TRUE}}
+  memset(str, '0', 5);
+  // FIXME: This should be TRUE.
+  clang_analyzer_eval(str[0] == '0');    // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen(str) >= 5); // expected-warning{{TRUE}}
+}
+
+void memset16_region_cast() {
+  char *str = (char *)malloc(10 * sizeof(int));
+  int *array = (int *)str;
+  memset(array, '0', 10 * sizeof(int));
+  // FIXME: This should be TRUE.
+  clang_analyzer_eval(str[10] == '0');                            // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen((char *)array) >= 10 * sizeof(int)); // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) >= 10 * sizeof(int));           // expected-warning{{TRUE}}
+  free(str);
+}
+
+#ifdef SUPPRESS_OUT_OF_BOUND
+void memset17_region_cast() {
+  char *str = (char *)malloc(10 * sizeof(int));
+  int *array = (int *)str;
+  memset(array, '0', 12 * sizeof(int));
+  clang_analyzer_eval(str[10] == '0');                            // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(strlen((char *)array) >= 12 * sizeof(int)); // expected-warning{{TRUE}}
+  clang_analyzer_eval(strlen(str) >= 12 * sizeof(int));           // expected-warning{{TRUE}}
+  free(str);
+}
+
+void memset18_memset_multiple_times() {
+  char *str = (char *)malloc(10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{UNKNOWN}}
+
+  memset(str + 2, '\0', 10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(str[1] == '\0');   // expected-warning{{UNKNOWN}}
+
+  memset(str, '0', 10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) >= 10); // expected-warning{{TRUE}}
+  // FIXME: This should be TRUE.
+  clang_analyzer_eval(str[1] == '0');     // expected-warning{{UNKNOWN}}
+
+  free(str);
+}
+
+void memset19_memset_multiple_times() {
+  char *str = (char *)malloc(10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) == 0); // expected-warning{{UNKNOWN}}
+
+  memset(str, '0', 10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) >= 10); // expected-warning{{TRUE}}
+  // FIXME: This should be TRUE.
+  clang_analyzer_eval(str[1] == '0');     // expected-warning{{UNKNOWN}}
+
+  memset(str + 2, '\0', 10 * sizeof(char));
+  clang_analyzer_eval(strlen(str) >= 10); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(str[1] == '0');     // expected-warning{{UNKNOWN}}
+
+  free(str);
+}
+#endif
+
+// The analyzer does not support binding a symbol with default binding.
+void memset27_symbol(char c) {
+  char array[10] = {0};
+  if (c < 10)
+    return;
+
+  memset(array, c, 10);
+
+  clang_analyzer_eval(strlen(array) >= 10); // expected-warning{{TRUE}}
+  // FIXME: This should be TRUE.
+  clang_analyzer_eval(array[4] >= 10); // expected-warning{{UNKNOWN}}
+}
+
+void memset28() {
+  short x;
+  memset(&x, 1, sizeof(short));
+  // This should be true.
+  clang_analyzer_eval(x == 0x101); // expected-warning{{UNKNOWN}}
+}
+
+void memset29_plain_int_zero() {
+  short x;
+  memset(&x, 0, sizeof(short));
+  clang_analyzer_eval(x == 0); // expected-warning{{TRUE}}
+}
+
+void test_memset_chk() {
+  int x;
+  __builtin___memset_chk(&x, 0, sizeof(x), __builtin_object_size(&x, 0));
+  clang_analyzer_eval(x == 0); // expected-warning{{TRUE}}
 }

@@ -5,7 +5,7 @@
 #if defined(_WIN32)
 void foo() {}
 void bar() __attribute__((ifunc("foo")));
-//expected-warning@-1 {{'ifunc' attribute ignored}}
+//expected-warning@-1 {{unknown attribute 'ifunc' ignored}}
 
 #else
 #if defined(CHECK_ALIASES)
@@ -27,16 +27,12 @@ void f4_ifunc() {}
 void f4() __attribute__((ifunc("f4_ifunc")));
 //expected-error@-1 {{ifunc resolver function must return a pointer}}
 
-void* f5_ifunc(int i) { return 0; }
-void f5() __attribute__((ifunc("f5_ifunc")));
-//expected-error@-1 {{ifunc resolver function must have no parameters}}
-
 #else
 void f1a() __asm("f1");
 void f1a() {}
 //expected-note@-1 {{previous definition is here}}
 void f1() __attribute__((ifunc("f1_ifunc")));
-//expected-error@-1 {{definition with same mangled name as another definition}}
+//expected-error@-1 {{definition with same mangled name 'f1' as another definition}}
 void* f1_ifunc() { return 0; }
 
 void* f6_ifunc(int i);

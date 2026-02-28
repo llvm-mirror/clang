@@ -1,14 +1,13 @@
 //===--- TestSupport.cpp - Clang-based refactoring tool -------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements routines that provide refactoring testing
+/// This file implements routines that provide refactoring testing
 /// utilities.
 ///
 //===----------------------------------------------------------------------===//
@@ -42,8 +41,8 @@ void TestSelectionRangesInFile::dump(raw_ostream &OS) const {
 bool TestSelectionRangesInFile::foreachRange(
     const SourceManager &SM,
     llvm::function_ref<void(SourceRange)> Callback) const {
-  const FileEntry *FE = SM.getFileManager().getFile(Filename);
-  FileID FID = FE ? SM.translateFile(FE) : FileID();
+  auto FE = SM.getFileManager().getFile(Filename);
+  FileID FID = FE ? SM.translateFile(*FE) : FileID();
   if (!FE || FID.isInvalid()) {
     llvm::errs() << "error: -selection=test:" << Filename
                  << " : given file is not in the target TU";
@@ -257,7 +256,7 @@ bool TestRefactoringResultConsumer::handleAllResults() {
 
 std::unique_ptr<ClangRefactorToolConsumerInterface>
 TestSelectionRangesInFile::createConsumer() const {
-  return llvm::make_unique<TestRefactoringResultConsumer>(*this);
+  return std::make_unique<TestRefactoringResultConsumer>(*this);
 }
 
 /// Adds the \p ColumnOffset to file offset \p Offset, without going past a

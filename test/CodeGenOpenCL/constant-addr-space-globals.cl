@@ -13,8 +13,8 @@ kernel void test(global float *out) {
 
 void foo(constant int* p, constant const int *p1, const int *p2, const int *p3);
 // CHECK: @k.arr1 = internal addrspace(2) constant [3 x i32] [i32 1, i32 2, i32 3]
-// CHECK: @k.arr2 = private unnamed_addr addrspace(2) constant [3 x i32] [i32 4, i32 5, i32 6]
-// CHECK: @k.arr3 = private unnamed_addr addrspace(2) constant [3 x i32] [i32 7, i32 8, i32 9]
+// CHECK: @__const.k.arr2 = private unnamed_addr addrspace(2) constant [3 x i32] [i32 4, i32 5, i32 6]
+// CHECK: @__const.k.arr3 = private unnamed_addr addrspace(2) constant [3 x i32] [i32 7, i32 8, i32 9]
 // CHECK: @k.var1 = internal addrspace(2) constant i32 1
 kernel void k(void) {
   // CHECK-NOT: %arr1 = alloca [3 x i32]
@@ -26,6 +26,6 @@ kernel void k(void) {
 
   constant int var1 = 1;
   
-  // CHECK: call spir_func void @foo(i32 addrspace(2)* @k.var1, i32 addrspace(2)* getelementptr inbounds ([3 x i32], [3 x i32] addrspace(2)* @k.arr1, i32 0, i32 0)
+  // CHECK: call spir_func void @foo(i32 addrspace(2)* @k.var1, i32 addrspace(2)* getelementptr inbounds ([3 x i32], [3 x i32] addrspace(2)* @k.arr1, i64 0, i64 0)
   foo(&var1, arr1, arr2, arr3);
 }

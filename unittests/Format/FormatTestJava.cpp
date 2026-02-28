@@ -1,9 +1,8 @@
 //===- unittest/Format/FormatTestJava.cpp - Formatting tests for Java -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,13 +20,13 @@ class FormatTestJava : public ::testing::Test {
 protected:
   static std::string format(llvm::StringRef Code, unsigned Offset,
                             unsigned Length, const FormatStyle &Style) {
-    DEBUG(llvm::errs() << "---\n");
-    DEBUG(llvm::errs() << Code << "\n\n");
+    LLVM_DEBUG(llvm::errs() << "---\n");
+    LLVM_DEBUG(llvm::errs() << Code << "\n\n");
     std::vector<tooling::Range> Ranges(1, tooling::Range(Offset, Length));
     tooling::Replacements Replaces = reformat(Style, Code, Ranges);
     auto Result = applyAllReplacements(Code, Replaces);
     EXPECT_TRUE(static_cast<bool>(Result));
-    DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
+    LLVM_DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
     return *Result;
   }
 
@@ -46,6 +45,7 @@ protected:
   static void verifyFormat(
       llvm::StringRef Code,
       const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
+    EXPECT_EQ(Code.str(), format(Code, Style)) << "Expected code is not stable";
     EXPECT_EQ(Code.str(), format(test::messUp(Code), Style));
   }
 };
@@ -144,6 +144,7 @@ TEST_F(FormatTestJava, ClassDeclarations) {
   verifyFormat("public interface SomeInterface {\n"
                "  void doStuff(int theStuff);\n"
                "  void doMoreStuff(int moreStuff);\n"
+               "  default void doStuffWithDefault() {}\n"
                "}");
   verifyFormat("@interface SomeInterface {\n"
                "  void doStuff(int theStuff);\n"
@@ -152,6 +153,15 @@ TEST_F(FormatTestJava, ClassDeclarations) {
   verifyFormat("public @interface SomeInterface {\n"
                "  void doStuff(int theStuff);\n"
                "  void doMoreStuff(int moreStuff);\n"
+               "}");
+  verifyFormat("class A {\n"
+               "  public @interface SomeInterface {\n"
+               "    int stuff;\n"
+               "    void doMoreStuff(int moreStuff);\n"
+               "  }\n"
+               "}");
+  verifyFormat("class A {\n"
+               "  public @interface SomeInterface {}\n"
                "}");
 }
 
@@ -439,6 +449,22 @@ TEST_F(FormatTestJava, MethodDeclarations) {
   verifyFormat("void methodName(\n"
                "    Object arg1, Object arg2) {}",
                getStyleWithColumns(40));
+}
+
+TEST_F(FormatTestJava, MethodReference) {
+  EXPECT_EQ(
+      "private void foo() {\n"
+      "  f(this::methodReference);\n"
+      "  f(C.super::methodReference);\n"
+      "  Consumer<String> c = System.out::println;\n"
+      "  Iface<Integer> mRef = Ty::<Integer>meth;\n"
+      "}",
+      format("private void foo() {\n"
+             "  f(this ::methodReference);\n"
+             "  f(C.super ::methodReference);\n"
+             "  Consumer<String> c = System.out ::println;\n"
+             "  Iface<Integer> mRef = Ty :: <Integer> meth;\n"
+             "}"));
 }
 
 TEST_F(FormatTestJava, CppKeywords) {

@@ -1,9 +1,8 @@
 //===--- Types.h - Input & Temporary Driver Types ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,16 +11,18 @@
 
 #include "clang/Driver/Phases.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Option/ArgList.h"
 
 namespace llvm {
 class StringRef;
 }
 namespace clang {
 namespace driver {
+class Driver;
 namespace types {
   enum ID {
     TY_INVALID,
-#define TYPE(NAME, ID, PP_TYPE, TEMP_SUFFIX, FLAGS) TY_##ID,
+#define TYPE(NAME, ID, PP_TYPE, TEMP_SUFFIX, ...) TY_##ID,
 #include "clang/Driver/Types.def"
 #undef TYPE
     TY_LAST
@@ -77,6 +78,9 @@ namespace types {
   /// isCuda - Is this a CUDA input.
   bool isCuda(ID Id);
 
+  /// isHIP - Is this a HIP input.
+  bool isHIP(ID Id);
+
   /// isObjC - Is this an "ObjC" input (Obj-C and Obj-C++ sources and headers).
   bool isObjC(ID Id);
 
@@ -98,6 +102,9 @@ namespace types {
   void getCompilationPhases(
     ID Id,
     llvm::SmallVectorImpl<phases::ID> &Phases);
+  void getCompilationPhases(const clang::driver::Driver &Driver,
+                            llvm::opt::DerivedArgList &DAL, ID Id,
+                            llvm::SmallVectorImpl<phases::ID> &Phases);
 
   /// lookupCXXTypeForCType - Lookup CXX input type that corresponds to given
   /// C type (used for clang++ emulation of g++ behaviour)

@@ -1,10 +1,13 @@
-// RUN: %clangxx %s -### -no-canonical-prefixes --target=x86_64-unknown-fuchsia \
-// RUN:     --sysroot=%S/platform 2>&1 | FileCheck %s
+// RUN: %clangxx %s -### -no-canonical-prefixes --target=x86_64-fuchsia \
+// RUN:     -ccc-install-dir %S/Inputs/basic_fuchsia_tree/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir_with_per_target_subdir \
+// RUN:     --sysroot=%S/platform -fuse-ld=lld 2>&1 | FileCheck %s
 // CHECK: {{.*}}clang{{.*}}" "-cc1"
 // CHECK: "-triple" "x86_64-fuchsia"
 // CHECK: "-fuse-init-array"
+// CHECK: "-resource-dir" "[[RESOURCE_DIR:[^"]+]]"
 // CHECK: "-isysroot" "[[SYSROOT:[^"]+]]"
-// CHECK: "-internal-isystem" "{{.*[/\\]}}x86_64-fuchsia{{/|\\\\}}include{{/|\\\\}}c++{{/|\\\\}}v1"
+// CHECK: "-internal-isystem" "{{.*[/\\]}}include{{/|\\\\}}c++{{/|\\\\}}v1"
 // CHECK: "-internal-externc-isystem" "[[SYSROOT]]{{/|\\\\}}include"
 // CHECK: {{.*}}ld.lld{{.*}}" "-z" "rodynamic"
 // CHECK: "--sysroot=[[SYSROOT]]"
@@ -15,20 +18,61 @@
 // CHECK-NOT: crti.o
 // CHECK-NOT: crtbegin.o
 // CHECK: "-L[[SYSROOT]]{{/|\\\\}}lib"
-// CHECK: "-lc++" "-lc++abi" "-lunwind" "-lm"
-// CHECK: "{{.*[/\\]}}libclang_rt.builtins-x86_64.a"
+// CHECK: "--push-state"
+// CHECK: "--as-needed"
+// CHECK: "-lc++"
+// CHECK: "-lm"
+// CHECK: "--pop-state"
+// CHECK: "[[RESOURCE_DIR]]{{/|\\\\}}lib{{/|\\\\}}x86_64-fuchsia{{/|\\\\}}libclang_rt.builtins.a"
 // CHECK: "-lc"
 // CHECK-NOT: crtend.o
 // CHECK-NOT: crtn.o
 
-// RUN: %clangxx %s -### --target=x86_64-unknown-fuchsia -stdlib=libstdc++ 2>&1 \
+// RUN: %clangxx %s -### --target=x86_64-unknown-fuchsia -stdlib=libstdc++ \
+// RUN:     -fuse-ld=lld 2>&1 \
 // RUN:     | FileCheck %s -check-prefix=CHECK-STDLIB
 // CHECK-STDLIB: error: invalid library name in argument '-stdlib=libstdc++'
 
-// RUN: %clangxx %s -### --target=x86_64-unknown-fuchsia -static-libstdc++ 2>&1 \
+// RUN: %clangxx %s -### --target=x86_64-unknown-fuchsia -static-libstdc++ \
+// RUN:     -fuse-ld=lld 2>&1 \
 // RUN:     | FileCheck %s -check-prefix=CHECK-STATIC
-// CHECK-STATIC-NOT: "-Bstatic"
-// CHECK-STATIC: "-lc++" "-lc++abi" "-lunwind"
-// CHECK-STATIC-NOT: "-Bdynamic"
+// CHECK-STATIC: "--push-state"
+// CHECK-STATIC: "--as-needed"
+// CHECK-STATIC: "-Bstatic"
+// CHECK-STATIC: "-lc++"
+// CHECK-STATIC: "-Bdynamic"
 // CHECK-STATIC: "-lm"
+// CHECK-STATIC: "--pop-state"
 // CHECK-STATIC: "-lc"
+
+// RUN: %clangxx %s -### --target=x86_64-fuchsia -nostdlib++ -fuse-ld=lld 2>&1 \
+// RUN:     | FileCheck %s -check-prefix=CHECK-NOSTDLIBXX
+// CHECK-NOSTDLIBXX-NOT: "-lc++"
+// CHECK-NOSTDLIBXX-NOT: "-lm"
+// CHECK-NOSTDLIBXX: "-lc"
+
+// RUN: %clangxx %s -### --target=x86_64-fuchsia \
+// RUN:     -ccc-install-dir %S/Inputs/basic_fuchsia_tree/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir_with_per_target_subdir \
+// RUN:     -fuse-ld=lld 2>&1\
+// RUN:     | FileCheck %s -check-prefixes=CHECK-MULTILIB-X86
+// RUN: %clangxx %s -### --target=x86_64-fuchsia -fsanitize=address \
+// RUN:     -ccc-install-dir %S/Inputs/basic_fuchsia_tree/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir_with_per_target_subdir \
+// RUN:     -fuse-ld=lld 2>&1\
+// RUN:     | FileCheck %s -check-prefixes=CHECK-MULTILIB-X86,CHECK-MULTILIB-ASAN-X86
+// RUN: %clangxx %s -### --target=x86_64-fuchsia -fno-exceptions \
+// RUN:     -ccc-install-dir %S/Inputs/basic_fuchsia_tree/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir_with_per_target_subdir \
+// RUN:     -fuse-ld=lld 2>&1\
+// RUN:     | FileCheck %s -check-prefixes=CHECK-MULTILIB-X86,CHECK-MULTILIB-NOEXCEPT-X86
+// RUN: %clangxx %s -### --target=x86_64-fuchsia -fsanitize=address -fno-exceptions \
+// RUN:     -ccc-install-dir %S/Inputs/basic_fuchsia_tree/bin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir_with_per_target_subdir \
+// RUN:     -fuse-ld=lld 2>&1\
+// RUN:     | FileCheck %s -check-prefixes=CHECK-MULTILIB-X86,CHECK-MULTILIB-ASAN-NOEXCEPT-X86
+// CHECK-MULTILIB-X86: "-resource-dir" "[[RESOURCE_DIR:[^"]+]]"
+// CHECK-MULTILIB-ASAN-X86: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}lib{{/|\\\\}}x86_64-fuchsia{{/|\\\\}}c++{{/|\\\\}}asan"
+// CHECK-MULTILIB-NOEXCEPT-X86: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}lib{{/|\\\\}}x86_64-fuchsia{{/|\\\\}}c++{{/|\\\\}}noexcept"
+// CHECK-MULTILIB-ASAN-NOEXCEPT-X86: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}lib{{/|\\\\}}x86_64-fuchsia{{/|\\\\}}c++{{/|\\\\}}asan+noexcept"
+// CHECK-MULTILIB-X86: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}lib{{/|\\\\}}x86_64-fuchsia{{/|\\\\}}c++"

@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 %s
+// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=45 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -fopenmp-version=45 %s -Wuninitialized
 
 void foo() {
 }
@@ -7,11 +9,18 @@ bool foobool(int argc) {
   return argc;
 }
 
+void xxx(int argc) {
+  int cond; // expected-note {{initialize the variable 'cond' to silence this warning}}
+#pragma omp target parallel for simd if(parallel: cond) // expected-warning {{variable 'cond' is uninitialized when used here}}
+  for (int i = 0; i < 10; ++i)
+    ;
+}
+
 struct S1; // expected-note {{declared here}}
 
 template <class T, class S> // expected-note {{declared here}}
 int tmain(T argc, S **argv) {
-  int i;
+  int i, k;
   #pragma omp target parallel for simd if // expected-error {{expected '(' after 'if'}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
@@ -32,7 +41,7 @@ int tmain(T argc, S **argv) {
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if (argc argc) // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target parallel for simd if(argc)
+  #pragma omp target parallel for simd if(k)
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if(target : // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
@@ -59,7 +68,7 @@ int tmain(T argc, S **argv) {
 }
 
 int main(int argc, char **argv) {
-  int i;
+  int i, k;
   #pragma omp target parallel for simd if // expected-error {{expected '(' after 'if'}}
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
@@ -88,7 +97,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if(parallel : argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
-  #pragma omp target parallel for simd if(parallel : argc)
+  #pragma omp target parallel for simd if(parallel : k)
   for (i = 0; i < argc; ++i) foo();
   #pragma omp target parallel for simd if(target : argc) if (for:argc) // expected-error {{directive name modifier 'for' is not allowed for '#pragma omp target parallel for simd'}}
   for (i = 0; i < argc; ++i) foo();

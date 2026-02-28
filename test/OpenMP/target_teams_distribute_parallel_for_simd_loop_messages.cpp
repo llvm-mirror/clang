@@ -1,8 +1,12 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify=expected,omp4 %s -Wno-openmp-target -Wuninitialized
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -fopenmp-version=50 -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify=expected,omp5 %s -Wno-openmp-target -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify=expected,omp4 %s -Wno-openmp-target -Wuninitialized
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -fopenmp-version=50 -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify=expected,omp5 %s -Wno-openmp-target -Wuninitialized
 
 class S {
   int a;
-  S() : a(0) {}
+  S() : a(0) {} // expected-note {{implicitly declared private here}}
 
 public:
   S(int v) : a(v) {}
@@ -91,28 +95,28 @@ int test_iteration_spaces() {
     c[ii] = a[ii];
 
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'i'}}
   for (int i = 0; i; i++)
     c[i] = a[i];
 
 #pragma omp target teams distribute parallel for simd
-// expected-error@+2 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
+// omp4-error@+2 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}} omp5-error@+2 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'i'}}
 // expected-error@+1 {{increment clause of OpenMP for loop must perform simple addition or subtraction on loop variable 'i'}}
   for (int i = 0; jj < kk; ii++)
     c[i] = a[i];
 
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'i'}}
   for (int i = 0; !!i; i++)
     c[i] = a[i];
 
+// omp4-error@+2 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
   for (int i = 0; i != 1; i++)
     c[i] = a[i];
 
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'i'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'i'}}
   for (int i = 0;; i++)
     c[i] = a[i];
 
@@ -243,13 +247,13 @@ int test_iteration_spaces() {
   for (ii = 0; ii < 10; ii++)
     c[ii] = a[ii];
 
-// expected-error@+2 {{loop iteration variable in the associated loop of 'omp target teams distribute parallel for simd' directive may not be private, predetermined as linear}}
-#pragma omp target teams distribute parallel for simd private(ii) // expected-note {{defined as private}}
+// omp4-error@+2 {{loop iteration variable in the associated loop of 'omp target teams distribute parallel for simd' directive may not be private, predetermined as linear}}
+#pragma omp target teams distribute parallel for simd private(ii) // omp4-note {{defined as private}}
   for (ii = 0; ii < 10; ii++)
     c[ii] = a[ii];
 
-// expected-error@+2 {{loop iteration variable in the associated loop of 'omp target teams distribute parallel for simd' directive may not be lastprivate, predetermined as linear}}
-#pragma omp target teams distribute parallel for simd lastprivate(ii) // expected-note {{defined as lastprivate}}
+// omp4-error@+2 {{loop iteration variable in the associated loop of 'omp target teams distribute parallel for simd' directive may not be lastprivate, predetermined as linear}}
+#pragma omp target teams distribute parallel for simd lastprivate(ii) // omp4-note {{defined as lastprivate}}
   for (ii = 0; ii < 10; ii++)
     c[ii] = a[ii];
 
@@ -265,7 +269,7 @@ int test_iteration_spaces() {
       c[globalii] += a[globalii] + ii;
   }
 
-// expected-error@+2 {{statement after '#pragma omp target teams distribute parallel for simd' must be a for loop}}
+// omp4-error@+2 {{statement after '#pragma omp target teams distribute parallel for simd' must be a for loop}}
 #pragma omp target teams distribute parallel for simd
   for (auto &item : a) {
     item = item + 1;
@@ -402,15 +406,15 @@ int test_with_random_access_iterator() {
   for (begin = end; begin < end; ++begin)
     ++begin;
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'I'}}
   for (GoodIter I = begin; I - I; ++I)
     ++I;
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'I'}}
   for (GoodIter I = begin; begin < end; ++I)
     ++I;
 #pragma omp target teams distribute parallel for simd
-// expected-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}}
+// omp4-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', or '>=') of loop variable 'I'}} omp5-error@+1 {{condition of OpenMP for loop must be a relational comparison ('<', '<=', '>', '>=', or '!=') of loop variable 'I'}}
   for (GoodIter I = begin; !I; ++I)
     ++I;
 #pragma omp target teams distribute parallel for simd
@@ -608,7 +612,8 @@ void test_loop_eh() {
 
 void test_loop_firstprivate_lastprivate() {
   S s(4);
-#pragma omp target teams distribute parallel for simd lastprivate(s) firstprivate(s)
+// expected-error@+1 {{lastprivate variable cannot be firstprivate}} expected-note@+1 {{defined as lastprivate}}
+#pragma omp target teams distribute parallel for simd lastprivate(s) firstprivate(s) // expected-error {{calling a private constructor of class 'S'}}
   for (int i = 0; i < 16; ++i)
     ;
 }

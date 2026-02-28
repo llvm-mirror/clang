@@ -1,9 +1,8 @@
 //===- DeclBase.h - Base Classes for representing declarations --*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,12 +13,13 @@
 #ifndef LLVM_CLANG_AST_DECLBASE_H
 #define LLVM_CLANG_AST_DECLBASE_H
 
+#include "clang/AST/ASTDumperUtils.h"
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/DeclarationName.h"
+#include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/Specifiers.h"
-#include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -28,6 +28,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/VersionTuple.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -41,6 +42,7 @@ namespace clang {
 class ASTContext;
 class ASTMutationListener;
 class Attr;
+class BlockDecl;
 class DeclContext;
 class ExternalSourceSymbolAttr;
 class FunctionDecl;
@@ -67,7 +69,7 @@ class TemplateDecl;
 class TranslationUnitDecl;
 class UsingDirectiveDecl;
 
-/// \brief Captures the result of checking the availability of a
+/// Captures the result of checking the availability of a
 /// declaration.
 enum AvailabilityResult {
   AR_Available = 0,
@@ -83,9 +85,9 @@ enum AvailabilityResult {
 /// (and its subclasses) in its Decl::operator new(). Proper alignment
 /// of all subclasses (not requiring more than the alignment of Decl) is
 /// asserted in DeclBase.cpp.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) Decl {
+class alignas(8) Decl {
 public:
-  /// \brief Lists the kind of concrete classes of Decl.
+  /// Lists the kind of concrete classes of Decl.
   enum Kind {
 #define DECL(DERIVED, BASE) DERIVED,
 #define ABSTRACT_DECL(DECL)
@@ -96,7 +98,7 @@ public:
 #include "clang/AST/DeclNodes.inc"
   };
 
-  /// \brief A placeholder type used to construct an empty shell of a
+  /// A placeholder type used to construct an empty shell of a
   /// decl-derived type that will be filled in later (e.g., by some
   /// deserialization method).
   struct EmptyShell {};
@@ -175,7 +177,10 @@ public:
     IDNS_LocalExtern         = 0x0800,
 
     /// This declaration is an OpenMP user defined reduction construction.
-    IDNS_OMPReduction        = 0x1000
+    IDNS_OMPReduction        = 0x1000,
+
+    /// This declaration is an OpenMP user defined mapper.
+    IDNS_OMPMapper           = 0x2000,
   };
 
   /// ObjCDeclQualifier - 'Qualifiers' written next to the return and
@@ -231,7 +236,7 @@ public:
   };
 
 protected:
-  /// \brief The next declaration within the same lexical
+  /// The next declaration within the same lexical
   /// DeclContext. These pointers form the linked list that is
   /// traversed via DeclContext's decls_begin()/decls_end().
   ///
@@ -288,27 +293,28 @@ private:
   /// the implementation rather than explicitly written by the user.
   unsigned Implicit : 1;
 
-  /// \brief Whether this declaration was "used", meaning that a definition is
+  /// Whether this declaration was "used", meaning that a definition is
   /// required.
   unsigned Used : 1;
 
-  /// \brief Whether this declaration was "referenced".
+  /// Whether this declaration was "referenced".
   /// The difference with 'Used' is whether the reference appears in a
   /// evaluated context or not, e.g. functions used in uninstantiated templates
   /// are regarded as "referenced" but not "used".
   unsigned Referenced : 1;
 
-  /// \brief Whether this declaration is a top-level declaration (function,
+  /// Whether this declaration is a top-level declaration (function,
   /// global variable, etc.) that is lexically inside an objc container
   /// definition.
   unsigned TopLevelDeclInObjCContainer : 1;
-  
-  /// \brief Whether statistic collection is enabled.
+
+  /// Whether statistic collection is enabled.
   static bool StatisticsEnabled;
 
 protected:
   friend class ASTDeclReader;
   friend class ASTDeclWriter;
+  friend class ASTNodeImporter;
   friend class ASTReader;
   friend class CXXClassMemberWrapper;
   friend class LinkageComputer;
@@ -318,17 +324,17 @@ protected:
   // NOTE: VC++ treats enums as signed, avoid using the AccessSpecifier enum
   unsigned Access : 2;
 
-  /// \brief Whether this declaration was loaded from an AST file.
+  /// Whether this declaration was loaded from an AST file.
   unsigned FromASTFile : 1;
 
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
-  unsigned IdentifierNamespace : 13;
+  unsigned IdentifierNamespace : 14;
 
-  /// \brief If 0, we have not computed the linkage of this declaration.
+  /// If 0, we have not computed the linkage of this declaration.
   /// Otherwise, it is the linkage + 1.
   mutable unsigned CacheValidAndLinkage : 3;
 
-  /// \brief Allocate memory for a deserialized declaration.
+  /// Allocate memory for a deserialized declaration.
   ///
   /// This routine must be used to allocate memory for any declaration that is
   /// deserialized from a module file.
@@ -340,7 +346,7 @@ protected:
   void *operator new(std::size_t Size, const ASTContext &Ctx, unsigned ID,
                      std::size_t Extra = 0);
 
-  /// \brief Allocate memory for a non-deserialized declaration.
+  /// Allocate memory for a non-deserialized declaration.
   void *operator new(std::size_t Size, const ASTContext &Ctx,
                      DeclContext *Parent, std::size_t Extra = 0);
 
@@ -361,6 +367,13 @@ private:
     }
     return ModuleOwnershipKind::Unowned;
   }
+
+public:
+  Decl() = delete;
+  Decl(const Decl&) = delete;
+  Decl(Decl &&) = delete;
+  Decl &operator=(const Decl&) = delete;
+  Decl &operator=(Decl&&) = delete;
 
 protected:
   Decl(Kind DK, DeclContext *DC, SourceLocation L)
@@ -384,7 +397,7 @@ protected:
 
   virtual ~Decl();
 
-  /// \brief Update a potentially out-of-date declaration.
+  /// Update a potentially out-of-date declaration.
   void updateOutOfDate(IdentifierInfo &II) const;
 
   Linkage getCachedLinkage() const {
@@ -400,16 +413,16 @@ protected:
   }
 
 public:
-  /// \brief Source range that this declaration covers.
+  /// Source range that this declaration covers.
   virtual SourceRange getSourceRange() const LLVM_READONLY {
     return SourceRange(getLocation(), getLocation());
   }
 
-  SourceLocation getLocStart() const LLVM_READONLY {
+  SourceLocation getBeginLoc() const LLVM_READONLY {
     return getSourceRange().getBegin();
   }
 
-  SourceLocation getLocEnd() const LLVM_READONLY {
+  SourceLocation getEndLoc() const LLVM_READONLY {
     return getSourceRange().getEnd();
   }
 
@@ -462,7 +475,7 @@ public:
     return AccessSpecifier(Access);
   }
 
-  /// \brief Retrieve the access specifier for this declaration, even though
+  /// Retrieve the access specifier for this declaration, even though
   /// it may not yet have been properly set.
   AccessSpecifier getAccessUnsafe() const {
     return AccessSpecifier(Access);
@@ -480,13 +493,7 @@ public:
 
   const AttrVec &getAttrs() const;
   void dropAttrs();
-
-  void addAttr(Attr *A) {
-    if (hasAttrs())
-      getAttrs().push_back(A);
-    else
-      setAttrs(AttrVec(1, A));
-  }
+  void addAttr(Attr *A);
 
   using attr_iterator = AttrVec::const_iterator;
   using attr_range = llvm::iterator_range<attr_iterator>;
@@ -551,7 +558,7 @@ public:
   bool isImplicit() const { return Implicit; }
   void setImplicit(bool I = true) { Implicit = I; }
 
-  /// \brief Whether *any* (re-)declaration of the entity was used, meaning that
+  /// Whether *any* (re-)declaration of the entity was used, meaning that
   /// a definition is required.
   ///
   /// \param CheckUsedAttr When true, also consider the "used" attribute
@@ -559,28 +566,28 @@ public:
   /// whether the function is used.
   bool isUsed(bool CheckUsedAttr = true) const;
 
-  /// \brief Set whether the declaration is used, in the sense of odr-use.
+  /// Set whether the declaration is used, in the sense of odr-use.
   ///
   /// This should only be used immediately after creating a declaration.
   /// It intentionally doesn't notify any listeners.
   void setIsUsed() { getCanonicalDecl()->Used = true; }
 
-  /// \brief Mark the declaration used, in the sense of odr-use.
+  /// Mark the declaration used, in the sense of odr-use.
   ///
   /// This notifies any mutation listeners in addition to setting a bit
   /// indicating the declaration is used.
   void markUsed(ASTContext &C);
 
-  /// \brief Whether any declaration of this entity was referenced.
+  /// Whether any declaration of this entity was referenced.
   bool isReferenced() const;
 
-  /// \brief Whether this declaration was referenced. This should not be relied
+  /// Whether this declaration was referenced. This should not be relied
   /// upon for anything other than debugging.
   bool isThisDeclarationReferenced() const { return Referenced; }
 
   void setReferenced(bool R = true) { Referenced = R; }
 
-  /// \brief Whether this declaration is a top-level declaration (function,
+  /// Whether this declaration is a top-level declaration (function,
   /// global variable, etc.) that is lexically inside an objc container
   /// definition.
   bool isTopLevelDeclInObjCContainer() const {
@@ -591,19 +598,15 @@ public:
     TopLevelDeclInObjCContainer = V;
   }
 
-  /// \brief Looks on this and related declarations for an applicable
+  /// Looks on this and related declarations for an applicable
   /// external source symbol attribute.
   ExternalSourceSymbolAttr *getExternalSourceSymbolAttr() const;
 
-  /// \brief Whether this declaration was marked as being private to the
+  /// Whether this declaration was marked as being private to the
   /// module in which it was defined.
   bool isModulePrivate() const {
     return getModuleOwnershipKind() == ModuleOwnershipKind::ModulePrivate;
   }
-
-  /// \brief Whether this declaration is exported (by virtue of being lexically
-  /// within an ExportDecl or by being a NamespaceDecl).
-  bool isExported() const;
 
   /// Return true if this declaration has an attribute which acts as
   /// definition of the entity, such as 'alias' or 'ifunc'.
@@ -613,7 +616,7 @@ public:
   const Attr *getDefiningAttr() const;
 
 protected:
-  /// \brief Specify that this declaration was marked as being private
+  /// Specify that this declaration was marked as being private
   /// to the module in which it was defined.
   void setModulePrivate() {
     // The module-private specifier has no effect on unowned declarations.
@@ -623,14 +626,14 @@ protected:
     setModuleOwnershipKind(ModuleOwnershipKind::ModulePrivate);
   }
 
-  /// \brief Set the owning module ID.
+  /// Set the owning module ID.
   void setOwningModuleID(unsigned ID) {
     assert(isFromASTFile() && "Only works on a deserialized declaration");
     *((unsigned*)this - 2) = ID;
   }
-  
+
 public:
-  /// \brief Determine the availability of the given declaration.
+  /// Determine the availability of the given declaration.
   ///
   /// This routine will determine the most restrictive availability of
   /// the given declaration (e.g., preferring 'unavailable' to
@@ -643,11 +646,16 @@ public:
   ///
   /// \param EnclosingVersion The version to compare with. If empty, assume the
   /// deployment target version.
+  ///
+  /// \param RealizedPlatform If non-NULL and the availability result is found
+  /// in an available attribute it will set to the platform which is written in
+  /// the available attribute.
   AvailabilityResult
   getAvailability(std::string *Message = nullptr,
-                  VersionTuple EnclosingVersion = VersionTuple()) const;
+                  VersionTuple EnclosingVersion = VersionTuple(),
+                  StringRef *RealizedPlatform = nullptr) const;
 
-  /// \brief Retrieve the version of the target platform in which this
+  /// Retrieve the version of the target platform in which this
   /// declaration was introduced.
   ///
   /// \returns An empty version tuple if this declaration has no 'introduced'
@@ -655,7 +663,7 @@ public:
   /// attribute otherwise.
   VersionTuple getVersionIntroduced() const;
 
-  /// \brief Determine whether this declaration is marked 'deprecated'.
+  /// Determine whether this declaration is marked 'deprecated'.
   ///
   /// \param Message If non-NULL and the declaration is deprecated,
   /// this will be set to the message describing why the declaration
@@ -664,7 +672,7 @@ public:
     return getAvailability(Message) == AR_Deprecated;
   }
 
-  /// \brief Determine whether this declaration is marked 'unavailable'.
+  /// Determine whether this declaration is marked 'unavailable'.
   ///
   /// \param Message If non-NULL and the declaration is unavailable,
   /// this will be set to the message describing why the declaration
@@ -673,7 +681,7 @@ public:
     return getAvailability(Message) == AR_Unavailable;
   }
 
-  /// \brief Determine whether this is a weak-imported symbol.
+  /// Determine whether this is a weak-imported symbol.
   ///
   /// Weak-imported symbols are typically marked with the
   /// 'weak_import' attribute, but may also be marked with an
@@ -681,7 +689,7 @@ public:
   /// the introduction of this feature.
   bool isWeakImported() const;
 
-  /// \brief Determines whether this symbol can be weak-imported,
+  /// Determines whether this symbol can be weak-imported,
   /// e.g., whether it would be well-formed to add the weak_import
   /// attribute.
   ///
@@ -689,11 +697,11 @@ public:
   /// declaration cannot be weak-imported because it has a definition.
   bool canBeWeakImported(bool &IsDefinition) const;
 
-  /// \brief Determine whether this declaration came from an AST file (such as
+  /// Determine whether this declaration came from an AST file (such as
   /// a precompiled header or module) rather than having been parsed.
   bool isFromASTFile() const { return FromASTFile; }
 
-  /// \brief Retrieve the global declaration ID associated with this
+  /// Retrieve the global declaration ID associated with this
   /// declaration, which specifies where this Decl was loaded from.
   unsigned getGlobalID() const {
     if (isFromASTFile())
@@ -701,7 +709,7 @@ public:
     return 0;
   }
 
-  /// \brief Retrieve the global ID of the module that owns this particular
+  /// Retrieve the global ID of the module that owns this particular
   /// declaration.
   unsigned getOwningModuleID() const {
     if (isFromASTFile())
@@ -716,7 +724,7 @@ protected:
   bool hasLocalOwningModuleStorage() const;
 
 public:
-  /// \brief Get the imported owning module, if this decl is from an imported
+  /// Get the imported owning module, if this decl is from an imported
   /// (non-local) module.
   Module *getImportedOwningModule() const {
     if (!isFromASTFile() || !hasOwningModule())
@@ -725,7 +733,7 @@ public:
     return getOwningModuleSlow();
   }
 
-  /// \brief Get the local owning module, if known. Returns nullptr if owner is
+  /// Get the local owning module, if known. Returns nullptr if owner is
   /// not yet known or declaration is not from a module.
   Module *getLocalOwningModule() const {
     if (isFromASTFile() || !hasOwningModule())
@@ -759,7 +767,7 @@ public:
   /// all declarations in a global module fragment are unowned.
   Module *getOwningModuleForLinkage(bool IgnoreLinkage = false) const;
 
-  /// \brief Determine whether this declaration might be hidden from name
+  /// Determine whether this declaration might be hidden from name
   /// lookup. Note that the declaration might be visible even if this returns
   /// \c false, if the owning module is visible within the query context.
   // FIXME: Rename this to make it clearer what it does.
@@ -774,12 +782,12 @@ public:
       setModuleOwnershipKind(ModuleOwnershipKind::Visible);
   }
 
-  /// \brief Get the kind of module ownership for this declaration.
+  /// Get the kind of module ownership for this declaration.
   ModuleOwnershipKind getModuleOwnershipKind() const {
     return NextInContextAndBits.getInt();
   }
 
-  /// \brief Set whether this declaration is hidden from name lookup.
+  /// Set whether this declaration is hidden from name lookup.
   void setModuleOwnershipKind(ModuleOwnershipKind MOK) {
     assert(!(getModuleOwnershipKind() == ModuleOwnershipKind::Unowned &&
              MOK != ModuleOwnershipKind::Unowned && !isFromASTFile() &&
@@ -836,6 +844,10 @@ public:
 
   void setLexicalDeclContext(DeclContext *DC);
 
+  /// Determine whether this declaration is a templated entity (whether it is
+  // within the scope of a template parameter).
+  bool isTemplated() const;
+
   /// isDefinedOutsideFunctionOrMethod - This predicate returns true if this
   /// scoped decl is defined outside the current function or method.  This is
   /// roughly global variables and functions, but also handles enums (which
@@ -844,7 +856,7 @@ public:
     return getParentFunctionOrMethod() == nullptr;
   }
 
-  /// \brief Returns true if this declaration lexically is inside a function.
+  /// Returns true if this declaration lexically is inside a function.
   /// It recognizes non-defining declarations as well as members of local
   /// classes:
   /// \code
@@ -853,7 +865,7 @@ public:
   /// \endcode
   bool isLexicallyWithinFunctionOrMethod() const;
 
-  /// \brief If this decl is defined inside a function/method/block it returns
+  /// If this decl is defined inside a function/method/block it returns
   /// the corresponding DeclContext, otherwise it returns null.
   const DeclContext *getParentFunctionOrMethod() const;
   DeclContext *getParentFunctionOrMethod() {
@@ -861,32 +873,32 @@ public:
                     const_cast<const Decl*>(this)->getParentFunctionOrMethod());
   }
 
-  /// \brief Retrieves the "canonical" declaration of the given declaration.
+  /// Retrieves the "canonical" declaration of the given declaration.
   virtual Decl *getCanonicalDecl() { return this; }
   const Decl *getCanonicalDecl() const {
     return const_cast<Decl*>(this)->getCanonicalDecl();
   }
 
-  /// \brief Whether this particular Decl is a canonical one.
+  /// Whether this particular Decl is a canonical one.
   bool isCanonicalDecl() const { return getCanonicalDecl() == this; }
-  
+
 protected:
-  /// \brief Returns the next redeclaration or itself if this is the only decl.
+  /// Returns the next redeclaration or itself if this is the only decl.
   ///
   /// Decl subclasses that can be redeclared should override this method so that
   /// Decl::redecl_iterator can iterate over them.
   virtual Decl *getNextRedeclarationImpl() { return this; }
 
-  /// \brief Implementation of getPreviousDecl(), to be overridden by any
+  /// Implementation of getPreviousDecl(), to be overridden by any
   /// subclass that has a redeclaration chain.
   virtual Decl *getPreviousDeclImpl() { return nullptr; }
 
-  /// \brief Implementation of getMostRecentDecl(), to be overridden by any
+  /// Implementation of getMostRecentDecl(), to be overridden by any
   /// subclass that has a redeclaration chain.
   virtual Decl *getMostRecentDeclImpl() { return this; }
 
 public:
-  /// \brief Iterates through all the redeclarations of the same decl.
+  /// Iterates through all the redeclarations of the same decl.
   class redecl_iterator {
     /// Current - The current declaration.
     Decl *Current = nullptr;
@@ -931,7 +943,7 @@ public:
 
   using redecl_range = llvm::iterator_range<redecl_iterator>;
 
-  /// \brief Returns an iterator range for all the redeclarations of the same
+  /// Returns an iterator range for all the redeclarations of the same
   /// decl. It will iterate at least once (when this decl is the only one).
   redecl_range redecls() const {
     return redecl_range(redecls_begin(), redecls_end());
@@ -943,28 +955,28 @@ public:
 
   redecl_iterator redecls_end() const { return redecl_iterator(); }
 
-  /// \brief Retrieve the previous declaration that declares the same entity
+  /// Retrieve the previous declaration that declares the same entity
   /// as this declaration, or NULL if there is no previous declaration.
   Decl *getPreviousDecl() { return getPreviousDeclImpl(); }
-  
-  /// \brief Retrieve the most recent declaration that declares the same entity
+
+  /// Retrieve the previous declaration that declares the same entity
   /// as this declaration, or NULL if there is no previous declaration.
-  const Decl *getPreviousDecl() const { 
+  const Decl *getPreviousDecl() const {
     return const_cast<Decl *>(this)->getPreviousDeclImpl();
   }
 
-  /// \brief True if this is the first declaration in its redeclaration chain.
+  /// True if this is the first declaration in its redeclaration chain.
   bool isFirstDecl() const {
     return getPreviousDecl() == nullptr;
   }
 
-  /// \brief Retrieve the most recent declaration that declares the same entity
+  /// Retrieve the most recent declaration that declares the same entity
   /// as this declaration (which may be this declaration).
   Decl *getMostRecentDecl() { return getMostRecentDeclImpl(); }
 
-  /// \brief Retrieve the most recent declaration that declares the same entity
+  /// Retrieve the most recent declaration that declares the same entity
   /// as this declaration (which may be this declaration).
-  const Decl *getMostRecentDecl() const { 
+  const Decl *getMostRecentDecl() const {
     return const_cast<Decl *>(this)->getMostRecentDeclImpl();
   }
 
@@ -973,7 +985,7 @@ public:
   ///  top-level Stmt* of that body.  Otherwise this method returns null.
   virtual Stmt* getBody() const { return nullptr; }
 
-  /// \brief Returns true if this \c Decl represents a declaration for a body of
+  /// Returns true if this \c Decl represents a declaration for a body of
   /// code, such as a function or method definition.
   /// Note that \c hasBody can also return true if any redeclaration of this
   /// \c Decl represents a declaration for a body of code.
@@ -996,24 +1008,24 @@ public:
   /// template parameter pack.
   bool isTemplateParameterPack() const;
 
-  /// \brief Whether this declaration is a parameter pack.
+  /// Whether this declaration is a parameter pack.
   bool isParameterPack() const;
 
-  /// \brief returns true if this declaration is a template
+  /// returns true if this declaration is a template
   bool isTemplateDecl() const;
 
-  /// \brief Whether this declaration is a function or function template.
+  /// Whether this declaration is a function or function template.
   bool isFunctionOrFunctionTemplate() const {
     return (DeclKind >= Decl::firstFunction &&
             DeclKind <= Decl::lastFunction) ||
            DeclKind == FunctionTemplate;
   }
 
-  /// \brief If this is a declaration that describes some template, this
+  /// If this is a declaration that describes some template, this
   /// method returns that template declaration.
   TemplateDecl *getDescribedTemplate() const;
 
-  /// \brief Returns the function itself, or the templated function if this is a
+  /// Returns the function itself, or the templated function if this is a
   /// function template.
   FunctionDecl *getAsFunction() LLVM_READONLY;
 
@@ -1021,7 +1033,7 @@ public:
     return const_cast<Decl *>(this)->getAsFunction();
   }
 
-  /// \brief Changes the namespace of this declaration to reflect that it's
+  /// Changes the namespace of this declaration to reflect that it's
   /// a function-local extern declaration.
   ///
   /// These declarations appear in the lexical context of the extern
@@ -1042,14 +1054,14 @@ public:
       IdentifierNamespace |= IDNS_Ordinary;
   }
 
-  /// \brief Determine whether this is a block-scope declaration with linkage.
+  /// Determine whether this is a block-scope declaration with linkage.
   /// This will either be a local variable declaration declared 'extern', or a
   /// local function declaration.
   bool isLocalExternDecl() {
     return IdentifierNamespace & IDNS_LocalExtern;
   }
 
-  /// \brief Changes the namespace of this declaration to reflect that it's
+  /// Changes the namespace of this declaration to reflect that it's
   /// the object of a friend declaration.
   ///
   /// These declarations appear in the lexical context of the friending
@@ -1060,11 +1072,11 @@ public:
     unsigned OldNS = IdentifierNamespace;
     assert((OldNS & (IDNS_Tag | IDNS_Ordinary |
                      IDNS_TagFriend | IDNS_OrdinaryFriend |
-                     IDNS_LocalExtern)) &&
+                     IDNS_LocalExtern | IDNS_NonMemberOperator)) &&
            "namespace includes neither ordinary nor tag");
     assert(!(OldNS & ~(IDNS_Tag | IDNS_Ordinary | IDNS_Type |
                        IDNS_TagFriend | IDNS_OrdinaryFriend |
-                       IDNS_LocalExtern)) &&
+                       IDNS_LocalExtern | IDNS_NonMemberOperator)) &&
            "namespace includes other than ordinary or tag");
 
     Decl *Prev = getPreviousDecl();
@@ -1077,7 +1089,8 @@ public:
         IdentifierNamespace |= IDNS_Tag | IDNS_Type;
     }
 
-    if (OldNS & (IDNS_Ordinary | IDNS_OrdinaryFriend | IDNS_LocalExtern)) {
+    if (OldNS & (IDNS_Ordinary | IDNS_OrdinaryFriend |
+                 IDNS_LocalExtern | IDNS_NonMemberOperator)) {
       IdentifierNamespace |= IDNS_OrdinaryFriend;
       if (PerformFriendInjection ||
           (Prev && Prev->getIdentifierNamespace() & IDNS_Ordinary))
@@ -1091,7 +1104,7 @@ public:
     FOK_Undeclared ///< A friend of a previously-undeclared entity.
   };
 
-  /// \brief Determines whether this declaration is the object of a
+  /// Determines whether this declaration is the object of a
   /// friend declaration and, if so, what kind.
   ///
   /// There is currently no direct way to find the associated FriendDecl.
@@ -1129,9 +1142,13 @@ public:
   // Same as dump(), but forces color printing.
   void dumpColor() const;
 
-  void dump(raw_ostream &Out, bool Deserialize = false) const;
+  void dump(raw_ostream &Out, bool Deserialize = false,
+            ASTDumpOutputFormat OutputFormat = ADOF_Default) const;
 
-  /// \brief Looks through the Decl's underlying type to extract a FunctionType
+  /// \return Unique reproducible object identifier
+  int64_t getID() const;
+
+  /// Looks through the Decl's underlying type to extract a FunctionType
   /// when possible. Will return null if the type underlying the Decl does not
   /// have a FunctionType.
   const FunctionType *getFunctionType(bool BlocksToo = true) const;
@@ -1145,17 +1162,17 @@ protected:
   ASTMutationListener *getASTMutationListener() const;
 };
 
-/// \brief Determine whether two declarations declare the same entity.
+/// Determine whether two declarations declare the same entity.
 inline bool declaresSameEntity(const Decl *D1, const Decl *D2) {
   if (!D1 || !D2)
     return false;
-  
+
   if (D1 == D2)
     return true;
-  
+
   return D1->getCanonicalDecl() == D2->getCanonicalDecl();
 }
-  
+
 /// PrettyStackTraceDecl - If a crash occurs, indicate that it happened when
 /// doing something to a specific decl.
 class PrettyStackTraceDecl : public llvm::PrettyStackTraceEntry {
@@ -1172,7 +1189,7 @@ public:
   void print(raw_ostream &OS) const override;
 };
 
-/// \brief The results of name lookup within a DeclContext. This is either a
+/// The results of name lookup within a DeclContext. This is either a
 /// single result (with no stable storage) or a collection of results (with
 /// stable storage provided by the lookup table).
 class DeclContextLookupResult {
@@ -1204,7 +1221,6 @@ public:
     value_type SingleElement;
 
   public:
-    iterator() = default;
     explicit iterator(pointer Pos, value_type Single = nullptr)
         : IteratorBase(Pos), SingleElement(Single) {}
 
@@ -1240,49 +1256,445 @@ public:
 /// that directly derive from DeclContext are mentioned, not their subclasses):
 ///
 ///   TranslationUnitDecl
+///   ExternCContext
 ///   NamespaceDecl
-///   FunctionDecl
 ///   TagDecl
+///   OMPDeclareReductionDecl
+///   OMPDeclareMapperDecl
+///   FunctionDecl
 ///   ObjCMethodDecl
 ///   ObjCContainerDecl
 ///   LinkageSpecDecl
 ///   ExportDecl
 ///   BlockDecl
-///   OMPDeclareReductionDecl
+///   CapturedDecl
 class DeclContext {
-  /// DeclKind - This indicates which class this is.
-  unsigned DeclKind : 8;
+  /// For makeDeclVisibleInContextImpl
+  friend class ASTDeclReader;
+  /// For reconcileExternalVisibleStorage, CreateStoredDeclsMap,
+  /// hasNeedToReconcileExternalVisibleStorage
+  friend class ExternalASTSource;
+  /// For CreateStoredDeclsMap
+  friend class DependentDiagnostic;
+  /// For hasNeedToReconcileExternalVisibleStorage,
+  /// hasLazyLocalLexicalLookups, hasLazyExternalLexicalLookups
+  friend class ASTWriter;
 
-  /// \brief Whether this declaration context also has some external
-  /// storage that contains additional declarations that are lexically
-  /// part of this context.
-  mutable bool ExternalLexicalStorage : 1;
+  // We use uint64_t in the bit-fields below since some bit-fields
+  // cross the unsigned boundary and this breaks the packing.
 
-  /// \brief Whether this declaration context also has some external
-  /// storage that contains additional declarations that are visible
-  /// in this context.
-  mutable bool ExternalVisibleStorage : 1;
+  /// Stores the bits used by DeclContext.
+  /// If modified NumDeclContextBit, the ctor of DeclContext and the accessor
+  /// methods in DeclContext should be updated appropriately.
+  class DeclContextBitfields {
+    friend class DeclContext;
+    /// DeclKind - This indicates which class this is.
+    uint64_t DeclKind : 7;
 
-  /// \brief Whether this declaration context has had external visible
-  /// storage added since the last lookup. In this case, \c LookupPtr's
-  /// invariant may not hold and needs to be fixed before we perform
-  /// another lookup.
-  mutable bool NeedToReconcileExternalVisibleStorage : 1;
+    /// Whether this declaration context also has some external
+    /// storage that contains additional declarations that are lexically
+    /// part of this context.
+    mutable uint64_t ExternalLexicalStorage : 1;
 
-  /// \brief If \c true, this context may have local lexical declarations
-  /// that are missing from the lookup table.
-  mutable bool HasLazyLocalLexicalLookups : 1;
+    /// Whether this declaration context also has some external
+    /// storage that contains additional declarations that are visible
+    /// in this context.
+    mutable uint64_t ExternalVisibleStorage : 1;
 
-  /// \brief If \c true, the external source may have lexical declarations
-  /// that are missing from the lookup table.
-  mutable bool HasLazyExternalLexicalLookups : 1;
+    /// Whether this declaration context has had externally visible
+    /// storage added since the last lookup. In this case, \c LookupPtr's
+    /// invariant may not hold and needs to be fixed before we perform
+    /// another lookup.
+    mutable uint64_t NeedToReconcileExternalVisibleStorage : 1;
 
-  /// \brief If \c true, lookups should only return identifier from
-  /// DeclContext scope (for example TranslationUnit). Used in
-  /// LookupQualifiedName()
-  mutable bool UseQualifiedLookup : 1;
+    /// If \c true, this context may have local lexical declarations
+    /// that are missing from the lookup table.
+    mutable uint64_t HasLazyLocalLexicalLookups : 1;
 
-  /// \brief Pointer to the data structure used to lookup declarations
+    /// If \c true, the external source may have lexical declarations
+    /// that are missing from the lookup table.
+    mutable uint64_t HasLazyExternalLexicalLookups : 1;
+
+    /// If \c true, lookups should only return identifier from
+    /// DeclContext scope (for example TranslationUnit). Used in
+    /// LookupQualifiedName()
+    mutable uint64_t UseQualifiedLookup : 1;
+  };
+
+  /// Number of bits in DeclContextBitfields.
+  enum { NumDeclContextBits = 13 };
+
+  /// Stores the bits used by TagDecl.
+  /// If modified NumTagDeclBits and the accessor
+  /// methods in TagDecl should be updated appropriately.
+  class TagDeclBitfields {
+    friend class TagDecl;
+    /// For the bits in DeclContextBitfields
+    uint64_t : NumDeclContextBits;
+
+    /// The TagKind enum.
+    uint64_t TagDeclKind : 3;
+
+    /// True if this is a definition ("struct foo {};"), false if it is a
+    /// declaration ("struct foo;").  It is not considered a definition
+    /// until the definition has been fully processed.
+    uint64_t IsCompleteDefinition : 1;
+
+    /// True if this is currently being defined.
+    uint64_t IsBeingDefined : 1;
+
+    /// True if this tag declaration is "embedded" (i.e., defined or declared
+    /// for the very first time) in the syntax of a declarator.
+    uint64_t IsEmbeddedInDeclarator : 1;
+
+    /// True if this tag is free standing, e.g. "struct foo;".
+    uint64_t IsFreeStanding : 1;
+
+    /// Indicates whether it is possible for declarations of this kind
+    /// to have an out-of-date definition.
+    ///
+    /// This option is only enabled when modules are enabled.
+    uint64_t MayHaveOutOfDateDef : 1;
+
+    /// Has the full definition of this type been required by a use somewhere in
+    /// the TU.
+    uint64_t IsCompleteDefinitionRequired : 1;
+  };
+
+  /// Number of non-inherited bits in TagDeclBitfields.
+  enum { NumTagDeclBits = 9 };
+
+  /// Stores the bits used by EnumDecl.
+  /// If modified NumEnumDeclBit and the accessor
+  /// methods in EnumDecl should be updated appropriately.
+  class EnumDeclBitfields {
+    friend class EnumDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+    /// For the bits in TagDeclBitfields.
+    uint64_t : NumTagDeclBits;
+
+    /// Width in bits required to store all the non-negative
+    /// enumerators of this enum.
+    uint64_t NumPositiveBits : 8;
+
+    /// Width in bits required to store all the negative
+    /// enumerators of this enum.
+    uint64_t NumNegativeBits : 8;
+
+    /// True if this tag declaration is a scoped enumeration. Only
+    /// possible in C++11 mode.
+    uint64_t IsScoped : 1;
+
+    /// If this tag declaration is a scoped enum,
+    /// then this is true if the scoped enum was declared using the class
+    /// tag, false if it was declared with the struct tag. No meaning is
+    /// associated if this tag declaration is not a scoped enum.
+    uint64_t IsScopedUsingClassTag : 1;
+
+    /// True if this is an enumeration with fixed underlying type. Only
+    /// possible in C++11, Microsoft extensions, or Objective C mode.
+    uint64_t IsFixed : 1;
+
+    /// True if a valid hash is stored in ODRHash.
+    uint64_t HasODRHash : 1;
+  };
+
+  /// Number of non-inherited bits in EnumDeclBitfields.
+  enum { NumEnumDeclBits = 20 };
+
+  /// Stores the bits used by RecordDecl.
+  /// If modified NumRecordDeclBits and the accessor
+  /// methods in RecordDecl should be updated appropriately.
+  class RecordDeclBitfields {
+    friend class RecordDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+    /// For the bits in TagDeclBitfields.
+    uint64_t : NumTagDeclBits;
+
+    /// This is true if this struct ends with a flexible
+    /// array member (e.g. int X[]) or if this union contains a struct that does.
+    /// If so, this cannot be contained in arrays or other structs as a member.
+    uint64_t HasFlexibleArrayMember : 1;
+
+    /// Whether this is the type of an anonymous struct or union.
+    uint64_t AnonymousStructOrUnion : 1;
+
+    /// This is true if this struct has at least one member
+    /// containing an Objective-C object pointer type.
+    uint64_t HasObjectMember : 1;
+
+    /// This is true if struct has at least one member of
+    /// 'volatile' type.
+    uint64_t HasVolatileMember : 1;
+
+    /// Whether the field declarations of this record have been loaded
+    /// from external storage. To avoid unnecessary deserialization of
+    /// methods/nested types we allow deserialization of just the fields
+    /// when needed.
+    mutable uint64_t LoadedFieldsFromExternalStorage : 1;
+
+    /// Basic properties of non-trivial C structs.
+    uint64_t NonTrivialToPrimitiveDefaultInitialize : 1;
+    uint64_t NonTrivialToPrimitiveCopy : 1;
+    uint64_t NonTrivialToPrimitiveDestroy : 1;
+
+    /// The following bits indicate whether this is or contains a C union that
+    /// is non-trivial to default-initialize, destruct, or copy. These bits
+    /// imply the associated basic non-triviality predicates declared above.
+    uint64_t HasNonTrivialToPrimitiveDefaultInitializeCUnion : 1;
+    uint64_t HasNonTrivialToPrimitiveDestructCUnion : 1;
+    uint64_t HasNonTrivialToPrimitiveCopyCUnion : 1;
+
+    /// Indicates whether this struct is destroyed in the callee.
+    uint64_t ParamDestroyedInCallee : 1;
+
+    /// Represents the way this type is passed to a function.
+    uint64_t ArgPassingRestrictions : 2;
+  };
+
+  /// Number of non-inherited bits in RecordDeclBitfields.
+  enum { NumRecordDeclBits = 14 };
+
+  /// Stores the bits used by OMPDeclareReductionDecl.
+  /// If modified NumOMPDeclareReductionDeclBits and the accessor
+  /// methods in OMPDeclareReductionDecl should be updated appropriately.
+  class OMPDeclareReductionDeclBitfields {
+    friend class OMPDeclareReductionDecl;
+    /// For the bits in DeclContextBitfields
+    uint64_t : NumDeclContextBits;
+
+    /// Kind of initializer,
+    /// function call or omp_priv<init_expr> initializtion.
+    uint64_t InitializerKind : 2;
+  };
+
+  /// Number of non-inherited bits in OMPDeclareReductionDeclBitfields.
+  enum { NumOMPDeclareReductionDeclBits = 2 };
+
+  /// Stores the bits used by FunctionDecl.
+  /// If modified NumFunctionDeclBits and the accessor
+  /// methods in FunctionDecl and CXXDeductionGuideDecl
+  /// (for IsCopyDeductionCandidate) should be updated appropriately.
+  class FunctionDeclBitfields {
+    friend class FunctionDecl;
+    /// For IsCopyDeductionCandidate
+    friend class CXXDeductionGuideDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+
+    uint64_t SClass : 3;
+    uint64_t IsInline : 1;
+    uint64_t IsInlineSpecified : 1;
+
+    uint64_t IsVirtualAsWritten : 1;
+    uint64_t IsPure : 1;
+    uint64_t HasInheritedPrototype : 1;
+    uint64_t HasWrittenPrototype : 1;
+    uint64_t IsDeleted : 1;
+    /// Used by CXXMethodDecl
+    uint64_t IsTrivial : 1;
+
+    /// This flag indicates whether this function is trivial for the purpose of
+    /// calls. This is meaningful only when this function is a copy/move
+    /// constructor or a destructor.
+    uint64_t IsTrivialForCall : 1;
+
+    /// Used by CXXMethodDecl
+    uint64_t IsDefaulted : 1;
+    /// Used by CXXMethodDecl
+    uint64_t IsExplicitlyDefaulted : 1;
+    uint64_t HasImplicitReturnZero : 1;
+    uint64_t IsLateTemplateParsed : 1;
+
+    /// Kind of contexpr specifier as defined by ConstexprSpecKind.
+    uint64_t ConstexprKind : 2;
+    uint64_t InstantiationIsPending : 1;
+
+    /// Indicates if the function uses __try.
+    uint64_t UsesSEHTry : 1;
+
+    /// Indicates if the function was a definition
+    /// but its body was skipped.
+    uint64_t HasSkippedBody : 1;
+
+    /// Indicates if the function declaration will
+    /// have a body, once we're done parsing it.
+    uint64_t WillHaveBody : 1;
+
+    /// Indicates that this function is a multiversioned
+    /// function using attribute 'target'.
+    uint64_t IsMultiVersion : 1;
+
+    /// [C++17] Only used by CXXDeductionGuideDecl. Indicates that
+    /// the Deduction Guide is the implicitly generated 'copy
+    /// deduction candidate' (is used during overload resolution).
+    uint64_t IsCopyDeductionCandidate : 1;
+
+    /// Store the ODRHash after first calculation.
+    uint64_t HasODRHash : 1;
+  };
+
+  /// Number of non-inherited bits in FunctionDeclBitfields.
+  enum { NumFunctionDeclBits = 25 };
+
+  /// Stores the bits used by CXXConstructorDecl. If modified
+  /// NumCXXConstructorDeclBits and the accessor
+  /// methods in CXXConstructorDecl should be updated appropriately.
+  class CXXConstructorDeclBitfields {
+    friend class CXXConstructorDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+    /// For the bits in FunctionDeclBitfields.
+    uint64_t : NumFunctionDeclBits;
+
+    /// 24 bits to fit in the remaining available space.
+    /// Note that this makes CXXConstructorDeclBitfields take
+    /// exactly 64 bits and thus the width of NumCtorInitializers
+    /// will need to be shrunk if some bit is added to NumDeclContextBitfields,
+    /// NumFunctionDeclBitfields or CXXConstructorDeclBitfields.
+    uint64_t NumCtorInitializers : 23;
+    uint64_t IsInheritingConstructor : 1;
+
+    /// Whether this constructor has a trail-allocated explicit specifier.
+    uint64_t HasTrailingExplicitSpecifier : 1;
+    /// If this constructor does't have a trail-allocated explicit specifier.
+    /// Whether this constructor is explicit specified.
+    uint64_t IsSimpleExplicit : 1;
+  };
+
+  /// Number of non-inherited bits in CXXConstructorDeclBitfields.
+  enum {
+    NumCXXConstructorDeclBits = 64 - NumDeclContextBits - NumFunctionDeclBits
+  };
+
+  /// Stores the bits used by ObjCMethodDecl.
+  /// If modified NumObjCMethodDeclBits and the accessor
+  /// methods in ObjCMethodDecl should be updated appropriately.
+  class ObjCMethodDeclBitfields {
+    friend class ObjCMethodDecl;
+
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+
+    /// The conventional meaning of this method; an ObjCMethodFamily.
+    /// This is not serialized; instead, it is computed on demand and
+    /// cached.
+    mutable uint64_t Family : ObjCMethodFamilyBitWidth;
+
+    /// instance (true) or class (false) method.
+    uint64_t IsInstance : 1;
+    uint64_t IsVariadic : 1;
+
+    /// True if this method is the getter or setter for an explicit property.
+    uint64_t IsPropertyAccessor : 1;
+
+    /// Method has a definition.
+    uint64_t IsDefined : 1;
+
+    /// Method redeclaration in the same interface.
+    uint64_t IsRedeclaration : 1;
+
+    /// Is redeclared in the same interface.
+    mutable uint64_t HasRedeclaration : 1;
+
+    /// \@required/\@optional
+    uint64_t DeclImplementation : 2;
+
+    /// in, inout, etc.
+    uint64_t objcDeclQualifier : 7;
+
+    /// Indicates whether this method has a related result type.
+    uint64_t RelatedResultType : 1;
+
+    /// Whether the locations of the selector identifiers are in a
+    /// "standard" position, a enum SelectorLocationsKind.
+    uint64_t SelLocsKind : 2;
+
+    /// Whether this method overrides any other in the class hierarchy.
+    ///
+    /// A method is said to override any method in the class's
+    /// base classes, its protocols, or its categories' protocols, that has
+    /// the same selector and is of the same kind (class or instance).
+    /// A method in an implementation is not considered as overriding the same
+    /// method in the interface or its categories.
+    uint64_t IsOverriding : 1;
+
+    /// Indicates if the method was a definition but its body was skipped.
+    uint64_t HasSkippedBody : 1;
+  };
+
+  /// Number of non-inherited bits in ObjCMethodDeclBitfields.
+  enum { NumObjCMethodDeclBits = 24 };
+
+  /// Stores the bits used by ObjCContainerDecl.
+  /// If modified NumObjCContainerDeclBits and the accessor
+  /// methods in ObjCContainerDecl should be updated appropriately.
+  class ObjCContainerDeclBitfields {
+    friend class ObjCContainerDecl;
+    /// For the bits in DeclContextBitfields
+    uint32_t : NumDeclContextBits;
+
+    // Not a bitfield but this saves space.
+    // Note that ObjCContainerDeclBitfields is full.
+    SourceLocation AtStart;
+  };
+
+  /// Number of non-inherited bits in ObjCContainerDeclBitfields.
+  /// Note that here we rely on the fact that SourceLocation is 32 bits
+  /// wide. We check this with the static_assert in the ctor of DeclContext.
+  enum { NumObjCContainerDeclBits = 64 - NumDeclContextBits };
+
+  /// Stores the bits used by LinkageSpecDecl.
+  /// If modified NumLinkageSpecDeclBits and the accessor
+  /// methods in LinkageSpecDecl should be updated appropriately.
+  class LinkageSpecDeclBitfields {
+    friend class LinkageSpecDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+
+    /// The language for this linkage specification with values
+    /// in the enum LinkageSpecDecl::LanguageIDs.
+    uint64_t Language : 3;
+
+    /// True if this linkage spec has braces.
+    /// This is needed so that hasBraces() returns the correct result while the
+    /// linkage spec body is being parsed.  Once RBraceLoc has been set this is
+    /// not used, so it doesn't need to be serialized.
+    uint64_t HasBraces : 1;
+  };
+
+  /// Number of non-inherited bits in LinkageSpecDeclBitfields.
+  enum { NumLinkageSpecDeclBits = 4 };
+
+  /// Stores the bits used by BlockDecl.
+  /// If modified NumBlockDeclBits and the accessor
+  /// methods in BlockDecl should be updated appropriately.
+  class BlockDeclBitfields {
+    friend class BlockDecl;
+    /// For the bits in DeclContextBitfields.
+    uint64_t : NumDeclContextBits;
+
+    uint64_t IsVariadic : 1;
+    uint64_t CapturesCXXThis : 1;
+    uint64_t BlockMissingReturnType : 1;
+    uint64_t IsConversionFromLambda : 1;
+
+    /// A bit that indicates this block is passed directly to a function as a
+    /// non-escaping parameter.
+    uint64_t DoesNotEscape : 1;
+
+    /// A bit that indicates whether it's possible to avoid coying this block to
+    /// the heap when it initializes or is assigned to a local variable with
+    /// automatic storage.
+    uint64_t CanAvoidCopyToHeap : 1;
+  };
+
+  /// Number of non-inherited bits in BlockDeclBitfields.
+  enum { NumBlockDeclBits = 5 };
+
+  /// Pointer to the data structure used to lookup declarations
   /// within this context (or a DependentStoredDeclsMap if this is a
   /// dependent context). We maintain the invariant that, if the map
   /// contains an entry for a DeclarationName (and we haven't lazily
@@ -1291,9 +1703,50 @@ class DeclContext {
   mutable StoredDeclsMap *LookupPtr = nullptr;
 
 protected:
-  friend class ASTDeclReader;
-  friend class ASTWriter;
-  friend class ExternalASTSource;
+  /// This anonymous union stores the bits belonging to DeclContext and classes
+  /// deriving from it. The goal is to use otherwise wasted
+  /// space in DeclContext to store data belonging to derived classes.
+  /// The space saved is especially significient when pointers are aligned
+  /// to 8 bytes. In this case due to alignment requirements we have a
+  /// little less than 8 bytes free in DeclContext which we can use.
+  /// We check that none of the classes in this union is larger than
+  /// 8 bytes with static_asserts in the ctor of DeclContext.
+  union {
+    DeclContextBitfields DeclContextBits;
+    TagDeclBitfields TagDeclBits;
+    EnumDeclBitfields EnumDeclBits;
+    RecordDeclBitfields RecordDeclBits;
+    OMPDeclareReductionDeclBitfields OMPDeclareReductionDeclBits;
+    FunctionDeclBitfields FunctionDeclBits;
+    CXXConstructorDeclBitfields CXXConstructorDeclBits;
+    ObjCMethodDeclBitfields ObjCMethodDeclBits;
+    ObjCContainerDeclBitfields ObjCContainerDeclBits;
+    LinkageSpecDeclBitfields LinkageSpecDeclBits;
+    BlockDeclBitfields BlockDeclBits;
+
+    static_assert(sizeof(DeclContextBitfields) <= 8,
+                  "DeclContextBitfields is larger than 8 bytes!");
+    static_assert(sizeof(TagDeclBitfields) <= 8,
+                  "TagDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(EnumDeclBitfields) <= 8,
+                  "EnumDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(RecordDeclBitfields) <= 8,
+                  "RecordDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(OMPDeclareReductionDeclBitfields) <= 8,
+                  "OMPDeclareReductionDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(FunctionDeclBitfields) <= 8,
+                  "FunctionDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(CXXConstructorDeclBitfields) <= 8,
+                  "CXXConstructorDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(ObjCMethodDeclBitfields) <= 8,
+                  "ObjCMethodDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(ObjCContainerDeclBitfields) <= 8,
+                  "ObjCContainerDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(LinkageSpecDeclBitfields) <= 8,
+                  "LinkageSpecDeclBitfields is larger than 8 bytes!");
+    static_assert(sizeof(BlockDeclBitfields) <= 8,
+                  "BlockDeclBitfields is larger than 8 bytes!");
+  };
 
   /// FirstDecl - The first declaration stored within this declaration
   /// context.
@@ -1305,24 +1758,19 @@ protected:
   /// another pointer.
   mutable Decl *LastDecl = nullptr;
 
-  /// \brief Build up a chain of declarations.
+  /// Build up a chain of declarations.
   ///
   /// \returns the first/last pair of declarations.
   static std::pair<Decl *, Decl *>
   BuildDeclChain(ArrayRef<Decl*> Decls, bool FieldsAlreadyLoaded);
 
-  DeclContext(Decl::Kind K)
-      : DeclKind(K), ExternalLexicalStorage(false),
-        ExternalVisibleStorage(false),
-        NeedToReconcileExternalVisibleStorage(false),
-        HasLazyLocalLexicalLookups(false), HasLazyExternalLexicalLookups(false),
-        UseQualifiedLookup(false) {}
+  DeclContext(Decl::Kind K);
 
 public:
   ~DeclContext();
 
   Decl::Kind getDeclKind() const {
-    return static_cast<Decl::Kind>(DeclKind);
+    return static_cast<Decl::Kind>(DeclContextBits.DeclKind);
   }
 
   const char *getDeclKindName() const;
@@ -1361,60 +1809,64 @@ public:
     return cast<Decl>(this)->getASTContext();
   }
 
-  bool isClosure() const {
-    return DeclKind == Decl::Block;
-  }
+  bool isClosure() const { return getDeclKind() == Decl::Block; }
+
+  /// Return this DeclContext if it is a BlockDecl. Otherwise, return the
+  /// innermost enclosing BlockDecl or null if there are no enclosing blocks.
+  const BlockDecl *getInnermostBlockDecl() const;
 
   bool isObjCContainer() const {
-    switch (DeclKind) {
-        case Decl::ObjCCategory:
-        case Decl::ObjCCategoryImpl:
-        case Decl::ObjCImplementation:
-        case Decl::ObjCInterface:
-        case Decl::ObjCProtocol:
-            return true;
+    switch (getDeclKind()) {
+    case Decl::ObjCCategory:
+    case Decl::ObjCCategoryImpl:
+    case Decl::ObjCImplementation:
+    case Decl::ObjCInterface:
+    case Decl::ObjCProtocol:
+      return true;
+    default:
+      return false;
     }
-    return false;
   }
 
   bool isFunctionOrMethod() const {
-    switch (DeclKind) {
+    switch (getDeclKind()) {
     case Decl::Block:
     case Decl::Captured:
     case Decl::ObjCMethod:
       return true;
     default:
-      return DeclKind >= Decl::firstFunction && DeclKind <= Decl::lastFunction;
+      return getDeclKind() >= Decl::firstFunction &&
+             getDeclKind() <= Decl::lastFunction;
     }
   }
 
-  /// \brief Test whether the context supports looking up names.
+  /// Test whether the context supports looking up names.
   bool isLookupContext() const {
-    return !isFunctionOrMethod() && DeclKind != Decl::LinkageSpec &&
-           DeclKind != Decl::Export;
+    return !isFunctionOrMethod() && getDeclKind() != Decl::LinkageSpec &&
+           getDeclKind() != Decl::Export;
   }
 
   bool isFileContext() const {
-    return DeclKind == Decl::TranslationUnit || DeclKind == Decl::Namespace;
+    return getDeclKind() == Decl::TranslationUnit ||
+           getDeclKind() == Decl::Namespace;
   }
 
   bool isTranslationUnit() const {
-    return DeclKind == Decl::TranslationUnit;
+    return getDeclKind() == Decl::TranslationUnit;
   }
 
   bool isRecord() const {
-    return DeclKind >= Decl::firstRecord && DeclKind <= Decl::lastRecord;
+    return getDeclKind() >= Decl::firstRecord &&
+           getDeclKind() <= Decl::lastRecord;
   }
 
-  bool isNamespace() const {
-    return DeclKind == Decl::Namespace;
-  }
+  bool isNamespace() const { return getDeclKind() == Decl::Namespace; }
 
   bool isStdNamespace() const;
 
   bool isInlineNamespace() const;
 
-  /// \brief Determines whether this context is dependent on a
+  /// Determines whether this context is dependent on a
   /// template parameter.
   bool isDependentContext() const;
 
@@ -1435,28 +1887,28 @@ public:
   /// C++0x scoped enums), and C++ linkage specifications.
   bool isTransparentContext() const;
 
-  /// \brief Determines whether this context or some of its ancestors is a
+  /// Determines whether this context or some of its ancestors is a
   /// linkage specification context that specifies C linkage.
   bool isExternCContext() const;
 
-  /// \brief Retrieve the nearest enclosing C linkage specification context.
+  /// Retrieve the nearest enclosing C linkage specification context.
   const LinkageSpecDecl *getExternCContext() const;
 
-  /// \brief Determines whether this context or some of its ancestors is a
+  /// Determines whether this context or some of its ancestors is a
   /// linkage specification context that specifies C++ linkage.
   bool isExternCXXContext() const;
 
-  /// \brief Determine whether this declaration context is equivalent
+  /// Determine whether this declaration context is equivalent
   /// to the declaration context DC.
   bool Equals(const DeclContext *DC) const {
     return DC && this->getPrimaryContext() == DC->getPrimaryContext();
   }
 
-  /// \brief Determine whether this declaration context encloses the
+  /// Determine whether this declaration context encloses the
   /// declaration context DC.
   bool Encloses(const DeclContext *DC) const;
 
-  /// \brief Find the nearest non-closure ancestor of this context,
+  /// Find the nearest non-closure ancestor of this context,
   /// i.e. the innermost semantic parent of this context which is not
   /// a closure.  A context may be its own non-closure ancestor.
   Decl *getNonClosureAncestor();
@@ -1483,19 +1935,19 @@ public:
     return const_cast<DeclContext *>(this)->getRedeclContext();
   }
 
-  /// \brief Retrieve the nearest enclosing namespace context.
+  /// Retrieve the nearest enclosing namespace context.
   DeclContext *getEnclosingNamespaceContext();
   const DeclContext *getEnclosingNamespaceContext() const {
     return const_cast<DeclContext *>(this)->getEnclosingNamespaceContext();
   }
 
-  /// \brief Retrieve the outermost lexically enclosing record context.
+  /// Retrieve the outermost lexically enclosing record context.
   RecordDecl *getOuterLexicalRecordContext();
   const RecordDecl *getOuterLexicalRecordContext() const {
     return const_cast<DeclContext *>(this)->getOuterLexicalRecordContext();
   }
 
-  /// \brief Test if this context is part of the enclosing namespace set of
+  /// Test if this context is part of the enclosing namespace set of
   /// the context NS, as defined in C++0x [namespace.def]p9. If either context
   /// isn't a namespace, this is equivalent to Equals().
   ///
@@ -1503,11 +1955,11 @@ public:
   /// inline, its enclosing namespace, recursively.
   bool InEnclosingNamespaceSetOf(const DeclContext *NS) const;
 
-  /// \brief Collects all of the declaration contexts that are semantically
+  /// Collects all of the declaration contexts that are semantically
   /// connected to this declaration context.
   ///
   /// For declaration contexts that have multiple semantically connected but
-  /// syntactically distinct contexts, such as C++ namespaces, this routine 
+  /// syntactically distinct contexts, such as C++ namespaces, this routine
   /// retrieves the complete set of such declaration contexts in source order.
   /// For example, given:
   ///
@@ -1659,7 +2111,7 @@ public:
     }
   };
 
-  /// \brief Iterates over a filtered subrange of declarations stored
+  /// Iterates over a filtered subrange of declarations stored
   /// in a DeclContext.
   ///
   /// This iterator visits only those declarations that are of type
@@ -1735,7 +2187,7 @@ public:
     }
   };
 
-  /// @brief Add the declaration D into this context.
+  /// Add the declaration D into this context.
   ///
   /// This routine should be invoked when the declaration D has first
   /// been declared, to place D into the context where it was
@@ -1749,7 +2201,7 @@ public:
   /// semantic context via makeDeclVisibleInContext.
   void addDecl(Decl *D);
 
-  /// @brief Add the declaration D into this context, but suppress
+  /// Add the declaration D into this context, but suppress
   /// searches for external declarations with the same name.
   ///
   /// Although analogous in function to addDecl, this removes an
@@ -1759,7 +2211,7 @@ public:
   /// See the ASTImporter for use cases.
   void addDeclInternal(Decl *D);
 
-  /// @brief Add the declaration D to this context without modifying
+  /// Add the declaration D to this context without modifying
   /// any lookup tables.
   ///
   /// This is useful for some operations in dependent contexts where
@@ -1767,11 +2219,15 @@ public:
   /// only happens with friends.
   void addHiddenDecl(Decl *D);
 
-  /// @brief Removes a declaration from this context.
+  /// Removes a declaration from this context.
   void removeDecl(Decl *D);
-    
-  /// @brief Checks whether a declaration is in this context.
+
+  /// Checks whether a declaration is in this context.
   bool containsDecl(Decl *D) const;
+
+  /// Checks whether a declaration is in this context.
+  /// This also loads the Decls from the external source before the check.
+  bool containsDeclAndLoad(Decl *D) const;
 
   using lookup_result = DeclContextLookupResult;
   using lookup_iterator = lookup_result::iterator;
@@ -1783,12 +2239,12 @@ public:
   /// routine will not look into parent contexts.
   lookup_result lookup(DeclarationName Name) const;
 
-  /// \brief Find the declarations with the given name that are visible
+  /// Find the declarations with the given name that are visible
   /// within this context; don't attempt to retrieve anything from an
   /// external source.
   lookup_result noload_lookup(DeclarationName Name);
 
-  /// \brief A simplistic name lookup mechanism that performs name lookup
+  /// A simplistic name lookup mechanism that performs name lookup
   /// into this declaration context without consulting the external source.
   ///
   /// This function should almost never be used, because it subverts the
@@ -1800,7 +2256,7 @@ public:
   void localUncachedLookup(DeclarationName Name,
                            SmallVectorImpl<NamedDecl *> &Results);
 
-  /// @brief Makes a declaration visible within this context.
+  /// Makes a declaration visible within this context.
   ///
   /// This routine makes the declaration D visible to name lookup
   /// within this context and, if this is a transparent context,
@@ -1823,13 +2279,15 @@ public:
   using lookups_range = llvm::iterator_range<all_lookups_iterator>;
 
   lookups_range lookups() const;
-  lookups_range noload_lookups() const;
+  // Like lookups(), but avoids loading external declarations.
+  // If PreserveInternalState, avoids building lookup data structures too.
+  lookups_range noload_lookups(bool PreserveInternalState) const;
 
-  /// \brief Iterators over all possible lookups within this context.
+  /// Iterators over all possible lookups within this context.
   all_lookups_iterator lookups_begin() const;
   all_lookups_iterator lookups_end() const;
 
-  /// \brief Iterators over all possible lookups within this context that are
+  /// Iterators over all possible lookups within this context that are
   /// currently loaded; don't attempt to retrieve anything from an external
   /// source.
   all_lookups_iterator noload_lookups_begin() const;
@@ -1861,7 +2319,7 @@ public:
 
   // Low-level accessors
 
-  /// \brief Mark that there are external lexical declarations that we need
+  /// Mark that there are external lexical declarations that we need
   /// to include in our lookup table (and that are not available as external
   /// visible lookups). These extra lookup results will be found by walking
   /// the lexical declarations of this context. This should be used only if
@@ -1870,53 +2328,57 @@ public:
   void setMustBuildLookupTable() {
     assert(this == getPrimaryContext() &&
            "should only be called on primary context");
-    HasLazyExternalLexicalLookups = true;
+    DeclContextBits.HasLazyExternalLexicalLookups = true;
   }
 
-  /// \brief Retrieve the internal representation of the lookup structure.
+  /// Retrieve the internal representation of the lookup structure.
   /// This may omit some names if we are lazily building the structure.
   StoredDeclsMap *getLookupPtr() const { return LookupPtr; }
 
-  /// \brief Ensure the lookup structure is fully-built and return it.
+  /// Ensure the lookup structure is fully-built and return it.
   StoredDeclsMap *buildLookup();
 
-  /// \brief Whether this DeclContext has external storage containing
+  /// Whether this DeclContext has external storage containing
   /// additional declarations that are lexically in this context.
-  bool hasExternalLexicalStorage() const { return ExternalLexicalStorage; }
+  bool hasExternalLexicalStorage() const {
+    return DeclContextBits.ExternalLexicalStorage;
+  }
 
-  /// \brief State whether this DeclContext has external storage for
+  /// State whether this DeclContext has external storage for
   /// declarations lexically in this context.
-  void setHasExternalLexicalStorage(bool ES = true) {
-    ExternalLexicalStorage = ES;
+  void setHasExternalLexicalStorage(bool ES = true) const {
+    DeclContextBits.ExternalLexicalStorage = ES;
   }
 
-  /// \brief Whether this DeclContext has external storage containing
+  /// Whether this DeclContext has external storage containing
   /// additional declarations that are visible in this context.
-  bool hasExternalVisibleStorage() const { return ExternalVisibleStorage; }
-
-  /// \brief State whether this DeclContext has external storage for
-  /// declarations visible in this context.
-  void setHasExternalVisibleStorage(bool ES = true) {
-    ExternalVisibleStorage = ES;
-    if (ES && LookupPtr)
-      NeedToReconcileExternalVisibleStorage = true;
+  bool hasExternalVisibleStorage() const {
+    return DeclContextBits.ExternalVisibleStorage;
   }
 
-  /// \brief Determine whether the given declaration is stored in the list of
+  /// State whether this DeclContext has external storage for
+  /// declarations visible in this context.
+  void setHasExternalVisibleStorage(bool ES = true) const {
+    DeclContextBits.ExternalVisibleStorage = ES;
+    if (ES && LookupPtr)
+      DeclContextBits.NeedToReconcileExternalVisibleStorage = true;
+  }
+
+  /// Determine whether the given declaration is stored in the list of
   /// declarations lexically within this context.
   bool isDeclInLexicalTraversal(const Decl *D) const {
-    return D && (D->NextInContextAndBits.getPointer() || D == FirstDecl || 
+    return D && (D->NextInContextAndBits.getPointer() || D == FirstDecl ||
                  D == LastDecl);
   }
 
-  bool setUseQualifiedLookup(bool use = true) {
-    bool old_value = UseQualifiedLookup;
-    UseQualifiedLookup = use;
+  bool setUseQualifiedLookup(bool use = true) const {
+    bool old_value = DeclContextBits.UseQualifiedLookup;
+    DeclContextBits.UseQualifiedLookup = use;
     return old_value;
   }
 
   bool shouldUseQualifiedLookup() const {
-    return UseQualifiedLookup;
+    return DeclContextBits.UseQualifiedLookup;
   }
 
   static bool classof(const Decl *D);
@@ -1928,12 +2390,50 @@ public:
                    bool Deserialize = false) const;
 
 private:
-  friend class DependentDiagnostic;
+  /// Whether this declaration context has had externally visible
+  /// storage added since the last lookup. In this case, \c LookupPtr's
+  /// invariant may not hold and needs to be fixed before we perform
+  /// another lookup.
+  bool hasNeedToReconcileExternalVisibleStorage() const {
+    return DeclContextBits.NeedToReconcileExternalVisibleStorage;
+  }
+
+  /// State that this declaration context has had externally visible
+  /// storage added since the last lookup. In this case, \c LookupPtr's
+  /// invariant may not hold and needs to be fixed before we perform
+  /// another lookup.
+  void setNeedToReconcileExternalVisibleStorage(bool Need = true) const {
+    DeclContextBits.NeedToReconcileExternalVisibleStorage = Need;
+  }
+
+  /// If \c true, this context may have local lexical declarations
+  /// that are missing from the lookup table.
+  bool hasLazyLocalLexicalLookups() const {
+    return DeclContextBits.HasLazyLocalLexicalLookups;
+  }
+
+  /// If \c true, this context may have local lexical declarations
+  /// that are missing from the lookup table.
+  void setHasLazyLocalLexicalLookups(bool HasLLLL = true) const {
+    DeclContextBits.HasLazyLocalLexicalLookups = HasLLLL;
+  }
+
+  /// If \c true, the external source may have lexical declarations
+  /// that are missing from the lookup table.
+  bool hasLazyExternalLexicalLookups() const {
+    return DeclContextBits.HasLazyExternalLexicalLookups;
+  }
+
+  /// If \c true, the external source may have lexical declarations
+  /// that are missing from the lookup table.
+  void setHasLazyExternalLexicalLookups(bool HasLELL = true) const {
+    DeclContextBits.HasLazyExternalLexicalLookups = HasLELL;
+  }
 
   void reconcileExternalVisibleStorage() const;
   bool LoadLexicalDeclsFromExternalStorage() const;
 
-  /// @brief Makes a declaration visible within this context, but
+  /// Makes a declaration visible within this context, but
   /// suppresses searches for external declarations with the same
   /// name.
   ///
@@ -1943,6 +2443,7 @@ private:
 
   StoredDeclsMap *CreateStoredDeclsMap(ASTContext &C) const;
 
+  void loadLazyLocalLexicalLookups();
   void buildLookupImpl(DeclContext *DCtx, bool Internal);
   void makeDeclVisibleInContextWithFlags(NamedDecl *D, bool Internal,
                                          bool Rediscoverable);

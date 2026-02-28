@@ -1,4 +1,12 @@
-// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++11 -o - %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 -std=c++11 -o - %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ferror-limit 100 -std=c++11 -o - %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp task
+  argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 void foo() {
 }
@@ -6,7 +14,7 @@ void foo() {
 #pragma omp task // expected-error {{unexpected OpenMP directive '#pragma omp task'}}
 
 class S {
-  S(const S &s) { a = s.a + 12; } // expected-note 10 {{implicitly declared private here}}
+  S(const S &s) { a = s.a + 12; } // expected-note 16 {{implicitly declared private here}}
   int a;
 
 public:
@@ -36,23 +44,32 @@ int foo() {
 #pragma omp task
 // expected-note@+1 2 {{predetermined as a firstprivate in a task construct here}}
   ++s1;
-#pragma omp task default(none)
+#pragma omp task default(none) // expected-note 2 {{explicit data sharing attribute requested here}}
 #pragma omp task default(shared)
-  ++a;
-#pragma omp task default(none)
+  ++a; // expected-error 2 {{variable 'a' must have explicitly specified data sharing attributes}}
+#pragma omp task default(none) // expected-note 2 {{explicit data sharing attribute requested here}}
+#pragma omp task
+  // expected-error@+1 {{calling a private constructor of class 'S'}}
+  ++a; // expected-error 2 {{variable 'a' must have explicitly specified data sharing attributes}}
+#pragma omp task
+#pragma omp task
+  // expected-error@+1 {{calling a private constructor of class 'S'}}
+  ++a; // expected-error {{calling a private constructor of class 'S'}}
+#pragma omp task default(shared)
 #pragma omp task
   // expected-error@+1 {{calling a private constructor of class 'S'}}
   ++a;
+#pragma omp parallel shared(a)
 #pragma omp task
 #pragma omp task
-  // expected-error@+1 {{calling a private constructor of class 'S'}}
   ++a;
+#pragma omp parallel shared(a)
 #pragma omp task default(shared)
 #pragma omp task
   ++a;
 #pragma omp task
 #pragma omp parallel
-  ++a;
+  ++a; // expected-error {{calling a private constructor of class 'S'}}
 // expected-error@+2 {{calling a private constructor of class 'S'}}
 #pragma omp task
   ++b;
@@ -156,7 +173,7 @@ L1:
       break;
     }
   }
-#pragma omp task default(none)
+#pragma omp task default(none) // expected-note {{explicit data sharing attribute requested here}}
   ++argc; // expected-error {{variable 'argc' must have explicitly specified data sharing attributes}}
 
   goto L2; // expected-error {{use of undeclared label 'L2'}}
@@ -173,12 +190,12 @@ L2:
       for (int n = 0; n < 100; ++n) {
   }
 
-#pragma omp task default(none)
+#pragma omp task default(none) // expected-note {{explicit data sharing attribute requested here}}
 #pragma omp task default(shared)
-  ++a;
-#pragma omp task default(none)
+  ++a; // expected-error {{variable 'a' must have explicitly specified data sharing attributes}}
+#pragma omp task default(none) // expected-note {{explicit data sharing attribute requested here}}
 #pragma omp task
-  ++a;
+  ++a; // expected-error {{variable 'a' must have explicitly specified data sharing attributes}}
 #pragma omp task default(shared)
 #pragma omp task
   ++a;
@@ -190,23 +207,32 @@ L2:
 #pragma omp task
 #pragma omp parallel shared(a, b)
   ++a, ++b;
-#pragma omp task default(none)
+#pragma omp task default(none) // expected-note {{explicit data sharing attribute requested here}}
 #pragma omp task default(shared)
-  ++sa;
-#pragma omp task default(none)
+  ++sa; // expected-error {{variable 'sa' must have explicitly specified data sharing attributes}}
+#pragma omp task default(none) // expected-note {{explicit data sharing attribute requested here}}
+#pragma omp task
+  // expected-error@+1 {{calling a private constructor of class 'S'}}
+  ++sa; // expected-error {{variable 'sa' must have explicitly specified data sharing attributes}}
+#pragma omp task
+#pragma omp task
+  // expected-error@+1 {{calling a private constructor of class 'S'}}
+  ++sa; // expected-error {{calling a private constructor of class 'S'}}
+#pragma omp task default(shared)
 #pragma omp task
   // expected-error@+1 {{calling a private constructor of class 'S'}}
   ++sa;
+#pragma omp parallel shared(sa)
 #pragma omp task
 #pragma omp task
-  // expected-error@+1 {{calling a private constructor of class 'S'}}
   ++sa;
+#pragma omp parallel shared(sa)
 #pragma omp task default(shared)
 #pragma omp task
   ++sa;
 #pragma omp task
 #pragma omp parallel
-  ++sa;
+  ++sa; // expected-error {{calling a private constructor of class 'S'}}
 // expected-error@+2 {{calling a private constructor of class 'S'}}
 #pragma omp task
   ++sb;

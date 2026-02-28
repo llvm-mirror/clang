@@ -2,6 +2,12 @@
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -debug-info-kind=limited -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -debug-info-kind=limited -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp-simd -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
@@ -11,21 +17,21 @@ double *g_ptr;
 
 // CHECK-LABEL: define {{.*void}} @{{.*}}simple{{.*}}(float* {{.+}}, float* {{.+}}, float* {{.+}}, float* {{.+}})
 void simple(float *a, float *b, float *c, float *d) {
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
 // CHECK: [[K0:%.+]] = call {{.*}}i64 @{{.*}}get_val
 // CHECK-NEXT: store i64 [[K0]], i64* [[K_VAR:%[^,]+]]
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
 // CHECK: store i32 12, i32* [[LIN_VAR:%[^,]+]]
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
 // CHECK: store i32 -1, i32* [[A:%.+]],
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
 // CHECK: store i32 -1, i32* [[R:%[^,]+]],
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
   #pragma omp parallel for simd
-// CHECK: call void @__kmpc_for_static_init_4(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
+// CHECK: call void @__kmpc_for_static_init_4(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
 // CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i32 [[UB_VAL]], 5
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -61,7 +67,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // br label %{{.+}}, !llvm.loop !{{.+}}
   }
 // CHECK: [[SIMPLE_LOOP1_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 
   long long k = get_val();
 
@@ -69,29 +75,29 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK: [[K0LOAD:%.+]] = load i64, i64* [[K_VAR:%[^,]+]]
 // CHECK-NEXT: store i64 [[K0LOAD]], i64* [[LIN0:%[^,]+]]
 
-// CHECK: call void @__kmpc_dispatch_init_4(%ident_t* {{.+}}, i32 %{{.+}}, i32 35, i32 0, i32 8, i32 1, i32 1)
-// CHECK: [[NEXT:%.+]] = call i32 @__kmpc_dispatch_next_4(%ident_t* {{.+}}, i32 %{{.+}}, i32* %{{.+}}, i32* [[LB:%.+]], i32* [[UB:%.+]], i32* %{{.+}})
+// CHECK: call void @__kmpc_dispatch_init_4(%struct.ident_t* {{.+}}, i32 %{{.+}}, i32 35, i32 0, i32 8, i32 1, i32 1)
+// CHECK: [[NEXT:%.+]] = call i32 @__kmpc_dispatch_next_4(%struct.ident_t* {{.+}}, i32 %{{.+}}, i32* %{{.+}}, i32* [[LB:%.+]], i32* [[UB:%.+]], i32* %{{.+}})
 // CHECK: [[COND:%.+]] = icmp ne i32 [[NEXT]], 0
 // CHECK: br i1 [[COND]], label %[[CONT:.+]], label %[[END:.+]]
 // CHECK: [[CONT]]:
 // CHECK: [[LB_VAL:%.+]] = load i32, i32* [[LB]],
 // CHECK: store i32 [[LB_VAL]], i32* [[OMP_IV2:%[^,]+]],
 
-// CHECK: [[IV2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID:[0-9]+]]
-// CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK: [[IV2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.access.group
+// CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]]{{.*}}!llvm.access.group
 // CHECK-NEXT: [[CMP2:%.+]] = icmp sle i32 [[IV2]], [[UB_VAL]]
 // CHECK-NEXT: br i1 [[CMP2]], label %[[SIMPLE_LOOP2_BODY:.+]], label %[[SIMPLE_LOOP2_END:[^,]+]]
   for (int i = 10; i > 1; i--) {
 // CHECK: [[SIMPLE_LOOP2_BODY]]:
 // Start of body: calculate i from IV:
-// CHECK: [[IV2_0:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK: [[IV2_0:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.access.group
 // FIXME: It is interesting, why the following "mul 1" was not constant folded?
 // CHECK-NEXT: [[IV2_1:%.+]] = mul nsw i32 [[IV2_0]], 1
 // CHECK-NEXT: [[LC_I_1:%.+]] = sub nsw i32 10, [[IV2_1]]
-// CHECK-NEXT: store i32 [[LC_I_1]], i32* {{.+}}, !llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK-NEXT: store i32 [[LC_I_1]], i32* {{.+}}, !llvm.access.group
 //
-// CHECK-NEXT: [[LIN0_1:%.+]] = load i64, i64* [[LIN0]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
-// CHECK-NEXT: [[IV2_2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK-NEXT: [[LIN0_1:%.+]] = load i64, i64* [[LIN0]]{{.*}}!llvm.access.group
+// CHECK-NEXT: [[IV2_2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.access.group
 // CHECK-NEXT: [[LIN_MUL1:%.+]] = mul nsw i32 [[IV2_2]], 3
 // CHECK-NEXT: [[LIN_EXT1:%.+]] = sext i32 [[LIN_MUL1]] to i64
 // CHECK-NEXT: [[LIN_ADD1:%.+]] = add nsw i64 [[LIN0_1]], [[LIN_EXT1]]
@@ -99,9 +105,9 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[LIN_ADD1]], i64* [[K_PRIVATIZED:%[^,]+]]
     a[k]++;
     k = k + 3;
-// CHECK: [[IV2_2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK: [[IV2_2:%.+]] = load i32, i32* [[OMP_IV2]]{{.*}}!llvm.access.group
 // CHECK-NEXT: [[ADD2_2:%.+]] = add nsw i32 [[IV2_2]], 1
-// CHECK-NEXT: store i32 [[ADD2_2]], i32* [[OMP_IV2]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP2_ID]]
+// CHECK-NEXT: store i32 [[ADD2_2]], i32* [[OMP_IV2]]{{.*}}!llvm.access.group
 // br label {{.+}}, !llvm.loop ![[SIMPLE_LOOP2_ID]]
   }
 // CHECK: [[SIMPLE_LOOP2_END]]:
@@ -126,7 +132,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK: [[GLIN_LOAD:%.+]] = load double*, double** [[GLIN_VAR:%.+]],
 // CHECK-NEXT: store double* [[GLIN_LOAD]], double** [[GLIN_START:%[^,]+]]
 
-// CHECK: call void @__kmpc_for_static_init_8u(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
+// CHECK: call void @__kmpc_for_static_init_8u(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
 // CHECK: [[UB_VAL:%.+]] = load i64, i64* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp ugt i64 [[UB_VAL]], 3
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -173,7 +179,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[ADD3_2]], i64* [[OMP_IV3]]
   }
 // CHECK: [[SIMPLE_LOOP3_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 //
 // Linear start and step are used to calculate final value of the linear variables.
 // CHECK: [[LINSTART:.+]] = load i32, i32* [[LIN_START]]
@@ -183,7 +189,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK: store double* {{.*}}[[GLIN_VAR]]
 
   #pragma omp parallel for simd
-// CHECK: call void @__kmpc_for_static_init_4(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
+// CHECK: call void @__kmpc_for_static_init_4(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
 // CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i32 [[UB_VAL]], 3
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -216,10 +222,10 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i32 [[ADD4_2]], i32* [[OMP_IV4]]
   }
 // CHECK: [[SIMPLE_LOOP4_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 
   #pragma omp parallel for simd
-// CHECK: call void @__kmpc_for_static_init_4(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
+// CHECK: call void @__kmpc_for_static_init_4(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
 // CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i32 [[UB_VAL]], 25
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -252,7 +258,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i32 [[ADD5_2]], i32* [[OMP_IV5]]
   }
 // CHECK: [[SIMPLE_LOOP5_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 
 // CHECK-NOT: mul i32 %{{.+}}, 10
   #pragma omp parallel for simd
@@ -263,7 +269,7 @@ void simple(float *a, float *b, float *c, float *d) {
   {
   A = -1;
   #pragma omp parallel for simd lastprivate(A)
-// CHECK: call void @__kmpc_for_static_init_8(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
+// CHECK: call void @__kmpc_for_static_init_8(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
 // CHECK: [[UB_VAL:%.+]] = load i64, i64* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i64 [[UB_VAL]], 6
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -300,7 +306,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[ADD7_2]], i64* [[OMP_IV7]]
   }
 // CHECK: [[SIMPLE_LOOP7_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 // CHECK: load i32, i32*
 // CHECK: icmp ne i32 %{{.+}}, 0
 // CHECK: br i1 %{{.+}}, label
@@ -313,7 +319,7 @@ void simple(float *a, float *b, float *c, float *d) {
   R = -1;
 // CHECK: store i32 1, i32* [[R_PRIV:%[^,]+]],
   #pragma omp parallel for simd reduction(*:R)
-// CHECK: call void @__kmpc_for_static_init_8(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
+// CHECK: call void @__kmpc_for_static_init_8(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
 // CHECK: [[UB_VAL:%.+]] = load i64, i64* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i64 [[UB_VAL]], 6
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -349,7 +355,7 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[ADD8_2]], i64* [[OMP_IV8]]
   }
 // CHECK: [[SIMPLE_LOOP8_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 // CHECK: call i32 @__kmpc_reduce_nowait(
 // CHECK: [[R_PRIV_VAL:%.+]] = load i32, i32* [[R_PRIV]],
 // CHECK: [[RED:%.+]] = mul nsw i32 %{{.+}}, [[R_PRIV_VAL]]
@@ -373,7 +379,7 @@ int templ1(T a, T *z) {
 
 // Instatiation templ1<float,2>
 // CHECK-LABEL: define {{.*i32}} @{{.*}}templ1{{.*}}(float {{.+}}, float* {{.+}})
-// CHECK: call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+// CHECK: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
 void inst_templ1() {
   float a;
   float z[100];
@@ -421,7 +427,7 @@ void iter_simple(IterDouble ia, IterDouble ib, IterDouble ic) {
 // CHECK-NEXT: store i32 [[DIFF5]], i32* [[OMP_LAST_IT:%[^,]+]]{{.+}}
   #pragma omp parallel for simd
 
-// CHECK: call void @__kmpc_for_static_init_4(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
+// CHECK: call void @__kmpc_for_static_init_4(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
 // CHECK-DAG: [[UB_VAL:%.+]] = load i32, i32* [[UB]],
 // CHECK-DAG: [[OMP_LAST_IT_VAL:%.+]] = load i32, i32* [[OMP_LAST_IT]],
 // CHECK: [[CMP:%.+]] = icmp sgt i32 [[UB_VAL]], [[OMP_LAST_IT_VAL]]
@@ -462,7 +468,7 @@ void iter_simple(IterDouble ia, IterDouble ib, IterDouble ic) {
 // br label %{{.*}}, !llvm.loop ![[ITER_LOOP_ID]]
   }
 // CHECK: [[IT_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 // CHECK: ret void
 }
 
@@ -473,7 +479,7 @@ void collapsed(float *a, float *b, float *c, float *d) {
   unsigned j; // middle loop couter, leads to unsigned icmp in loop header.
   // k declared in the loop init below
   short l; // inner loop counter
-// CHECK: call void @__kmpc_for_static_init_4u(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
+// CHECK: call void @__kmpc_for_static_init_4u(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i32* [[LB:%[^,]+]], i32* [[UB:%[^,]+]], i32* [[STRIDE:%[^,]+]], i32 1, i32 1)
 // CHECK: [[UB_VAL:%.+]] = load i32, i32* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp ugt i32 [[UB_VAL]], 119
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -507,22 +513,70 @@ void collapsed(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: [[CALC_I_1_MUL1:%.+]] = mul i32 [[CALC_I_1]], 1
 // CHECK-NEXT: [[CALC_I_2:%.+]] = add i32 1, [[CALC_I_1_MUL1]]
 // CHECK-NEXT: store i32 [[CALC_I_2]], i32* [[LC_I:.+]]
+
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]
-// CHECK-NEXT: [[CALC_J_1:%.+]] = udiv i32 [[IV1_2]], 20
-// CHECK-NEXT: [[CALC_J_2:%.+]] = urem i32 [[CALC_J_1]], 3
+// CHECK: [[IV1_2_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[CALC_J_1:%.+]] = udiv i32 [[IV1_2_1]], 60
+// CHECK-NEXT: [[MUL_1:%.+]] = mul i32 [[CALC_J_1]], 60
+// CHECK-NEXT: [[SUB_3:%.+]] = sub i32 [[IV1_2]], [[MUL_1]]
+// CHECK-NEXT: [[CALC_J_2:%.+]] = udiv i32 [[SUB_3]], 20
 // CHECK-NEXT: [[CALC_J_2_MUL1:%.+]] = mul i32 [[CALC_J_2]], 1
 // CHECK-NEXT: [[CALC_J_3:%.+]] = add i32 2, [[CALC_J_2_MUL1]]
 // CHECK-NEXT: store i32 [[CALC_J_3]], i32* [[LC_J:.+]]
+
 // CHECK: [[IV1_3:%.+]] = load i32, i32* [[OMP_IV]]
-// CHECK-NEXT: [[CALC_K_1:%.+]] = udiv i32 [[IV1_3]], 5
-// CHECK-NEXT: [[CALC_K_2:%.+]] = urem i32 [[CALC_K_1]], 4
-// CHECK-NEXT: [[CALC_K_2_MUL1:%.+]] = mul i32 [[CALC_K_2]], 1
-// CHECK-NEXT: [[CALC_K_3:%.+]] = add i32 3, [[CALC_K_2_MUL1]]
-// CHECK-NEXT: store i32 [[CALC_K_3]], i32* [[LC_K:.+]]
+// CHECK: [[IV1_3_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_1:%.+]] = udiv i32 [[IV1_3_1]], 60
+// CHECK-NEXT: [[MUL_2:%.+]] = mul i32 [[DIV_1]], 60
+// CHECK-NEXT: [[ADD_3:%.+]] = sub i32 [[IV1_3]], [[MUL_2]]
+
 // CHECK: [[IV1_4:%.+]] = load i32, i32* [[OMP_IV]]
-// CHECK-NEXT: [[CALC_L_1:%.+]] = urem i32 [[IV1_4]], 5
-// CHECK-NEXT: [[CALC_L_1_MUL1:%.+]] = mul i32 [[CALC_L_1]], 1
-// CHECK-NEXT: [[CALC_L_2:%.+]] = add i32 4, [[CALC_L_1_MUL1]]
+// CHECK: [[IV1_4_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_2:%.+]] = udiv i32 [[IV1_4_1]], 60
+// CHECK-NEXT: [[MUL_3:%.+]] = mul i32 [[DIV_2]], 60
+// CHECK-NEXT: [[SUB_6:%.+]] = sub i32 [[IV1_4]], [[MUL_3]]
+// CHECK-NEXT: [[DIV_3:%.+]] = udiv i32 [[SUB_6]], 20
+// CHECK-NEXT: [[MUL_4:%.+]] = mul i32 [[DIV_3]], 20
+// CHECK-NEXT: [[SUB_7:%.+]] = sub i32 [[ADD_3]], [[MUL_4]]
+// CHECK-NEXT: [[DIV_4:%.+]] = udiv i32 [[SUB_7]], 5
+// CHECK-NEXT: [[MUL_5:%.+]] = mul i32 [[DIV_4]], 1
+// CHECK-NEXT: [[ADD_6:%.+]] = add i32 3, [[MUL_5]]
+// CHECK-NEXT: store i32 [[ADD_6]], i32* [[LC_K:.+]]
+
+// CHECK: [[IV1_5:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK: [[IV1_5_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_5:%.+]] = udiv i32 [[IV1_5_1]], 60
+// CHECK-NEXT: [[MUL_6:%.+]] = mul i32 [[DIV_5]], 60
+// CHECK-NEXT: [[ADD_7:%.+]] = sub i32 [[IV1_5]], [[MUL_6]]
+
+// CHECK: [[IV1_6:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK: [[IV1_6_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_6:%.+]] = udiv i32 [[IV1_6_1]], 60
+// CHECK-NEXT: [[MUL_7:%.+]] = mul i32 [[DIV_6]], 60
+// CHECK-NEXT: [[SUB_10:%.+]] = sub i32 [[IV1_6]], [[MUL_7]]
+// CHECK-NEXT: [[DIV_7:%.+]] = udiv i32 [[SUB_10]], 20
+// CHECK-NEXT: [[MUL_8:%.+]] = mul i32 [[DIV_7]], 20
+// CHECK-NEXT: [[ADD_9:%.+]] = sub i32 [[ADD_7]], [[MUL_8]]
+
+// CHECK: [[IV1_7:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK: [[IV1_7_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_8:%.+]] = udiv i32 [[IV1_7_1]], 60
+// CHECK-NEXT: [[MUL_9:%.+]] = mul i32 [[DIV_8]], 60
+// CHECK-NEXT: [[ADD_10:%.+]] = sub i32 [[IV1_7]], [[MUL_9]]
+
+// CHECK: [[IV1_8:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK: [[IV1_8_1:%.+]] = load i32, i32* [[OMP_IV]]
+// CHECK-NEXT: [[DIV_3:%.+]] = udiv i32 [[IV1_8_1]], 60
+// CHECK-NEXT: [[MUL_4:%.+]] = mul i32 [[DIV_3]], 60
+// CHECK-NEXT: [[SUB_7:%.+]] = sub i32 [[IV1_8]], [[MUL_4]]
+// CHECK-NEXT: [[DIV_4:%.+]] = udiv i32 [[SUB_7]], 20
+// CHECK-NEXT: [[MUL_5:%.+]] = mul i32 [[DIV_4]], 20
+// CHECK-NEXT: [[SUB_8:%.+]] = sub i32 [[ADD_10]], [[MUL_5]]
+// CHECK-NEXT: [[DIV_5:%.+]] = udiv i32 [[SUB_8]], 5
+// CHECK-NEXT: [[MUL_6:%.+]] = mul i32 [[DIV_5]], 5
+// CHECK-NEXT: [[SUB_9:%.+]] = sub i32 [[ADD_9]], [[MUL_6]]
+// CHECK-NEXT: [[MUL_6:%.+]] = mul i32 [[SUB_9]], 1
+// CHECK-NEXT: [[CALC_L_2:%.+]] = add i32 4, [[MUL_6]]
 // CHECK-NEXT: [[CALC_L_3:%.+]] = trunc i32 [[CALC_L_2]] to i16
 // CHECK-NEXT: store i16 [[CALC_L_3]], i16* [[LC_L:.+]]
 // ... loop body ...
@@ -537,7 +591,7 @@ void collapsed(float *a, float *b, float *c, float *d) {
 // CHECK: [[COLL1_END]]:
   }
 // i,j,l are updated; k is not updated.
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 // CHECK: store i32 3, i32* [[I:%[^,]+]]
 // CHECK: store i32 5, i32* [[I:%[^,]+]]
 // CHECK: store i16 9, i16* [[I:%[^,]+]]
@@ -558,7 +612,7 @@ void widened(float *a, float *b, float *c, float *d) {
 // CHECK:     [[MUL:%.+]] = mul nsw i64 2, %{{.+}}
 // CHECK-NEXT: [[SUB:%.+]] = sub nsw i64 [[MUL]], 1
 // CHECK-NEXT: store i64 [[SUB]], i64* [[OMP_LAST_IT:%[^,]+]],
-// CHECK: call void @__kmpc_for_static_init_8(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
+// CHECK: call void @__kmpc_for_static_init_8(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
 // CHECK-DAG: [[UB_VAL:%.+]] = load i64, i64* [[UB]],
 // CHECK-DAG: [[OMP_LAST_IT_VAL:%.+]] = load i64, i64* [[OMP_LAST_IT]],
 // CHECK: [[CMP:%.+]] = icmp sgt i64 [[UB_VAL]], [[OMP_LAST_IT_VAL]]
@@ -620,7 +674,7 @@ void widened(float *a, float *b, float *c, float *d) {
 // CHECK: ret void
 }
 
-// CHECK: call void @__kmpc_for_static_init_8(%ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
+// CHECK: call void @__kmpc_for_static_init_8(%struct.ident_t* {{[^,]+}}, i32 %{{[^,]+}}, i32 34, i32* %{{[^,]+}}, i64* [[LB:%[^,]+]], i64* [[UB:%[^,]+]], i64* [[STRIDE:%[^,]+]], i64 1, i64 1)
 // CHECK: [[UB_VAL:%.+]] = load i64, i64* [[UB]],
 // CHECK: [[CMP:%.+]] = icmp sgt i64 [[UB_VAL]], 15
 // CHECK: br i1 [[CMP]], label %[[TRUE:.+]], label %[[FALSE:[^,]+]]
@@ -649,7 +703,10 @@ void widened(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: [[I_2:%.+]] = trunc i64 [[I_1_ADD0]] to i32
 // CHECK-NEXT: store i32 [[I_2]], i32*
 // CHECK: [[IV2:%.+]] = load i64, i64* [[T1_OMP_IV]]
-// CHECK-NEXT: [[J_1:%.+]] = srem i64 [[IV2]], 4
+// CHECK: [[IV2_1:%.+]] = load i64, i64* [[T1_OMP_IV]]
+// CHECK-NEXT: [[DIV_1:%.+]] = sdiv i64 [[IV2_1]], 4
+// CHECK-NEXT: [[MUL_1:%.+]] = mul nsw i64 [[DIV_1]], 4
+// CHECK-NEXT: [[J_1:%.+]] = sub nsw i64 [[IV2]], [[MUL_1]]
 // CHECK-NEXT: [[J_2:%.+]] = mul nsw i64 [[J_1]], 2
 // CHECK-NEXT: [[J_2_ADD0:%.+]] = add nsw i64 0, [[J_2]]
 // CHECK-NEXT: store i64 [[J_2_ADD0]], i64*
@@ -659,7 +716,7 @@ void widened(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[INC]], i64*
 // CHECK-NEXT: br label {{%.+}}
 // CHECK: [[T1_END]]:
-// CHECK: call void @__kmpc_for_static_fini(%ident_t* {{.+}}, i32 %{{.+}})
+// CHECK: call void @__kmpc_for_static_fini(%struct.ident_t* {{.+}}, i32 %{{.+}})
 // CHECK: ret void
 //
 // TERM_DEBUG-LABEL: bar
@@ -679,5 +736,6 @@ void parallel_simd(float *a) {
     a[i] += bar();
 }
 // TERM_DEBUG: !{{[0-9]+}} = !DILocation(line: [[@LINE-11]],
+// TERM_DEBUG-NOT: line: 0,
 #endif // HEADER
 

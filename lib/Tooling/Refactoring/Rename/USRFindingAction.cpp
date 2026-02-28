@@ -1,14 +1,13 @@
 //===--- USRFindingAction.cpp - Clang refactoring library -----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief Provides an action to find USR for the symbol at <offset>, as well as
+/// Provides an action to find USR for the symbol at <offset>, as well as
 /// all additional USRs.
 ///
 //===----------------------------------------------------------------------===//
@@ -55,7 +54,7 @@ const NamedDecl *getCanonicalSymbolDeclaration(const NamedDecl *FoundDecl) {
 }
 
 namespace {
-// \brief NamedDeclFindingConsumer should delegate finding USRs of given Decl to
+// NamedDeclFindingConsumer should delegate finding USRs of given Decl to
 // AdditionalUSRFinder. AdditionalUSRFinder adds USRs of ctor and dtor if given
 // Decl refers to class and adds USRs of all overridden methods if Decl refers
 // to virtual method.
@@ -103,6 +102,10 @@ public:
 
 private:
   void handleCXXRecordDecl(const CXXRecordDecl *RecordDecl) {
+    if (!RecordDecl->getDefinition()) {
+      USRSet.insert(getUSRForDecl(RecordDecl));
+      return;
+    }
     RecordDecl = RecordDecl->getDefinition();
     if (const auto *ClassTemplateSpecDecl =
             dyn_cast<ClassTemplateSpecializationDecl>(RecordDecl))
@@ -265,7 +268,7 @@ private:
 };
 
 std::unique_ptr<ASTConsumer> USRFindingAction::newASTConsumer() {
-  return llvm::make_unique<NamedDeclFindingConsumer>(
+  return std::make_unique<NamedDeclFindingConsumer>(
       SymbolOffsets, QualifiedNames, SpellingNames, USRList, Force,
       ErrorOccurred);
 }

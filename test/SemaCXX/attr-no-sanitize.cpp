@@ -16,12 +16,22 @@ int f3() __attribute__((no_sanitize("address")));
 // PRINT: int f4() {{\[\[}}clang::no_sanitize("thread")]]
 [[clang::no_sanitize("thread")]] int f4();
 
+// DUMP-LABEL: FunctionDecl {{.*}} f4
+// DUMP: NoSanitizeAttr {{.*}} hwaddress
+// PRINT: int f4() {{\[\[}}clang::no_sanitize("hwaddress")]]
+[[clang::no_sanitize("hwaddress")]] int f4();
+
 // DUMP-LABEL: FunctionDecl {{.*}} f5
-// DUMP: NoSanitizeAttr {{.*}} address thread
-// PRINT: int f5() __attribute__((no_sanitize("address", "thread")))
-int f5() __attribute__((no_sanitize("address", "thread")));
+// DUMP: NoSanitizeAttr {{.*}} address thread hwaddress
+// PRINT: int f5() __attribute__((no_sanitize("address", "thread", "hwaddress")))
+int f5() __attribute__((no_sanitize("address", "thread", "hwaddress")));
 
 // DUMP-LABEL: FunctionDecl {{.*}} f6
 // DUMP: NoSanitizeAttr {{.*}} unknown
 // PRINT: int f6() __attribute__((no_sanitize("unknown")))
 int f6() __attribute__((no_sanitize("unknown"))); // expected-warning{{unknown sanitizer 'unknown' ignored}}
+
+// DUMP-LABEL: FunctionDecl {{.*}} f7
+// DUMP: NoSanitizeAttr {{.*}} memtag
+// PRINT: int f7() {{\[\[}}clang::no_sanitize("memtag")]]
+[[clang::no_sanitize("memtag")]] int f7();

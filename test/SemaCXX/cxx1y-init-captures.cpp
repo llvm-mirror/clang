@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -std=c++1y %s -verify -emit-llvm-only
+// RUN: %clang_cc1 -std=c++1z %s -verify -emit-llvm-only
 
 namespace variadic_expansion {
   int f(int &, char &) { return 0; }
@@ -144,13 +145,13 @@ int test(T t = T{}) {
     };
   }
   { // will need to capture x in outer lambda
-    const int x = 10; //expected-note 2{{declared}}
-    auto L = [z = x](char a) { //expected-note 2{{begins}}
-      auto M = [&y = x](T b) { //expected-error 2{{cannot be implicitly captured}}
+    const int x = 10; //expected-note {{declared}}
+    auto L = [z = x](char a) { //expected-note {{begins}}
+      auto M = [&y = x](T b) { //expected-error {{cannot be implicitly captured}}
         return y;
       };
       return M;
-    };     
+    };
   }
   {
     // no captures
@@ -213,4 +214,18 @@ namespace init_capture_undeclared_identifier {
   int typo_foo; // expected-note 2 {{'typo_foo' declared here}}
   auto b = [x = typo_boo]{}; // expected-error{{use of undeclared identifier 'typo_boo'; did you mean 'typo_foo'}}
   auto c = [x(typo_boo)]{}; // expected-error{{use of undeclared identifier 'typo_boo'; did you mean 'typo_foo'}}
+}
+
+namespace copy_evasion {
+  struct A {
+    A();
+    A(const A&) = delete;
+  };
+  auto x = [a{A()}] {};
+#if __cplusplus >= 201702L
+  // ok, does not copy an 'A'
+#else
+  // expected-error@-4 {{call to deleted}}
+  // expected-note@-7 {{deleted}}
+#endif
 }

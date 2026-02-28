@@ -1,9 +1,8 @@
 //===- ContinuousRangeMap.h - Map with int range as key ---------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,6 +15,7 @@
 #define LLVM_CLANG_SERIALIZATION_CONTINUOUSRANGEMAP_H
 
 #include "clang/Basic/LLVM.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cassert>
@@ -23,7 +23,7 @@
 
 namespace clang {
 
-/// \brief A map from continuous integer ranges to some value, with a very
+/// A map from continuous integer ranges to some value, with a very
 /// specialized interface.
 ///
 /// CRM maps from integer ranges to values. The ranges are continuous, i.e.
@@ -71,14 +71,14 @@ public:
            "Must insert keys in order.");
     Rep.push_back(Val);
   }
-  
+
   void insertOrReplace(const value_type &Val) {
-    iterator I = std::lower_bound(Rep.begin(), Rep.end(), Val, Compare());
+    iterator I = llvm::lower_bound(Rep, Val, Compare());
     if (I != Rep.end() && I->first == Val.first) {
       I->second = Val.second;
       return;
     }
-    
+
     Rep.insert(I, Val);
   }
 
@@ -91,7 +91,7 @@ public:
   const_iterator end() const { return Rep.end(); }
 
   iterator find(Int K) {
-    iterator I = std::upper_bound(Rep.begin(), Rep.end(), K, Compare());
+    iterator I = llvm::upper_bound(Rep, K, Compare());
     // I points to the first entry with a key > K, which is the range that
     // follows the one containing K.
     if (I == Rep.begin())
@@ -105,8 +105,8 @@ public:
 
   reference back() { return Rep.back(); }
   const_reference back() const { return Rep.back(); }
-  
-  /// \brief An object that helps properly build a continuous range map
+
+  /// An object that helps properly build a continuous range map
   /// from a set of values.
   class Builder {
     ContinuousRangeMap &Self;
@@ -115,9 +115,9 @@ public:
     explicit Builder(ContinuousRangeMap &Self) : Self(Self) {}
     Builder(const Builder&) = delete;
     Builder &operator=(const Builder&) = delete;
-    
+
     ~Builder() {
-      std::sort(Self.Rep.begin(), Self.Rep.end(), Compare());
+      llvm::sort(Self.Rep, Compare());
       std::unique(Self.Rep.begin(), Self.Rep.end(),
                   [](const_reference A, const_reference B) {
         // FIXME: we should not allow any duplicate keys, but there are a lot of
@@ -127,7 +127,7 @@ public:
         return A == B;
       });
     }
-    
+
     void insert(const value_type &Val) {
       Self.Rep.push_back(Val);
     }

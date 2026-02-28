@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -Wpessimizing-move -std=c++11 -verify %s
+// RUN: %clang_cc1 -fsyntax-only -Wpessimizing-move -std=c++11 -verify %s -DUSER_DEFINED
 // RUN: %clang_cc1 -fsyntax-only -Wpessimizing-move -std=c++11 -fdiagnostics-parseable-fixits %s 2>&1 | FileCheck %s
 
 // definitions for std::move
@@ -12,7 +13,15 @@ template <class T> typename remove_reference<T>::type &&move(T &&t);
 }
 }
 
-struct A {};
+struct A {
+#ifdef USER_DEFINED
+  A() {}
+  A(const A &) {}
+  A(A &&) {}
+  A &operator=(const A &) { return *this; }
+  A &operator=(A &&) { return *this; }
+#endif
+};
 struct B {
   B() {}
   B(A) {}
@@ -47,6 +56,19 @@ B test2(A a1, B b1) {
   // expected-note@-2{{remove std::move call}}
   // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
   // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:22-[[@LINE-4]]:23}:""
+
+  return A();
+  return test1(a2);
+  return std::move(A());
+  // expected-warning@-1{{prevents copy elision}}
+  // expected-note@-2{{remove std::move call}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:23-[[@LINE-4]]:24}:""
+  return std::move(test1(a2));
+  // expected-warning@-1{{prevents copy elision}}
+  // expected-note@-2{{remove std::move call}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:29-[[@LINE-4]]:30}:""
 }
 
 A global_a;
@@ -101,11 +123,24 @@ void test6() {
   // expected-note@-2{{remove std::move call}}
   // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
   // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:23-[[@LINE-4]]:24}:""
+
+  a3 = std::move(A());
+  // expected-warning@-1{{prevents copy elision}}
+  // expected-note@-2{{remove std::move call}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:8-[[@LINE-3]]:18}:""
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:21-[[@LINE-4]]:22}:""
+
   A a4 = std::move(test3());
   // expected-warning@-1{{prevents copy elision}}
   // expected-note@-2{{remove std::move call}}
   // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
   // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:27-[[@LINE-4]]:28}:""
+
+  a4 = std::move(test3());
+  // expected-warning@-1{{prevents copy elision}}
+  // expected-note@-2{{remove std::move call}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:8-[[@LINE-3]]:18}:""
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:25-[[@LINE-4]]:26}:""
 }
 
 A test7() {

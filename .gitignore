@@ -1,9 +1,6 @@
 #==============================================================================#
 # This file specifies intentionally untracked files that git should ignore.
 # See: http://www.kernel.org/pub/software/scm/git/docs/gitignore.html
-#
-# This file is intentionally different from the output of `git svn show-ignore`,
-# as most of those are useless.
 #==============================================================================#
 
 #==============================================================================#
@@ -24,6 +21,7 @@
 #==============================================================================#
 cscope.files
 cscope.out
+/tags
 
 #==============================================================================#
 # Directories to ignore (do not add trailing '/'s, they skip symlinks).
@@ -35,3 +33,8 @@ docs/_build
 docs/analyzer/_build
 # debug info testsuite
 test/debuginfo-tests
+
+# VS2017 and VSCode config files.
+.vscode
+.vs
+

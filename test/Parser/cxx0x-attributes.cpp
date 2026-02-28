@@ -64,6 +64,13 @@ struct MemberFnOrder {
 struct [[]] struct_attr;
 class [[]] class_attr {};
 union [[]] union_attr;
+enum [[]] E { };
+namespace test_misplacement {
+[[]] struct struct_attr2;  //expected-error{{misplaced attributes}}
+[[]] class class_attr2; //expected-error{{misplaced attributes}}
+[[]] union union_attr2; //expected-error{{misplaced attributes}}
+[[]] enum  E2 { }; //expected-error{{misplaced attributes}}
+}
 
 // Checks attributes placed at wrong syntactic locations of class specifiers.
 class [[]] [[]]
@@ -91,7 +98,7 @@ class C final [[deprecated(l]] {}); // expected-error {{use of undeclared identi
 class D final alignas ([l) {}]{}); // expected-error {{expected ',' or ']' in lambda capture list}} expected-error {{an attribute list cannot appear here}}
 
 [[]] struct with_init_declarators {} init_declarator;
-[[]] struct no_init_declarators; // expected-error {{an attribute list cannot appear here}}
+[[]] struct no_init_declarators; // expected-error {{misplaced attributes}}
 template<typename> [[]] struct no_init_declarators_template; // expected-error {{an attribute list cannot appear here}}
 void fn_with_structs() {
   [[]] struct with_init_declarators {} init_declarator;
@@ -307,7 +314,7 @@ int v5()[[gnu::unused]]; // expected-warning {{attribute 'unused' ignored}}
 
 [[attribute_declaration]]; // expected-warning {{unknown attribute 'attribute_declaration' ignored}}
 [[noreturn]]; // expected-error {{'noreturn' attribute only applies to functions}}
-[[carries_dependency]]; // expected-error {{'carries_dependency' attribute only applies to functions, methods, and parameters}}
+[[carries_dependency]]; // expected-error {{'carries_dependency' attribute only applies to parameters, Objective-C methods, and functions}}
 
 class A {
   A([[gnu::unused]] int a);
@@ -366,3 +373,11 @@ int fallthru(int n) {
 [[attr_name, attr_name_2(bitor), attr_name_3(com, pl)]] int macro_attrs; // expected-warning {{unknown attribute 'compl' ignored}} \
    expected-warning {{unknown attribute 'bitor' ignored}} \
    expected-warning {{unknown attribute 'bitand' ignored}}
+
+// Check that we can parse an attribute in our vendor namespace.
+[[clang::annotate("test")]] void annotate1();
+[[_Clang::annotate("test")]] void annotate2();
+// Note: __clang__ is a predefined macro, which is why _Clang is the
+// prefered "protected" vendor namespace. We support __clang__ only for
+// people expecting it to behave the same as __gnu__.
+[[__clang__::annotate("test")]] void annotate3();  // expected-warning {{'__clang__' is a predefined macro name, not an attribute scope specifier; did you mean '_Clang' instead?}}

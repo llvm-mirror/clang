@@ -3,9 +3,29 @@
 // RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple x86_64-apple-darwin10 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
+
+enum omp_allocator_handle_t {
+  omp_null_allocator = 0,
+  omp_default_mem_alloc = 1,
+  omp_large_cap_mem_alloc = 2,
+  omp_const_mem_alloc = 3,
+  omp_high_bw_mem_alloc = 4,
+  omp_low_lat_mem_alloc = 5,
+  omp_cgroup_mem_alloc = 6,
+  omp_pteam_mem_alloc = 7,
+  omp_thread_mem_alloc = 8,
+  KMP_ALLOCATOR_MAX_HANDLE = __UINTPTR_MAX__
+};
 
 struct SS {
   int a;
@@ -136,7 +156,7 @@ char cnt;
 // BLOCKS: [[SS_TY:%.+]] = type { i{{[0-9]+}}, i8
 // CHECK: [[S_FLOAT_TY:%.+]] = type { float }
 // CHECK: [[S_INT_TY:%.+]] = type { i32 }
-// CHECK-DAG: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
+// CHECK-DAG: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr global %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
 // CHECK-DAG: [[X:@.+]] = global double 0.0
 // CHECK-DAG: [[F:@.+]] = global float 0.0
 // CHECK-DAG: [[CNT:@.+]] = global i8 0
@@ -173,10 +193,13 @@ int main() {
   // LAMBDA-LABEL: @main
   // LAMBDA: alloca [[SS_TY]],
   // LAMBDA: alloca [[CAP_TY:%.+]],
+  // FIXME: The outer lambda should not capture 'sivar'; that capture is not
+  // used for anything.
+  // LAMBDA: store {{.*}}@_ZZ4mainE5sivar,
   // LAMBDA: call void [[OUTER_LAMBDA:@.+]]([[CAP_TY]]*
   [&]() {
   // LAMBDA: define{{.*}} internal{{.*}} void [[OUTER_LAMBDA]](
-  // LAMBDA: call void {{.+}} @__kmpc_fork_call({{.+}}, i32 1, {{.+}}* [[OMP_REGION:@.+]] to {{.+}}, i32* %{{.+}})
+  // LAMBDA: call void {{.+}} @__kmpc_fork_call({{.+}}, i32 1, {{.+}}* [[OMP_REGION:@.+]] to {{.+}}, i32* @_ZZ4mainE5sivar)
 #pragma omp parallel
 #pragma omp for lastprivate(g, g1, sivar)
   for (int i = 0; i < 2; ++i) {
@@ -208,6 +231,7 @@ int main() {
     // LAMBDA: ret void
 
     // LAMBDA: define internal void @{{.+}}(i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}}, [[SS_TY]]* %{{.+}}, i32* {{.+}}, i32* {{.+}}, i32* {{.+}})
+    // LAMBDA: alloca i{{[0-9]+}},
     // LAMBDA: alloca i{{[0-9]+}},
     // LAMBDA: alloca i{{[0-9]+}},
     // LAMBDA: alloca i{{[0-9]+}},
@@ -407,6 +431,7 @@ int main() {
 // BLOCKS: alloca i{{[0-9]+}},
 // BLOCKS: alloca i{{[0-9]+}},
 // BLOCKS: alloca i{{[0-9]+}},
+// BLOCKS: alloca i{{[0-9]+}},
 // BLOCKS: [[A_PRIV:%.+]] = alloca i{{[0-9]+}},
 // BLOCKS: [[B_PRIV:%.+]] = alloca i{{[0-9]+}},
 // BLOCKS: [[C_PRIV:%.+]] = alloca i{{[0-9]+}},
@@ -447,12 +472,12 @@ int main() {
     A::x++;
   }
 #pragma omp parallel
-#pragma omp for firstprivate(f) lastprivate(f)
+#pragma omp for allocate(omp_const_mem_alloc: f) firstprivate(f) lastprivate(f)
   for (int i = 0; i < 2; ++i) {
     A::x++;
   }
 #pragma omp parallel
-#pragma omp for lastprivate(cnt)
+#pragma omp for allocate(omp_const_mem_alloc :cnt) lastprivate(cnt)
   for (cnt = 0; cnt < 2; ++cnt) {
     A::x++;
   }
@@ -472,6 +497,7 @@ int main() {
 // CHECK: ret
 
 // CHECK: define internal void [[MAIN_MICROTASK]](i32* noalias [[GTID_ADDR:%.+]], i32* noalias %{{.+}}, i32* dereferenceable(4) %{{.+}}, [2 x i32]* dereferenceable(8) %{{.+}}, [2 x [[S_FLOAT_TY]]]* dereferenceable(8) %{{.+}}, [[S_FLOAT_TY]]* dereferenceable(4) %{{.+}})
+// CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
@@ -513,7 +539,7 @@ int main() {
 // original vec[]=private_vec[];
 // CHECK: [[VEC_DEST:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_REF]] to i8*
 // CHECK: [[VEC_SRC:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8*
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST]], i8* [[VEC_SRC]],
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align {{[0-9]+}} [[VEC_DEST]], i8* align {{[0-9]+}} [[VEC_SRC]],
 
 // original s_arr[]=private_s_arr[];
 // CHECK: [[S_ARR_BEGIN:%.+]] = getelementptr inbounds [2 x [[S_FLOAT_TY]]], [2 x [[S_FLOAT_TY]]]* [[S_ARR_REF]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
@@ -580,15 +606,16 @@ int main() {
 // CHECK: ret void
 
 // CHECK: define internal void [[MAIN_MICROTASK2]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}})
-// CHECK: [[F_PRIV:%.+]] = alloca float,
 // CHECK-NOT: alloca float
 
 // Check for default initialization.
+// CHECK: [[GTID_REF:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[GTID_ADDR_REF]]
+// CHECK: [[GTID:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[GTID_REF]]
+// CHECK: [[F_VOID_PTR:%.+]] = call i8* @__kmpc_alloc(i32 [[GTID]], i64 4, i8* inttoptr (i64 3 to i8*))
+// CHECK: [[F_PRIV:%.+]] = bitcast i8* [[F_VOID_PTR]] to float*
 // CHECK: [[F_VAL:%.+]] = load float, float* [[F]],
 // CHECK: store float [[F_VAL]], float* [[F_PRIV]],
 
-// CHECK: [[GTID_REF:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[GTID_ADDR_REF]]
-// CHECK: [[GTID:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[GTID_REF]]
 // CHECK: call {{.+}} @__kmpc_for_static_init_4(%{{.+}}* @{{.+}}, i32 [[GTID]], i32 34, i32* [[IS_LAST_ADDR:%.+]], i32* %{{.+}}, i32* %{{.+}}, i32* %{{.+}}, i32 1, i32 1)
 // <Skip loop body>
 // CHECK: call void @__kmpc_for_static_fini(%{{.+}}* @{{.+}}, i32 [[GTID]])
@@ -607,14 +634,15 @@ int main() {
 // CHECK-NEXT: br label %[[LAST_DONE]]
 // CHECK: [[LAST_DONE]]
 
-// CHECK: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
-// CHECK: ret void
+// CHECK:      call void @__kmpc_free(i32 [[GTID]], i8* [[F_VOID_PTR]], i8* inttoptr (i64 3 to i8*))
+// CHECK-NEXT: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
+// CHECK-NEXT: ret void
 
 // CHECK: define internal void [[MAIN_MICROTASK3]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}})
-// CHECK: [[CNT_PRIV:%.+]] = alloca i8,
 
 // CHECK: [[GTID_REF:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[GTID_ADDR_REF]]
 // CHECK: [[GTID:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[GTID_REF]]
+// CHECK: [[CNT_PRIV:%.+]] = call i8* @__kmpc_alloc(i32 [[GTID]], i64 1, i8* inttoptr (i64 3 to i8*))
 // CHECK: call {{.+}} @__kmpc_for_static_init_4(%{{.+}}* @{{.+}}, i32 [[GTID]], i32 34, i32* [[IS_LAST_ADDR:%.+]], i32* [[OMP_LB:%[^,]+]], i32* [[OMP_UB:%[^,]+]], i32* [[OMP_ST:%[^,]+]], i32 1, i32 1)
 // UB = min(UB, GlobalUB)
 // CHECK-NEXT: [[UB:%.+]] = load i32, i32* [[OMP_UB]]
@@ -642,8 +670,9 @@ int main() {
 // CHECK-NEXT: br label %[[LAST_DONE]]
 // CHECK: [[LAST_DONE]]
 
-// CHECK: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
-// CHECK: ret void
+// CHECK:      call void @__kmpc_free(i32 [[GTID]], i8* [[CNT_PRIV]], i8* inttoptr (i64 3 to i8*))
+// CHECK-NEXT: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
+// CHECK-NEXT: ret void
 
 // CHECK: define {{.*}} i{{[0-9]+}} [[TMAIN_INT]]()
 // CHECK: [[TEST:%.+]] = alloca [[S_INT_TY]],
@@ -667,6 +696,7 @@ int main() {
 // CHECK: ret
 
 // CHECK: define internal void [[SS_MICROTASK]](i{{[0-9]+}}* noalias [[GTID_ADDR:%.+]], i{{[0-9]+}}* noalias %{{.+}}, [[SS_TY]]* %{{.+}})
+// CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
 // CHECK: alloca i{{[0-9]+}},
@@ -740,7 +770,7 @@ int main() {
 // original vec[]=private_vec[];
 // CHECK: [[VEC_DEST:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_REF]] to i8*
 // CHECK: [[VEC_SRC:%.+]] = bitcast [2 x i{{[0-9]+}}]* [[VEC_PRIV]] to i8*
-// CHECK: call void @llvm.memcpy.{{.+}}(i8* [[VEC_DEST]], i8* [[VEC_SRC]],
+// CHECK: call void @llvm.memcpy.{{.+}}(i8* align {{[0-9]+}} [[VEC_DEST]], i8* align {{[0-9]+}} [[VEC_SRC]],
 
 // original s_arr[]=private_s_arr[];
 // CHECK: [[S_ARR_BEGIN:%.+]] = getelementptr inbounds [2 x [[S_INT_TY]]], [2 x [[S_INT_TY]]]* [[S_ARR_REF]], i{{[0-9]+}} 0, i{{[0-9]+}} 0

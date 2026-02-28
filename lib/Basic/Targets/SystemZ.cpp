@@ -1,9 +1,8 @@
 //===--- SystemZ.cpp - Implement SystemZ target feature support -----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -30,13 +29,28 @@ const Builtin::Info SystemZTargetInfo::BuiltinInfo[] = {
 };
 
 const char *const SystemZTargetInfo::GCCRegNames[] = {
-    "r0",  "r1",  "r2",  "r3",  "r4",  "r5",  "r6", "r7",  "r8",  "r9", "r10",
-    "r11", "r12", "r13", "r14", "r15", "f0",  "f2", "f4",  "f6",  "f1", "f3",
-    "f5",  "f7",  "f8",  "f10", "f12", "f14", "f9", "f11", "f13", "f15"
+    "r0",  "r1",  "r2",  "r3",  "r4",  "r5",  "r6",  "r7",
+    "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15",
+    "f0",  "f2",  "f4",  "f6",  "f1",  "f3",  "f5",  "f7",
+    "f8",  "f10", "f12", "f14", "f9",  "f11", "f13", "f15",
+    /*ap*/"", "cc", /*fp*/"", /*rp*/"", "a0",  "a1",
+    "v16", "v18", "v20", "v22", "v17", "v19", "v21", "v23",
+    "v24", "v26", "v28", "v30", "v25", "v27", "v29", "v31"
+};
+
+const TargetInfo::AddlRegName GCCAddlRegNames[] = {
+    {{"v0"}, 16}, {{"v2"},  17}, {{"v4"},  18}, {{"v6"},  19},
+    {{"v1"}, 20}, {{"v3"},  21}, {{"v5"},  22}, {{"v7"},  23},
+    {{"v8"}, 24}, {{"v10"}, 25}, {{"v12"}, 26}, {{"v14"}, 27},
+    {{"v9"}, 28}, {{"v11"}, 29}, {{"v13"}, 30}, {{"v15"}, 31}
 };
 
 ArrayRef<const char *> SystemZTargetInfo::getGCCRegNames() const {
   return llvm::makeArrayRef(GCCRegNames);
+}
+
+ArrayRef<TargetInfo::AddlRegName> SystemZTargetInfo::getGCCAddlRegNames() const {
+  return llvm::makeArrayRef(GCCAddlRegNames);
 }
 
 bool SystemZTargetInfo::validateAsmConstraint(
@@ -48,6 +62,7 @@ bool SystemZTargetInfo::validateAsmConstraint(
   case 'a': // Address register
   case 'd': // Data register (equivalent to 'r')
   case 'f': // Floating-point register
+  case 'v': // Vector register
     Info.setAllowsRegister();
     return true;
 
@@ -67,14 +82,33 @@ bool SystemZTargetInfo::validateAsmConstraint(
   }
 }
 
-int SystemZTargetInfo::getISARevision(const StringRef &Name) const {
-  return llvm::StringSwitch<int>(Name)
-      .Cases("arch8", "z10", 8)
-      .Cases("arch9", "z196", 9)
-      .Cases("arch10", "zEC12", 10)
-      .Cases("arch11", "z13", 11)
-      .Cases("arch12", "z14", 12)
-      .Default(-1);
+struct ISANameRevision {
+  llvm::StringLiteral Name;
+  int ISARevisionID;
+};
+static constexpr ISANameRevision ISARevisions[] = {
+  {{"arch8"}, 8}, {{"z10"}, 8},
+  {{"arch9"}, 9}, {{"z196"}, 9},
+  {{"arch10"}, 10}, {{"zEC12"}, 10},
+  {{"arch11"}, 11}, {{"z13"}, 11},
+  {{"arch12"}, 12}, {{"z14"}, 12},
+  {{"arch13"}, 13}, {{"z15"}, 13}
+};
+
+int SystemZTargetInfo::getISARevision(StringRef Name) const {
+  const auto Rev =
+      llvm::find_if(ISARevisions, [Name](const ISANameRevision &CR) {
+        return CR.Name == Name;
+      });
+  if (Rev == std::end(ISARevisions))
+    return -1;
+  return Rev->ISARevisionID;
+}
+
+void SystemZTargetInfo::fillValidCPUList(
+    SmallVectorImpl<StringRef> &Values) const {
+  for (const ISANameRevision &Rev : ISARevisions)
+    Values.push_back(Rev.Name);
 }
 
 bool SystemZTargetInfo::hasFeature(StringRef Feature) const {
@@ -85,6 +119,7 @@ bool SystemZTargetInfo::hasFeature(StringRef Feature) const {
       .Case("arch10", ISARevision >= 10)
       .Case("arch11", ISARevision >= 11)
       .Case("arch12", ISARevision >= 12)
+      .Case("arch13", ISARevision >= 13)
       .Case("htm", HasTransactionalExecution)
       .Case("vx", HasVector)
       .Default(false);
@@ -109,7 +144,7 @@ void SystemZTargetInfo::getTargetDefines(const LangOptions &Opts,
   if (HasVector)
     Builder.defineMacro("__VX__");
   if (Opts.ZVector)
-    Builder.defineMacro("__VEC__", "10302");
+    Builder.defineMacro("__VEC__", "10303");
 }
 
 ArrayRef<Builtin::Info> SystemZTargetInfo::getTargetBuiltins() const {

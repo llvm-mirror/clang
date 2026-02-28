@@ -1,20 +1,21 @@
 // RUN: c-index-test core -print-source-symbols -- %s -std=c++1z -target x86_64-apple-macosx10.7 | FileCheck %s
+// RUN: c-index-test core -print-source-symbols -include-locals -- %s -std=c++1z -target x86_64-apple-macosx10.7 | FileCheck -check-prefix=LOCAL %s
 
 // CHECK: [[@LINE+1]]:7 | class/C++ | Cls | [[Cls_USR:.*]] | <no-cgname> | Def | rel: 0
 class Cls { public:
   // CHECK: [[@LINE+3]]:3 | constructor/C++ | Cls | c:@S@Cls@F@Cls#I# | __ZN3ClsC1Ei | Decl,RelChild | rel: 1
   // CHECK-NEXT: RelChild | Cls | c:@S@Cls
-  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
   Cls(int x);
   // CHECK: [[@LINE+2]]:3 | constructor/cxx-copy-ctor/C++ | Cls | c:@S@Cls@F@Cls#&1$@S@Cls# | __ZN3ClsC1ERKS_ | Decl,RelChild | rel: 1
-  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
   Cls(const Cls &);
   // CHECK: [[@LINE+2]]:3 | constructor/cxx-move-ctor/C++ | Cls | c:@S@Cls@F@Cls#&&$@S@Cls# | __ZN3ClsC1EOS_ | Decl,RelChild | rel: 1
-  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+  // CHECK: [[@LINE+1]]:3 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
   Cls(Cls &&);
 
   // CHECK: [[@LINE+2]]:3 | destructor/C++ | ~Cls | c:@S@Cls@F@~Cls# | __ZN3ClsD1Ev | Decl,RelChild | rel: 1
-  // CHECK: [[@LINE+1]]:4 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+  // CHECK: [[@LINE+1]]:4 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
   ~Cls();
 };
 
@@ -34,12 +35,12 @@ class SubCls2 : public ClsAlias {};
 Cls::Cls(int x) {}
 // CHECK: [[@LINE-1]]:6 | constructor/C++ | Cls | c:@S@Cls@F@Cls#I# | __ZN3ClsC1Ei | Def,RelChild | rel: 1
 // CHECK: [[@LINE-2]]:1 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
-// CHECK: [[@LINE-3]]:6 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-3]]:6 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
 
 Cls::~/*a comment*/Cls() {}
 // CHECK: [[@LINE-1]]:6 | destructor/C++ | ~Cls | c:@S@Cls@F@~Cls# | __ZN3ClsD1Ev | Def,RelChild | rel: 1
 // CHECK: [[@LINE-2]]:1 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
-// CHECK: [[@LINE-3]]:20 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-3]]:20 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont,NameReference | rel: 1
 
 template <typename TemplArg>
 class TemplCls {
@@ -201,8 +202,8 @@ class PseudoOverridesInSpecializations<double, int> {
 
   template<typename U>
   class InnerClass;
-// CHECK: [[@LINE-1]]:9 | class(Gen)/C++ | InnerClass | c:@S@PseudoOverridesInSpecializations>#d#I@ST>1#T@InnerClass | <no-cgname> | Ref,RelCont,RelSpecialization | rel: 2
-// CHECK-NEXT: RelCont
+// CHECK: [[@LINE-1]]:9 | class(Gen)/C++ | InnerClass | c:@S@PseudoOverridesInSpecializations>#d#I@ST>1#T@InnerClass | <no-cgname> | Decl,RelChild,RelSpecialization | rel: 2
+// CHECK-NEXT: RelChild
 // CHECK-NEXT: RelSpecialization | InnerClass | c:@ST>2#T#T@PseudoOverridesInSpecializations@ST>1#T@InnerClass
 };
 
@@ -211,7 +212,7 @@ class PseudoOverridesInSpecializations<double, int>::InnerClass {
 };
 // CHECK: [[@LINE-2]]:54 | class(Gen)/C++ | InnerClass | c:@S@PseudoOverridesInSpecializations>#d#I@ST>1#T@InnerClass | <no-cgname> | Def,RelChild | rel: 1
 // CHECK-NEXT: RelChild
-// CHECK: [[@LINE-4]]:7 | class(Gen)/C++ | PseudoOverridesInSpecializations | c:@ST>2#T#T@PseudoOverridesInSpecializations | <no-cgname> | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-4]]:7 | class(Gen,TS)/C++ | PseudoOverridesInSpecializations | c:@S@PseudoOverridesInSpecializations>#d#I | <no-cgname> | Ref,RelCont | rel: 1
 // CHECK-NEXT: RelCont
 
 template<typename S>
@@ -274,7 +275,7 @@ void ContainsSpecializedMemberFunction::memberSpecialization<int>() {
 
 template<typename T>
 class SpecializationDecl;
-// CHECK: [[@LINE-1]]:7 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Ref | rel: 0
+// CHECK: [[@LINE-1]]:7 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Decl | rel: 0
 
 template<typename T>
 class SpecializationDecl { };
@@ -284,13 +285,13 @@ template<>
 class SpecializationDecl<int>;
 // CHECK: [[@LINE-1]]:7 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#I | <no-cgname> | Decl,RelSpecialization | rel: 1
 // CHECK-NEXT: RelSpecialization | SpecializationDecl | c:@ST>1#T@SpecializationDecl
-// CHECK: [[@LINE-3]]:7 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Ref | rel: 0
+// CHECK: [[@LINE-3]]:7 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#I | <no-cgname> | Ref | rel: 0
 
 template<>
 class SpecializationDecl<int> { };
 // CHECK: [[@LINE-1]]:7 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#I | <no-cgname> | Def,RelSpecialization | rel: 1
 // CHECK-NEXT: RelSpecialization | SpecializationDecl | c:@ST>1#T@SpecializationDecl
-// CHECK-NEXT: [[@LINE-3]]:7 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Ref | rel: 0
+// CHECK-NEXT: [[@LINE-3]]:7 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#I | <no-cgname> | Ref | rel: 0
 
 template<typename T>
 class PartialSpecilizationClass<Cls, T>;
@@ -305,7 +306,7 @@ class PartialSpecilizationClass<Cls, Cls> : Cls { };
 // CHECK-NEXT: RelSpecialization | PartialSpecilizationClass | c:@ST>2#T#T@PartialSpecilizationClass
 // CHECK-NEXT: [[@LINE-3]]:45 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelBase,RelCont | rel: 1
 // CHECK-NEXT: RelBase,RelCont | PartialSpecilizationClass | c:@S@PartialSpecilizationClass>#$@S@Cls#S0_
-// CHECK-NEXT: [[@LINE-5]]:7 | class(Gen)/C++ | PartialSpecilizationClass | c:@ST>2#T#T@PartialSpecilizationClass | <no-cgname> | Ref | rel: 0
+// CHECK-NEXT: [[@LINE-5]]:7 | class(Gen,TS)/C++ | PartialSpecilizationClass | c:@S@PartialSpecilizationClass>#$@S@Cls#S0_ | <no-cgname> | Ref | rel: 0
 // CHECK-NEXT: [[@LINE-6]]:33 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref | rel: 0
 // CHECK-NEXT: [[@LINE-7]]:38 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref | rel: 0
 
@@ -320,7 +321,7 @@ template<>
 void functionSp<SpecializationDecl<Cls>, Record::C>() {
 // CHECK: [[@LINE-1]]:6 | function(Gen,TS)/C++ | functionSp | c:@F@functionSp<#$@S@SpecializationDecl>#$@S@Cls#VI2># | __Z10functionSpI18SpecializationDeclI3ClsELi2EEvv | Def,RelSpecialization | rel: 1
 // CHECK:   RelSpecialization | functionSp | c:@FT@>2#T#NIfunctionSp#v#
-// CHECK: [[@LINE-3]]:17 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-3]]:17 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#$@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
 // CHECK: [[@LINE-4]]:36 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref,RelCont | rel: 1
 // CHECK: [[@LINE-5]]:50 | static-property/C++ | C | c:@S@Record@C | __ZN6Record1CE | Ref,RelCont | rel: 1
 // CHECK: [[@LINE-6]]:42 | struct/C++ | Record | c:@S@Record | <no-cgname> | Ref,RelCont | rel: 1
@@ -331,7 +332,7 @@ class ClassWithCorrectSpecialization { };
 
 template<>
 class ClassWithCorrectSpecialization<SpecializationDecl<Cls>, Record::C> { };
-// CHECK: [[@LINE-1]]:38 | class(Gen)/C++ | SpecializationDecl | c:@ST>1#T@SpecializationDecl | <no-cgname> | Ref | rel: 0
+// CHECK: [[@LINE-1]]:38 | class(Gen,TS)/C++ | SpecializationDecl | c:@S@SpecializationDecl>#$@S@Cls | <no-cgname> | Ref | rel: 0
 // CHECK: [[@LINE-2]]:57 | class/C++ | Cls | c:@S@Cls | <no-cgname> | Ref | rel: 0
 // CHECK: [[@LINE-3]]:71 | static-property/C++ | C | c:@S@Record@C | __ZN6Record1CE | Ref,Read | rel: 0
 // CHECK: [[@LINE-4]]:63 | struct/C++ | Record | c:@S@Record | <no-cgname> | Ref | rel: 0
@@ -393,7 +394,7 @@ struct DeletedMethods {
 // CHECK: [[@LINE-1]]:3 | constructor/cxx-copy-ctor/C++ | DeletedMethods | c:@S@DeletedMethods@F@DeletedMethods#&1$@S@DeletedMethods# | __ZN14DeletedMethodsC1ERKS_ | Def,RelChild | rel: 1
 // CHECK: RelChild | DeletedMethods | c:@S@DeletedMethods
 // CHECK: [[@LINE-3]]:24 | struct/C++ | DeletedMethods | c:@S@DeletedMethods | <no-cgname> | Ref,RelCont | rel: 1
-// CHECK: [[@LINE-4]]:3 | struct/C++ | DeletedMethods | c:@S@DeletedMethods | <no-cgname> | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-4]]:3 | struct/C++ | DeletedMethods | c:@S@DeletedMethods | <no-cgname> | Ref,RelCont,NameReference | rel: 1
 };
 
 namespace ns2 {
@@ -460,12 +461,12 @@ struct StaticAssertRef {
 };
 
 static_assert(StaticAssertRef::constVar, "index static asserts");
-// CHECK: [[@LINE-1]]:32 | static-property/C++ | constVar | c:@S@StaticAssertRef@constVar | __ZN15StaticAssertRef8constVarE | Ref | rel: 0
+// CHECK: [[@LINE-1]]:32 | static-property/C++ | constVar | c:@S@StaticAssertRef@constVar | __ZN15StaticAssertRef8constVarE | Ref,Read | rel: 0
 // CHECK: [[@LINE-2]]:15 | struct/C++ | StaticAssertRef | c:@S@StaticAssertRef | <no-cgname> | Ref | rel: 0
 
 void staticAssertInFn() {
   static_assert(StaticAssertRef::constVar, "index static asserts");
-// CHECK: [[@LINE-1]]:34 | static-property/C++ | constVar | c:@S@StaticAssertRef@constVar | __ZN15StaticAssertRef8constVarE | Ref,RelCont | rel: 1
+// CHECK: [[@LINE-1]]:34 | static-property/C++ | constVar | c:@S@StaticAssertRef@constVar | __ZN15StaticAssertRef8constVarE | Ref,Read,RelCont | rel: 1
 // CHECK-NEXT: RelCont | staticAssertInFn | c:@F@staticAssertInFn#
 // CHECK: [[@LINE-3]]:17 | struct/C++ | StaticAssertRef | c:@S@StaticAssertRef | <no-cgname> | Ref,RelCont | rel: 1
 // CHECK-NEXT: RelCont | staticAssertInFn | c:@F@staticAssertInFn#
@@ -493,6 +494,7 @@ void localStructuredBindingAndRef() {
 // CHECK: [[@LINE-1]]:69 | variable/C++ | structuredBinding2 | c:@N@cpp17structuredBinding@structuredBinding2 | <no-cgname> | Ref,Read,RelCont | rel: 1
 // CHECK-NEXT: RelCont | localStructuredBindingAndRef | c:@N@cpp17structuredBinding@F@localStructuredBindingAndRef#
 // CHECK-NOT: localBinding
+// LOCAL: [[@LINE-4]]:9 | variable(local)/C++ | localBinding1 | c:index-source.cpp@{{.*}}@N@cpp17structuredBinding@F@localStructuredBindingAndRef#@localBinding1
 }
 
 }
@@ -503,7 +505,7 @@ struct Guided { T t; };
 // CHECK-NEXT: [[@LINE-2]]:19 | field/C++ | t | c:@ST>1#T@Guided@FI@t | <no-cgname> | Def,RelChild | rel: 1
 // CHECK-NEXT: RelChild | Guided | c:@ST>1#T@Guided
 Guided(double) -> Guided<float>;
-// CHECK: [[@LINE-1]]:19 | struct(Gen)/C++ | Guided | c:@ST>1#T@Guided | <no-cgname> | Ref | rel: 0
+// CHECK: [[@LINE-1]]:19 | struct(Gen,TS)/C++ | Guided | c:@S@Guided>#f | <no-cgname> | Ref | rel: 0
 // CHECK-NEXT: [[@LINE-2]]:1 | struct(Gen)/C++ | Guided | c:@ST>1#T@Guided | <no-cgname> | Ref | rel: 0
 auto guided = Guided{1.0};
 // CHECK: [[@LINE-1]]:6 | variable/C | guided | c:@guided | _guided | Def | rel: 0

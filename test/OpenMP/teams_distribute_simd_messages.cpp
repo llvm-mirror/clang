@@ -1,4 +1,14 @@
-// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s
+// RUN: %clang_cc1 -verify -fopenmp -std=c++11 %s -Wuninitialized
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -std=c++11 %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp target
+#pragma omp teams distribute simd
+  for (int i = 0; i < 10; ++i)
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 void foo() {
 }
@@ -9,6 +19,9 @@ static int pvt;
 #pragma omp teams distribute simd // expected-error {{unexpected OpenMP directive '#pragma omp teams distribute simd'}}
 
 int main(int argc, char **argv) {
+  #pragma omp target
+  #pragma omp teams distribute simd
+  f; // expected-error {{use of undeclared identifier 'f'}}
 #pragma omp target
 #pragma omp teams distribute simd { // expected-warning {{extra tokens at the end of '#pragma omp teams distribute simd' are ignored}}
   for (int i = 0; i < argc; ++i)
@@ -71,7 +84,7 @@ L1:
     }
   }
 #pragma omp target
-#pragma omp teams distribute simd default(none)
+#pragma omp teams distribute simd default(none) // expected-note {{explicit data sharing attribute requested here}}
   for (int i = 0; i < 10; ++i)
     ++argc; // expected-error {{ariable 'argc' must have explicitly specified data sharing attributes}}
 

@@ -1,9 +1,8 @@
 //==--- DiagnosticSerializationKinds.td - serialization diagnostics -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,13 +18,16 @@ def err_fe_pch_malformed : Error<
 def err_fe_pch_malformed_block : Error<
     "malformed block record in PCH file: '%0'">, DefaultFatal;
 def err_fe_pch_file_modified : Error<
-    "file '%0' has been modified since the precompiled header '%1' was built">,
+    "file '%0' has been modified since the precompiled header '%1' was built"
+    ": %select{size|mtime|content}2 changed">,
     DefaultFatal;
 def err_fe_module_file_modified : Error<
-    "file '%0' has been modified since the module file '%1' was built">,
+    "file '%0' has been modified since the module file '%1' was built"
+    ": %select{size|mtime|content}2 changed">,
     DefaultFatal;
 def err_fe_ast_file_modified : Error<
-    "file '%0' has been modified since the AST file '%1' was built">,
+    "file '%0' has been modified since the AST file '%1' was built"
+    ": %select{size|mtime|content}2 changed">,
     DefaultFatal;
 def err_fe_pch_file_overridden : Error<
     "file '%0' from the precompiled header has been overridden">;
@@ -38,8 +40,8 @@ def err_pch_targetopt_mismatch : Error<
     "PCH file was compiled for the %0 '%1' but the current translation "
     "unit is being compiled for target '%2'">;
 def err_pch_targetopt_feature_mismatch : Error<
-    "%select{AST file|current translation unit}0 was compiled with the target "
-    "feature'%1' but the %select{current translation unit is|AST file was}0 "
+    "%select{AST file was|current translation unit is}0 compiled with the target "
+    "feature '%1' but the %select{current translation unit is|AST file was}0 "
     "not">;
 def err_pch_langopt_mismatch : Error<"%0 was %select{disabled|enabled}1 in "
     "PCH file but is currently %select{disabled|enabled}2">;
@@ -49,7 +51,7 @@ def err_pch_diagopt_mismatch : Error<"%0 is currently enabled, but was not in "
   "the PCH file">;
 def err_pch_modulecache_mismatch : Error<"PCH was compiled with module cache "
   "path '%0', but the path is currently '%1'">;
-  
+
 def err_pch_version_too_old : Error<
     "PCH file uses an older PCH format that is no longer supported">;
 def err_pch_version_too_new : Error<
@@ -73,12 +75,18 @@ def note_module_file_imported_by : Note<
 def err_module_file_not_module : Error<
   "AST file '%0' was not built as a module">, DefaultFatal;
 
+def remark_module_import : Remark<
+  "importing module '%0'%select{| into '%3'}2 from '%1'">,
+  InGroup<ModuleImport>;
+
 def err_imported_module_not_found : Error<
-    "module '%0' in AST file '%1' (imported by AST file '%2') "
+    "module '%0' in AST file '%1' %select{(imported by AST file '%2') |}4"
     "is not defined in any loaded module map file; "
     "maybe you need to load '%3'?">, DefaultFatal;
+def note_imported_by_pch_module_not_found : Note<
+    "consider adding '%0' to the header search path">;
 def err_imported_module_modmap_changed : Error<
-    "module '%0' imported by AST file '%1' found in a different module map file"
+    "module '%0' %select{in|imported by}4 AST file '%1' found in a different module map file"
     " (%2) than when the importing AST file was built (%3)">, DefaultFatal;
 def err_imported_module_relocated : Error<
     "module '%0' was built in directory '%1' but now resides in "
@@ -166,11 +174,11 @@ def err_module_odr_violation_mismatch_decl : Error<
   "%select{definition in module '%2'|defined here}1 found "
   "%select{end of class|public access specifier|private access specifier|"
   "protected access specifier|static assert|field|method|type alias|typedef|"
-  "data member|friend declaration}3">;
+  "data member|friend declaration|function template}3">;
 def note_module_odr_violation_mismatch_decl : Note<"but in '%0' found "
   "%select{end of class|public access specifier|private access specifier|"
   "protected access specifier|static assert|field|method|type alias|typedef|"
-  "data member|friend declaration}1">;
+  "data member|friend declaration|function template}1">;
 
 def err_module_odr_violation_mismatch_decl_diff : Error<
   "%q0 has different definitions in different modules; first difference is "
@@ -189,6 +197,8 @@ def err_module_odr_violation_mismatch_decl_diff : Error<
   "%select{method %5|constructor|destructor}4|"
   "%select{method %5|constructor|destructor}4 "
     "is %select{not deleted|deleted}6|"
+  "%select{method %5|constructor|destructor}4 "
+    "is %select{not defaulted|defaulted}6|"
   "%select{method %5|constructor|destructor}4 "
     "is %select{|pure }6%select{not virtual|virtual}7|"
   "%select{method %5|constructor|destructor}4 "
@@ -209,6 +219,16 @@ def err_module_odr_violation_mismatch_decl_diff : Error<
     "with %ordinal6 parameter with%select{out|}7 a default argument|"
   "%select{method %5|constructor|destructor}4 "
     "with %ordinal6 parameter with a default argument|"
+  "%select{method %5|constructor|destructor}4 "
+    "with %select{no |}6template arguments|"
+  "%select{method %5|constructor|destructor}4 "
+    "with %6 template argument%s6|"
+  "%select{method %5|constructor|destructor}4 "
+    "with %6 for %ordinal7 template argument|"
+  "%select{method %5|constructor|destructor}4 "
+    "with %select{no body|body}6|"
+  "%select{method %5|constructor|destructor}4 "
+    "with body|"
   "%select{typedef|type alias}4 name %5|"
   "%select{typedef|type alias}4 %5 with underlying type %6|"
   "data member with name %4|"
@@ -219,6 +239,18 @@ def err_module_odr_violation_mismatch_decl_diff : Error<
   "friend %select{class|function}4|"
   "friend %4|"
   "friend function %4|"
+  "function template %4 with %5 template parameter%s5|"
+  "function template %4 with %ordinal5 template parameter being a "
+    "%select{type|non-type|template}6 template parameter|"
+  "function template %4 with %ordinal5 template parameter "
+    "%select{with no name|named %7}6|"
+  "function template %4 with %ordinal5 template parameter with "
+    "%select{no |}6default argument|"
+  "function template %4 with %ordinal5 template parameter with "
+    "default argument %6|"
+  "function template %4 with %ordinal5 template parameter with one type|"
+  "function template %4 with %ordinal5 template parameter %select{not |}6"
+    "being a template parameter pack|"
   "}3">;
 
 def note_module_odr_violation_mismatch_decl_diff : Note<"but in '%0' found "
@@ -236,6 +268,8 @@ def note_module_odr_violation_mismatch_decl_diff : Note<"but in '%0' found "
   "%select{method %3|constructor|destructor}2|"
   "%select{method %3|constructor|destructor}2 "
     "is %select{not deleted|deleted}4|"
+  "%select{method %3|constructor|destructor}2 "
+    "is %select{not defaulted|defaulted}4|"
   "%select{method %3|constructor|destructor}2 "
     "is %select{|pure }4%select{not virtual|virtual}5|"
   "%select{method %3|constructor|destructor}2 "
@@ -256,6 +290,16 @@ def note_module_odr_violation_mismatch_decl_diff : Note<"but in '%0' found "
     "with %ordinal4 parameter with%select{out|}5 a default argument|"
   "%select{method %3|constructor|destructor}2 "
     "with %ordinal4 parameter with a different default argument|"
+  "%select{method %3|constructor|destructor}2 "
+    "with %select{no |}4template arguments|"
+  "%select{method %3|constructor|destructor}2 "
+    "with %4 template argument%s4|"
+  "%select{method %3|constructor|destructor}2 "
+    "with %4 for %ordinal5 template argument|"
+  "%select{method %3|constructor|destructor}2 "
+    "with %select{no body|body}4|"
+  "%select{method %3|constructor|destructor}2 "
+    "with different body|"
   "%select{typedef|type alias}2 name %3|"
   "%select{typedef|type alias}2 %3 with different underlying type %4|"
   "data member with name %2|"
@@ -266,6 +310,68 @@ def note_module_odr_violation_mismatch_decl_diff : Note<"but in '%0' found "
   "friend %select{class|function}2|"
   "friend %2|"
   "friend function %2|"
+  "function template %2 with %3 template parameter%s3|"
+  "function template %2 with %ordinal3 template paramter being a "
+    "%select{type|non-type|template}4 template parameter|"
+  "function template %2 with %ordinal3 template parameter "
+    "%select{with no name|named %5}4|"
+  "function template %2 with %ordinal3 template parameter with "
+    "%select{no |}4default argument|"
+  "function template %2 with %ordinal3 template parameter with "
+    "default argument %4|"
+  "function template %2 with %ordinal3 template parameter with different type|"
+  "function template %2 with %ordinal3 template parameter %select{not |}4"
+    "being a template parameter pack|"
+  "}1">;
+
+def err_module_odr_violation_function : Error<
+  "%q0 has different definitions in different modules; "
+  "%select{definition in module '%2'|defined here}1 "
+  "first difference is "
+  "%select{"
+  "return type is %4|"
+  "%ordinal4 parameter with name %5|"
+  "%ordinal4 parameter with type %5%select{| decayed from %7}6|"
+  "%ordinal4 parameter with%select{out|}5 a default argument|"
+  "%ordinal4 parameter with a default argument|"
+  "function body"
+  "}3">;
+
+def note_module_odr_violation_function : Note<"but in '%0' found "
+  "%select{"
+  "different return type %2|"
+  "%ordinal2 parameter with name %3|"
+  "%ordinal2 parameter with type %3%select{| decayed from %5}4|"
+  "%ordinal2 parameter with%select{out|}3 a default argument|"
+  "%ordinal2 parameter with a different default argument|"
+  "a different body"
+  "}1">;
+
+def err_module_odr_violation_enum : Error<
+  "%q0 has different definitions in different modules; "
+  "%select{definition in module '%2'|defined here}1 "
+  "first difference is "
+  "%select{"
+  "enum that is %select{not scoped|scoped}4|"
+  "enum scoped with keyword %select{struct|class}4|"
+  "enum %select{without|with}4 specified type|"
+  "enum with specified type %4|"
+  "enum with %4 element%s4|"
+  "%ordinal4 element has name %5|"
+  "%ordinal4 element %5 %select{has|does not have}6 an initilizer|"
+  "%ordinal4 element %5 has an initializer|"
+  "}3">;
+
+def note_module_odr_violation_enum : Note<"but in '%0' found "
+  "%select{"
+  "enum that is %select{not scoped|scoped}2|"
+  "enum scoped with keyword %select{struct|class}2|"
+  "enum %select{without|with}2 specified type|"
+  "enum with specified type %2|"
+  "enum with %2 element%s2|"
+  "%ordinal2 element has name %3|"
+  "%ordinal2 element %3 %select{has|does not have}4 an initializer|"
+  "%ordinal2 element %3 has different initializer|"
   "}1">;
 
 def err_module_odr_violation_mismatch_decl_unknown : Error<
@@ -296,6 +402,8 @@ def warn_module_uses_date_time : Warning<
 def err_module_no_size_mtime_for_header : Error<
   "cannot emit module %0: %select{size|mtime}1 must be explicitly specified "
   "for missing header file \"%2\"">;
+def err_module_unable_to_hash_content : Error<
+  "failed to hash content for '%0' because memory buffer cannot be retrieved">;
 } // let CategoryName
 } // let Component
 

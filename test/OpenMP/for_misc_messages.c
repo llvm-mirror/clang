@@ -1,4 +1,13 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp -triple x86_64-unknown-unknown -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -triple x86_64-unknown-unknown -verify %s -Wuninitialized
+
+// RUN: %clang_cc1 -fsyntax-only -fopenmp-simd -triple x86_64-unknown-unknown -verify %s -Wuninitialized
+
+void xxx(int argc) {
+  int x; // expected-note {{initialize the variable 'x' to silence this warning}}
+#pragma omp for
+  for (int i = 0; i < 10; ++i)
+    argc = x; // expected-warning {{variable 'x' is uninitialized when used here}}
+}
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp for'}}
 #pragma omp for
@@ -50,6 +59,20 @@ void test_invalid_clause() {
 #pragma omp parallel
 // expected-warning@+1 {{extra tokens at the end of '#pragma omp for' are ignored}}
 #pragma omp for foo bar
+  for (i = 0; i < 16; ++i)
+    ;
+// At one time, this failed an assert.
+// expected-error@+1 {{unexpected OpenMP clause 'num_teams' in directive '#pragma omp for'}}
+#pragma omp for num_teams(3)
+  for (i = 0; i < 16; ++i)
+    ;
+// At one time, this error was reported twice.
+// expected-error@+1 {{unexpected OpenMP clause 'uniform' in directive '#pragma omp for'}}
+#pragma omp for uniform
+  for (i = 0; i < 16; ++i)
+    ;
+// expected-error@+1 {{unexpected OpenMP clause 'if' in directive '#pragma omp for'}}
+#pragma omp for if(0)
   for (i = 0; i < 16; ++i)
     ;
 }
@@ -191,10 +214,10 @@ void test_collapse() {
     ;
 #pragma omp parallel
 #pragma omp for collapse(2)
-  for (i = 0; i < 16; ++i)
+  for (i = 0; i < 16; ++i) // expected-note {{defined as private}}
 // expected-note@+1 {{variable with automatic storage duration is predetermined as private; perhaps you forget to enclose 'omp for' directive into a parallel or another task region?}}
     for (int j = 0; j < 16; ++j)
-// expected-error@+2 {{reduction variable must be shared}}
+// expected-error@+2 2 {{reduction variable must be shared}}
 // expected-error@+1 {{region cannot be closely nested inside 'for' region; perhaps you forget to enclose 'omp for' directive into a parallel region?}}
 #pragma omp for reduction(+ : i, j)
       for (int k = 0; k < 16; ++k)

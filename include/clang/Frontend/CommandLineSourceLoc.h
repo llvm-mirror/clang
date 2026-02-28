@@ -1,10 +1,9 @@
 
 //===--- CommandLineSourceLoc.h - Parsing for source locations-*- C++ -*---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -21,7 +20,7 @@
 
 namespace clang {
 
-/// \brief A source location that has been parsed on the command line.
+/// A source location that has been parsed on the command line.
 struct ParsedSourceLocation {
   std::string FileName;
   unsigned Line;
@@ -101,7 +100,7 @@ struct ParsedSourceRange {
 
 namespace llvm {
   namespace cl {
-    /// \brief Command-line option parser that parses source locations.
+    /// Command-line option parser that parses source locations.
     ///
     /// Source locations are of the form filename:line:column.
     template<>

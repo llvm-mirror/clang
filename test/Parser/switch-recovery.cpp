@@ -105,7 +105,7 @@ void test9(int x) { // expected-note {{'x' declared here}}
               expected-error {{expected expression}}
     8:: x; // expected-error {{expected ';' after expression}} \
               expected-error {{no member named 'x' in the global namespace; did you mean simply 'x'?}} \
-              expected-warning 2 {{expression result unused}}
+              expected-warning {{expression result unused}}
     9:: :y; // expected-error {{expected ';' after expression}} \
                expected-error {{expected unqualified-id}} \
                expected-warning {{expression result unused}}
@@ -185,8 +185,9 @@ void pr19022_1a(int x) {
 
 void pr19022_1b(int x) {
   switch(x) {
-  case v  // expected-error{{use of undeclared identifier 'v'}}
-  }
+  case v  // expected-error{{use of undeclared identifier 'v'}} \
+          // expected-error{{expected ':' after 'case'}}
+  } // expected-error{{expected statement}}
  }
 
 void pr19022_2() {
@@ -209,7 +210,8 @@ int pr19022_4(int x) {
 
 void pr19022_5(int x) {
   switch(x) {
-  case 1: case
+  case 1: case // expected-error{{expected ':' after 'case'}} \
+               // expected-error{{expected statement}}
   }  // expected-error{{expected expression}}
 }
 

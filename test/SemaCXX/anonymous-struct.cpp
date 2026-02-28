@@ -9,17 +9,17 @@ struct S {
 #endif
 };
 
-struct { // expected-error {{anonymous structs and classes must be class members}}
+struct { // expected-error {{anonymous structs and classes must be class members}} expected-warning {{does not declare anything}}
 };
 
 struct E {
   struct {
     S x;
 #if __cplusplus <= 199711L
-    // expected-error@-2 {{anonymous struct member 'x' has a non-trivial constructor}}
+    // expected-error@-2 {{anonymous struct member 'x' has a non-trivial default constructor}}
 #endif
   };
-  static struct {
+  static struct { // expected-warning {{does not declare anything}}
   };
   class {
     int anon_priv_field; // expected-error {{anonymous struct cannot contain a private data member}}

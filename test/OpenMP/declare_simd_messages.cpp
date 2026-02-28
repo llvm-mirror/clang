@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -triple=x86_64-pc-win32 -verify -fopenmp -x c++ -std=c++11 -fms-extensions -Wno-pragma-pack %s
 
+// RUN: %clang_cc1 -triple=x86_64-pc-win32 -verify -fopenmp-simd -x c++ -std=c++11 -fms-extensions -Wno-pragma-pack %s
+
 // expected-error@+1 {{expected an OpenMP directive}}
 #pragma omp declare
 
@@ -193,8 +195,8 @@ void test() {
 #pragma omp declare simd linear(uval(b))
 // expected-error@+1 {{variable of non-reference type 'int *' can be used only with 'val' modifier, but used with 'ref'}}
 #pragma omp declare simd linear(ref(b))
-// expected-error@+1 {{expected one of 'ref', val' or 'uval' modifiers}}
-#pragma omp declare simd linear(uref(b))
+// expected-error@+1 {{expected one of 'ref', val' or 'uval' modifiers}} expected-warning@+1 {{extra tokens at the end of '#pragma omp declare simd' are ignored}}
+#pragma omp declare simd linear(uref(b)) allocate(b)
 void bar(int a, int *b);
 
 template <class T>

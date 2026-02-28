@@ -1,5 +1,12 @@
-// RUN: %clang_cc1 -ffreestanding -triple armv8-eabi -target-cpu cortex-a57 -O -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch32
-// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +neon -target-feature +crc -target-feature +crypto -O -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch64
+// RUN: %clang_cc1 -ffreestanding -triple armv8-eabi -target-cpu cortex-a57 -O2  -fno-experimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch32 -check-prefix=ARM-LEGACY -check-prefix=AArch32-LEGACY
+// RUN: %clang_cc1 -ffreestanding -triple armv8-eabi -target-cpu cortex-a57 -O2  -fexperimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch32 -check-prefix=ARM-NEWPM -check-prefix=AArch32-NEWPM
+// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +neon -target-feature +crc -target-feature +crypto -O2 -fno-experimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch64 -check-prefix=ARM-LEGACY -check-prefix=AArch64-LEGACY
+// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +neon -target-feature +crc -target-feature +crypto -O2 -fexperimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=ARM -check-prefix=AArch64 -check-prefix=ARM-NEWPM -check-prefix=AArch64-NEWPM
+// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +v8.3a -O2 -fexperimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=AArch64-v8_3
+// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +v8.4a -O2 -fexperimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=AArch64-v8_3
+// RUN: %clang_cc1 -ffreestanding -triple aarch64-eabi -target-cpu cortex-a57 -target-feature +v8.5a -O2 -fexperimental-new-pass-manager -S -emit-llvm -o - %s | FileCheck %s -check-prefix=AArch64-v8_3
+
+// REQUIRES: rewrite
 
 #include <arm_acle.h>
 
@@ -83,28 +90,28 @@ void test_swp(uint32_t x, volatile void *p) {
 /* 8.6 Memory prefetch intrinsics */
 /* 8.6.1 Data prefetch */
 // ARM-LABEL: test_pld
-// ARM: call void @llvm.prefetch(i8* null, i32 0, i32 3, i32 1)
+// ARM: call void @llvm.prefetch.p0i8(i8* null, i32 0, i32 3, i32 1)
 void test_pld() {
   __pld(0);
 }
 
 // ARM-LABEL: test_pldx
-// AArch32: call void @llvm.prefetch(i8* null, i32 1, i32 3, i32 1)
-// AArch64: call void @llvm.prefetch(i8* null, i32 1, i32 1, i32 1)
+// AArch32: call void @llvm.prefetch.p0i8(i8* null, i32 1, i32 3, i32 1)
+// AArch64: call void @llvm.prefetch.p0i8(i8* null, i32 1, i32 1, i32 1)
 void test_pldx() {
   __pldx(1, 2, 0, 0);
 }
 
 /* 8.6.2 Instruction prefetch */
 // ARM-LABEL: test_pli
-// ARM: call void @llvm.prefetch(i8* null, i32 0, i32 3, i32 0)
+// ARM: call void @llvm.prefetch.p0i8(i8* null, i32 0, i32 3, i32 0)
 void test_pli() {
   __pli(0);
 }
 
 // ARM-LABEL: test_plix
-// AArch32: call void @llvm.prefetch(i8* null, i32 0, i32 3, i32 0)
-// AArch64: call void @llvm.prefetch(i8* null, i32 0, i32 1, i32 0)
+// AArch32: call void @llvm.prefetch.p0i8(i8* null, i32 0, i32 3, i32 0)
+// AArch64: call void @llvm.prefetch.p0i8(i8* null, i32 0, i32 1, i32 0)
 void test_plix() {
   __plix(2, 0, 0);
 }
@@ -121,19 +128,21 @@ void test_nop(void) {
 
 /* 9.2 Miscellaneous data-processing intrinsics */
 // ARM-LABEL: test_ror
-// ARM: lshr
-// ARM: sub
-// ARM: shl
-// ARM: or
+// ARM-LEGACY: lshr
+// ARM-LEGACY: sub
+// ARM-LEGACY: shl
+// ARM-LEGACY: or
+// ARM-NEWPM: call i32 @llvm.fshr.i32(i32 %x, i32 %x, i32 %y)
 uint32_t test_ror(uint32_t x, uint32_t y) {
   return __ror(x, y);
 }
 
 // ARM-LABEL: test_rorl
-// ARM: lshr
-// ARM: sub
-// ARM: shl
-// ARM: or
+// ARM-LEGACY: lshr
+// ARM-LEGACY: sub
+// ARM-LEGACY: shl
+// ARM-LEGACY: or
+// AArch32-NEWPM: call i32 @llvm.fshr.i32(i32 %x, i32 %x, i32 %y)
 unsigned long test_rorl(unsigned long x, uint32_t y) {
   return __rorl(x, y);
 }
@@ -187,31 +196,35 @@ uint64_t test_revll(uint64_t t) {
 
 // ARM-LABEL: test_rev16
 // ARM: llvm.bswap
-// ARM: lshr {{.*}}, 16
-// ARM: shl {{.*}}, 16
-// ARM: or
+// ARM-LEGACY: lshr {{.*}}, 16
+// ARM-LEGACY: shl {{.*}}, 16
+// ARM-LEGACY: or
+// ARM-NEWPM: call i32 @llvm.fshl.i32(i32 %0, i32 %0, i32 16)
 uint32_t test_rev16(uint32_t t) {
   return __rev16(t);
 }
 
 // ARM-LABEL: test_rev16l
 // AArch32: llvm.bswap
-// AArch32: lshr {{.*}}, 16
-// AArch32: shl {{.*}}, 16
-// AArch32: or
+// AArch32-LEGACY: lshr {{.*}}, 16
+// AArch32-LEGACY: shl {{.*}}, 16
+// AArch32-LEGACY: or
+// AArch32-NEWPM: call i32 @llvm.fshl.i32(i32 %0, i32 %0, i32 16)
 // AArch64: [[T1:%.*]] = lshr i64 [[IN:%.*]], 32
 // AArch64: [[T2:%.*]] = trunc i64 [[T1]] to i32
 // AArch64: [[T3:%.*]] = tail call i32 @llvm.bswap.i32(i32 [[T2]])
-// AArch64: [[T4:%.*]] = lshr i32 [[T3]], 16
-// AArch64: [[T5:%.*]] = shl i32 [[T3]], 16
-// AArch64: [[T6:%.*]] = or i32 [[T5]], [[T4]]
+// AArch64-LEGACY: [[T4:%.*]] = lshr i32 [[T3]], 16
+// AArch64-LEGACY: [[T5:%.*]] = shl i32 [[T3]], 16
+// AArch64-LEGACY: [[T6:%.*]] = or i32 [[T5]], [[T4]]
+// AArch64-NEWPM: [[T6:%.*]] = tail call i32 @llvm.fshl.i32(i32 [[T3]], i32 [[T3]], i32 16)
 // AArch64: [[T7:%.*]] = zext i32 [[T6]] to i64
 // AArch64: [[T8:%.*]] = shl nuw i64 [[T7]], 32
 // AArch64: [[T9:%.*]] = trunc i64 [[IN]] to i32
 // AArch64: [[T10:%.*]] = tail call i32 @llvm.bswap.i32(i32 [[T9]])
-// AArch64: [[T11:%.*]] = lshr i32 [[T10]], 16
-// AArch64: [[T12:%.*]] = shl i32 [[T10]], 16
-// AArch64: [[T13:%.*]] = or i32 [[T12]], [[T11]]
+// AArch64-LEGACY: [[T11:%.*]] = lshr i32 [[T10]], 16
+// AArch64-LEGACY: [[T12:%.*]] = shl i32 [[T10]], 16
+// AArch64-LEGACY: [[T13:%.*]] = or i32 [[T12]], [[T11]]
+// AArch64-NEWPM: [[T13:%.*]] = tail call i32 @llvm.fshl.i32(i32 [[T10]], i32 [[T10]], i32 16)
 // AArch64: [[T14:%.*]] = zext i32 [[T13]] to i64
 // AArch64: [[T15:%.*]] = or i64 [[T8]], [[T14]]
 long test_rev16l(long t) {
@@ -222,16 +235,18 @@ long test_rev16l(long t) {
 // ARM: [[T1:%.*]] = lshr i64 [[IN:%.*]], 32
 // ARM: [[T2:%.*]] = trunc i64 [[T1]] to i32
 // ARM: [[T3:%.*]] = tail call i32 @llvm.bswap.i32(i32 [[T2]])
-// ARM: [[T4:%.*]] = lshr i32 [[T3]], 16
-// ARM: [[T5:%.*]] = shl i32 [[T3]], 16
-// ARM: [[T6:%.*]] = or i32 [[T5]], [[T4]]
+// ARM-LEGACY: [[T4:%.*]] = lshr i32 [[T3]], 16
+// ARM-LEGACY: [[T5:%.*]] = shl i32 [[T3]], 16
+// ARM-LEGACY: [[T6:%.*]] = or i32 [[T5]], [[T4]]
+// ARM-NEWPM: [[T6:%.*]] = tail call i32 @llvm.fshl.i32(i32 [[T3]], i32 [[T3]], i32 16)
 // ARM: [[T7:%.*]] = zext i32 [[T6]] to i64
 // ARM: [[T8:%.*]] = shl nuw i64 [[T7]], 32
 // ARM: [[T9:%.*]] = trunc i64 [[IN]] to i32
 // ARM: [[T10:%.*]] = tail call i32 @llvm.bswap.i32(i32 [[T9]])
-// ARM: [[T11:%.*]] = lshr i32 [[T10]], 16
-// ARM: [[T12:%.*]] = shl i32 [[T10]], 16
-// ARM: [[T13:%.*]] = or i32 [[T12]], [[T11]]
+// ARM-LEGACY: [[T11:%.*]] = lshr i32 [[T10]], 16
+// ARM-LEGACY: [[T12:%.*]] = shl i32 [[T10]], 16
+// ARM-LEGACY: [[T13:%.*]] = or i32 [[T12]], [[T11]]
+// ARM-NEWPM: [[T13:%.*]] = tail call i32 @llvm.fshl.i32(i32 [[T10]], i32 [[T10]], i32 16)
 // ARM: [[T14:%.*]] = zext i32 [[T13]] to i64
 // ARM: [[T15:%.*]] = or i64 [[T8]], [[T14]]
 uint64_t test_rev16ll(uint64_t t) {
@@ -813,3 +828,11 @@ void test_wsrp(void *v) {
 
 // AArch64: ![[M0]] = !{!"1:2:3:4:5"}
 // AArch64: ![[M1]] = !{!"sysreg"}
+
+// AArch64-v8_3-LABEL: @test_jcvt(
+// AArch64-v8_3: call i32 @llvm.aarch64.fjcvtzs
+#ifdef __ARM_64BIT_STATE
+int32_t test_jcvt(double v) {
+  return __jcvt(v);
+}
+#endif

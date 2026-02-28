@@ -4,8 +4,8 @@
 // RUN: mkdir -p %t/m
 // RUN: cd %S/Inputs/crash-recovery/usr
 
-// RUN: not env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
-// RUN: %clang -fsyntax-only -nostdinc %s -Iinclude \
+// RUN: env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
+// RUN: not %clang -fsyntax-only -nostdinc %s -Iinclude \
 // RUN:     -fmodules -fmodules-cache-path=%t/m/ 2>&1 | FileCheck %s
 
 // RUN: FileCheck --check-prefix=CHECKSRC %s -input-file %t/crash-vfs-*.m
@@ -36,7 +36,6 @@
 // CHECKYAML: 'case-sensitive':
 // CHECKYAML-NEXT: 'use-external-names': 'false',
 // CHECKYAML-NEXT: 'overlay-relative': 'true',
-// CHECKYAML-NEXT: 'ignore-non-existent-contents': 'false'
 // CHECKYAML: 'type': 'directory'
 // CHECKYAML: 'name': "/[[PATH:.*]]/Inputs/crash-recovery/usr/include",
 // CHECKYAML-NEXT: 'contents': [

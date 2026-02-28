@@ -1,9 +1,8 @@
 //== AnalysisManager.h - Path sensitive analysis data manager ------*- C++ -*-//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,9 +15,9 @@
 #define LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_ANALYSISMANAGER_H
 
 #include "clang/Analysis/AnalysisDeclContext.h"
+#include "clang/Analysis/PathDiagnostic.h"
 #include "clang/StaticAnalyzer/Core/AnalyzerOptions.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
 #include "clang/StaticAnalyzer/Core/PathDiagnosticConsumers.h"
 
 namespace clang {
@@ -33,7 +32,6 @@ class AnalysisManager : public BugReporterData {
   AnalysisDeclContextManager AnaCtxMgr;
 
   ASTContext &Ctx;
-  DiagnosticsEngine &Diags;
   const LangOptions &LangOpts;
   PathDiagnosticConsumers PathConsumers;
 
@@ -45,22 +43,20 @@ class AnalysisManager : public BugReporterData {
 
 public:
   AnalyzerOptions &options;
-  
-  AnalysisManager(ASTContext &ctx,DiagnosticsEngine &diags,
-                  const LangOptions &lang,
+
+  AnalysisManager(ASTContext &ctx,
                   const PathDiagnosticConsumers &Consumers,
                   StoreManagerCreator storemgr,
-                  ConstraintManagerCreator constraintmgr, 
-                  CheckerManager *checkerMgr,
-                  AnalyzerOptions &Options,
-                  CodeInjector* injector = nullptr);
+                  ConstraintManagerCreator constraintmgr,
+                  CheckerManager *checkerMgr, AnalyzerOptions &Options,
+                  CodeInjector *injector = nullptr);
 
   ~AnalysisManager() override;
 
   void ClearContexts() {
     AnaCtxMgr.clear();
   }
-  
+
   AnalysisDeclContextManager& getAnalysisDeclContextManager() {
     return AnaCtxMgr;
   }
@@ -87,10 +83,6 @@ public:
     return getASTContext().getSourceManager();
   }
 
-  DiagnosticsEngine &getDiagnostic() override {
-    return Diags;
-  }
-
   const LangOptions &getLangOpts() const {
     return LangOpts;
   }
@@ -102,8 +94,7 @@ public:
   void FlushDiagnostics();
 
   bool shouldVisualize() const {
-    return options.visualizeExplodedGraphWithGraphViz ||
-           options.visualizeExplodedGraphWithUbiGraph;
+    return options.visualizeExplodedGraphWithGraphViz;
   }
 
   bool shouldInlineCall() const {
@@ -125,6 +116,36 @@ public:
 
   AnalysisDeclContext *getAnalysisDeclContext(const Decl *D) {
     return AnaCtxMgr.getContext(D);
+  }
+
+  static bool isInCodeFile(SourceLocation SL, const SourceManager &SM) {
+    if (SM.isInMainFile(SL))
+      return true;
+
+    // Support the "unified sources" compilation method (eg. WebKit) that
+    // involves producing non-header files that include other non-header files.
+    // We should be included directly from a UnifiedSource* file
+    // and we shouldn't be a header - which is a very safe defensive check.
+    SourceLocation IL = SM.getIncludeLoc(SM.getFileID(SL));
+    if (!IL.isValid() || !SM.isInMainFile(IL))
+      return false;
+    // Should rather be "file name starts with", but the current .getFilename
+    // includes the full path.
+    if (SM.getFilename(IL).contains("UnifiedSource")) {
+      // It might be great to reuse FrontendOptions::getInputKindForExtension()
+      // but for now it doesn't discriminate between code and header files.
+      return llvm::StringSwitch<bool>(SM.getFilename(SL).rsplit('.').second)
+          .Cases("c", "m", "mm", "C", "cc", "cp", true)
+          .Cases("cpp", "CPP", "c++", "cxx", "cppm", true)
+          .Default(false);
+    }
+
+    return false;
+  }
+
+  bool isInCodeFile(SourceLocation SL) {
+    const SourceManager &SM = getASTContext().getSourceManager();
+    return isInCodeFile(SL, SM);
   }
 };
 

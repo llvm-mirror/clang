@@ -1,9 +1,8 @@
 //===--- ExternalASTMerger.h - Merging External AST Interface ---*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,6 +14,7 @@
 #define LLVM_CLANG_AST_EXTERNALASTMERGER_H
 
 #include "clang/AST/ASTImporter.h"
+#include "clang/AST/ASTImporterSharedState.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -23,7 +23,7 @@ namespace clang {
 /// ExternalASTSource implementation that merges information from several
 /// ASTContexts.
 ///
-/// ExtermalASTMerger maintains a vector of ASTImporters that it uses to import
+/// ExternalASTMerger maintains a vector of ASTImporters that it uses to import
 /// (potentially incomplete) Decls and DeclContexts from the source ASTContexts
 /// in response to ExternalASTSource API calls.
 ///
@@ -37,7 +37,7 @@ namespace clang {
 ///   lookup.  In this case, Origins contains an entry overriding lookup and
 ///   specifying the correct pair of DeclContext/ASTContext.
 ///
-/// - The DeclContext of origin was determined by another ExterenalASTMerger. 
+/// - The DeclContext of origin was determined by another ExternalASTMerger.
 ///   (This is possible when the source ASTContext for one of the Importers has
 ///   its own ExternalASTMerger).  The origin must be properly forwarded in this
 ///   case.
@@ -57,7 +57,7 @@ public:
   typedef std::map<const DeclContext *, DCOrigin> OriginMap;
   typedef std::vector<std::unique_ptr<ASTImporter>> ImporterVector;
 private:
-  /// One importer exists for each source.  
+  /// One importer exists for each source.
   ImporterVector Importers;
   /// Overrides in case name lookup would return nothing or would return
   /// the wrong thing.
@@ -80,24 +80,51 @@ public:
   /// import SourceLocations properly.  Additionally, when import occurs for
   /// a DeclContext whose origin has been overridden, then this
   /// ExternalASTMerger must be able to determine that.
-  struct ImporterSource {
+  class ImporterSource {
     ASTContext &AST;
     FileManager &FM;
     const OriginMap &OM;
+    /// True iff the source only exists temporary, i.e., it will be removed from
+    /// the ExternalASTMerger during the life time of the ExternalASTMerger.
+    bool Temporary;
+    /// If the ASTContext of this source has an ExternalASTMerger that imports
+    /// into this source, then this will point to that other ExternalASTMerger.
+    ExternalASTMerger *Merger;
+
+  public:
+    ImporterSource(ASTContext &AST, FileManager &FM, const OriginMap &OM,
+                   bool Temporary = false, ExternalASTMerger *Merger = nullptr)
+        : AST(AST), FM(FM), OM(OM), Temporary(Temporary), Merger(Merger) {}
+    ASTContext &getASTContext() const { return AST; }
+    FileManager &getFileManager() const { return FM; }
+    const OriginMap &getOriginMap() const { return OM; }
+    bool isTemporary() const { return Temporary; }
+    ExternalASTMerger *getMerger() const { return Merger; }
   };
 
 private:
-  /// The target for this ExtenralASTMerger.
+  /// The target for this ExternalASTMerger.
   ImporterTarget Target;
+  /// ExternalASTMerger has multiple ASTImporters that import into the same
+  /// TU. This is the shared state for all ASTImporters of this
+  /// ExternalASTMerger.
+  /// See also the CrossTranslationUnitContext that has a similar setup.
+  std::shared_ptr<ASTImporterSharedState> SharedState;
 
 public:
   ExternalASTMerger(const ImporterTarget &Target,
                     llvm::ArrayRef<ImporterSource> Sources);
 
+  /// Asks all connected ASTImporters if any of them imported the given
+  /// declaration. If any ASTImporter did import the given declaration,
+  /// then this function returns the declaration that D was imported from.
+  /// Returns nullptr if no ASTImporter did import import D.
+  Decl *FindOriginalDecl(Decl *D);
+
   /// Add a set of ASTContexts as possible origins.
   ///
   /// Usually the set will be initialized in the constructor, but long-lived
-  /// ExternalASTMergers may neeed to import from new sources (for example,
+  /// ExternalASTMergers may need to import from new sources (for example,
   /// newly-parsed source files).
   ///
   /// Ensures that Importers does not gain duplicate entries as a result.
@@ -106,7 +133,7 @@ public:
   /// Remove a set of ASTContexts as possible origins.
   ///
   /// Sometimes an origin goes away (for example, if a source file gets
-  /// superseded by a newer version). 
+  /// superseded by a newer version).
   ///
   /// The caller is responsible for ensuring that this doesn't leave
   /// DeclContexts that can't be completed.
@@ -146,7 +173,7 @@ public:
   /// OriginContext.
   bool HasImporterForOrigin(ASTContext &OriginContext);
 
-  /// Returns a reference to the ASTRImporter from Importers whose origin
+  /// Returns a reference to the ASTImporter from Importers whose origin
   /// is OriginContext.  This allows manual import of ASTs while preserving the
   /// OriginMap correctly.
   ASTImporter &ImporterForOrigin(ASTContext &OriginContext);
@@ -163,7 +190,7 @@ private:
   template <typename CallbackType>
   void ForEachMatchingDC(const DeclContext *DC, CallbackType Callback);
 
-public: 
+public:
   /// Log something if there is a logging callback installed.
   llvm::raw_ostream &logs() { return *LogStream; }
 

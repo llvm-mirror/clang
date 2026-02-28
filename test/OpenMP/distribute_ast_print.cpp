@@ -1,6 +1,10 @@
-// RUN: %clang_cc1 -verify -fopenmp -ast-print %s | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -ast-print %s -Wno-openmp-target | FileCheck %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -25,14 +29,14 @@ public:
   S7(typename T::type v) : a(v) {
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute private(a) private(this->a) private(T::a)
+#pragma omp distribute private(a) private(this->a) private(T::a) allocate(a)
     for (int k = 0; k < a.a; ++k)
       ++this->a.a;
   }
   S7 &operator=(S7 &s) {
 #pragma omp target
 #pragma omp teams
-#pragma omp distribute private(a) private(this->a)
+#pragma omp distribute allocate(a) private(a) private(this->a)
     for (int k = 0; k < s.a.a; ++k)
       ++s.a.a;
     return *this;
@@ -41,13 +45,13 @@ public:
 
 // CHECK: #pragma omp target
 // CHECK-NEXT: #pragma omp teams
-// CHECK-NEXT: #pragma omp distribute private(this->a) private(this->a) private(T::a)
+// CHECK-NEXT: #pragma omp distribute private(this->a) private(this->a) private(T::a) allocate(this->a)
 // CHECK: #pragma omp target
 // CHECK-NEXT: #pragma omp teams
-// CHECK-NEXT: #pragma omp distribute private(this->a) private(this->a)
+// CHECK-NEXT: #pragma omp distribute allocate(this->a) private(this->a) private(this->a)
 // CHECK: #pragma omp target
 // CHECK-NEXT: #pragma omp teams
-// CHECK-NEXT: #pragma omp distribute private(this->a) private(this->a) private(this->S::a)
+// CHECK-NEXT: #pragma omp distribute private(this->a) private(this->a) private(this->S::a) allocate(this->a)
 
 class S8 : public S7<S> {
   S8() {}
@@ -83,7 +87,7 @@ T tmain(T argc) {
   static T a;
 // CHECK: static T a;
 #pragma omp distribute
-// CHECK-NEXT: #pragma omp distribute
+// CHECK-NEXT: #pragma omp distribute{{$}}
   for (int i=0; i < 2; ++i)a=2;
 // CHECK-NEXT: for (int i = 0; i < 2; ++i)
 // CHECK-NEXT: a = 2;

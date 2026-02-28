@@ -1,6 +1,10 @@
-// RUN: %clang_cc1 -verify -fopenmp -ast-print %s | FileCheck %s
-// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s -Wno-openmp-target
+// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
+
+// RUN: %clang_cc1 -verify -fopenmp-simd -ast-print %s -Wno-openmp-target | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -emit-pch -o %t %s -Wno-openmp-target
+// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print -Wno-openmp-target | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -51,7 +55,7 @@ class S8 : public S7<S> {
 
 public:
   S8(int v) : S7<S>(v){
-#pragma omp target teams distribute private(a) private(this->a) private(S7<S>::a) 
+#pragma omp target teams distribute private(a) private(this->a) private(S7<S>::a)
     for (int k = 0; k < a.a; ++k)
       ++this->a.a;
   }
@@ -64,14 +68,14 @@ public:
 
   void bar() {
     int b, argv, d, c, e, f;
-#pragma omp target teams distribute default(none), private(b) firstprivate(argv) shared(d) reduction(+:c) reduction(max:e) num_teams(f) thread_limit(d)
+#pragma omp target teams distribute allocate(argv) default(none), private(b) firstprivate(argv) shared(d) reduction(+:c) reduction(max:e) num_teams(f) thread_limit(d) allocate(e)
     for (int k = 0; k < a.a; ++k)
       ++a.a;
   }
 };
 // CHECK: #pragma omp target teams distribute private(this->a) private(this->a) private(this->S7<S>::a)
 // CHECK: #pragma omp target teams distribute private(this->a) private(this->a)
-// CHECK: #pragma omp target teams distribute default(none) private(b) firstprivate(argv) shared(d) reduction(+: c) reduction(max: e) num_teams(f) thread_limit(d)
+// CHECK: #pragma omp target teams distribute allocate(argv) default(none) private(b) firstprivate(argv) shared(d) reduction(+: c) reduction(max: e) num_teams(f) thread_limit(d) allocate(e)
 
 template <class T, int N>
 T tmain(T argc) {
@@ -81,7 +85,7 @@ T tmain(T argc) {
 #pragma omp target teams distribute
   for (int i=0; i < 2; ++i)
     a = 2;
-// CHECK: #pragma omp target teams distribute
+// CHECK: #pragma omp target teams distribute{{$}}
 // CHECK-NEXT: for (int i = 0; i < 2; ++i)
 // CHECK-NEXT: a = 2;
 #pragma omp target teams distribute private(argc, b), firstprivate(c, d), collapse(2)

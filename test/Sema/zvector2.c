@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -triple s390x-linux-gnu -fzvector -target-cpu z14 \
-// RUN:  -fno-lax-vector-conversions -W -Wall -Wconversion \
+// RUN:  -flax-vector-conversions=none -W -Wall -Wconversion \
 // RUN:  -Werror -fsyntax-only -verify %s
 
 vector signed char sc, sc2;
@@ -21,6 +21,13 @@ vector bool long long bl, bl2;
 vector double fd, fd2;
 
 vector float ff, ff2;
+
+// Verify that __vector is also recognized
+__vector float ff3;
+
+// Verify operation of vec_step
+int res_ff[vec_step(ff) == 4 ? 1 : -1];
+
 
 void foo(void)
 {

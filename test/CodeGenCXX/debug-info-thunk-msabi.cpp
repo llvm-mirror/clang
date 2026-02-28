@@ -3,17 +3,17 @@
 class __declspec(dllexport) A {
   A(int * = new int) {}
 };
-// CHECK: define {{.*}}void @"\01??_FA@@AAEXXZ"
+// CHECK: define {{.*}}void @"??_FA@@AAEXXZ"
 // CHECK-SAME: !dbg ![[SP:[0-9]+]]
 // CHECK-NOT: {{ret }}
-// CHECK: call x86_thiscallcc %class.A* @"\01??0A@@AAE@PAH@Z"
+// CHECK: call x86_thiscallcc %class.A* @"??0A@@AAE@PAH@Z"
 // CHECK-SAME: !dbg ![[DBG:[0-9]+]]
 // CHECK: ret void, !dbg
 //
 // CHECK: ![[SP]] = distinct !DISubprogram(
 // CHECK-SAME:          line: 4
-// CHECK-SAME:          isDefinition: true
 // CHECK-SAME:          DIFlagArtificial
+// CHECK-SAME:          DISPFlagDefinition
 // CHECK-SAME:          ){{$}}
 //
 // CHECK: ![[DBG]] = !DILocation(line: 0

@@ -42,7 +42,7 @@ void func2(void) {
   // CL20: store i32* %[[r0]], i32* addrspace(5)* %lp1, align 8
   int *lp1 = &lv1;
 
-  // CHECK: %[[arraydecay:.*]] = getelementptr inbounds [100 x i32], [100 x i32] addrspace(5)* %la, i32 0, i32 0
+  // CHECK: %[[arraydecay:.*]] = getelementptr inbounds [100 x i32], [100 x i32] addrspace(5)* %la, i64 0, i64 0
   // CL12: store i32 addrspace(5)* %[[arraydecay]], i32 addrspace(5)* addrspace(5)* %lp2, align 4
   // CL20: %[[r1:.*]] = addrspacecast i32 addrspace(5)* %[[arraydecay]] to i32*
   // CL20: store i32* %[[r1]], i32* addrspace(5)* %lp2, align 8
@@ -62,7 +62,7 @@ void func2(void) {
 // CHECK-LABEL: define void @func3()
 // CHECK: %a = alloca [16 x [1 x float]], align 4, addrspace(5)
 // CHECK: %[[CAST:.+]] = bitcast [16 x [1 x float]] addrspace(5)* %a to i8 addrspace(5)*
-// CHECK: call void @llvm.memset.p5i8.i64(i8 addrspace(5)* %[[CAST]], i8 0, i64 64, i32 4, i1 false)
+// CHECK: call void @llvm.memset.p5i8.i64(i8 addrspace(5)* align 4 %[[CAST]], i8 0, i64 64, i1 false)
 void func3(void) {
   float a[16][1] = {{0.}};
 }

@@ -1,5 +1,10 @@
 // RUN: %clang_cc1 -triple i386-pc-linux-gnu -emit-llvm < %s| FileCheck %s
 
+typedef __WCHAR_TYPE__ wchar_t;
+typedef __SIZE_TYPE__ size_t;
+
+void *memcpy(void *, void const *, size_t);
+
 // CHECK: @test1
 // CHECK: call void @llvm.memset.p0i8.i32
 // CHECK: call void @llvm.memset.p0i8.i32
@@ -54,14 +59,14 @@ int test6(char *X) {
 int test7(int *p) {
   struct snd_pcm_hw_params_t* hwparams;  // incomplete type.
   
-  // CHECK: call void @llvm.memset{{.*}}256, i32 4, i1 false)
+  // CHECK: call void @llvm.memset{{.*}} align 4 {{.*}}256, i1 false)
   __builtin_memset(p, 0, 256);  // Should be alignment = 4
 
-  // CHECK: call void @llvm.memset{{.*}}256, i32 1, i1 false)
+  // CHECK: call void @llvm.memset{{.*}} align 1 {{.*}}256, i1 false)
   __builtin_memset((char*)p, 0, 256);  // Should be alignment = 1
 
   __builtin_memset(hwparams, 0, 256);  // No crash alignment = 1
-  // CHECK: call void @llvm.memset{{.*}}256, i32 1, i1 false)
+  // CHECK: call void @llvm.memset{{.*}} align 1{{.*}}256, i1 false)
 }
 
 // <rdar://problem/11314941>
@@ -73,13 +78,43 @@ struct PS {
 struct PS ps;
 void test8(int *arg) {
   // CHECK: @test8
-  // CHECK: call void @llvm.memcpy{{.*}} 16, i32 1, i1 false)
+  // CHECK: call void @llvm.memcpy{{.*}} align 4 {{.*}} align 1 {{.*}} 16, i1 false)
   __builtin_memcpy(arg, ps.modes, sizeof(struct PS));
 }
 
 __attribute((aligned(16))) int x[4], y[4];
 void test9() {
   // CHECK: @test9
-  // CHECK: call void @llvm.memcpy{{.*}} 16, i32 16, i1 false)
+  // CHECK: call void @llvm.memcpy{{.*}} align 16 {{.*}} align 16 {{.*}} 16, i1 false)
   __builtin_memcpy(x, y, sizeof(y));
+}
+
+wchar_t dest;
+wchar_t src;
+
+// CHECK-LABEL: @test10
+// FIXME: Consider lowering these to llvm.memcpy / llvm.memmove.
+void test10() {
+  // CHECK: call i32* @wmemcpy(i32* @dest, i32* @src, i32 4)
+  __builtin_wmemcpy(&dest, &src, 4);
+
+  // CHECK: call i32* @wmemmove(i32* @dest, i32* @src, i32 4)
+  __builtin_wmemmove(&dest, &src, 4);
+}
+
+// CHECK-LABEL: @test11
+void test11() {
+  typedef struct { int a; } b;
+  int d;
+  b e;
+  // CHECK: call void @llvm.memcpy{{.*}}(
+  memcpy(&d, (char *)&e.a, sizeof(e));
+}
+
+// CHECK-LABEL: @test12
+extern char dest_array[];
+extern char src_array[];
+void test12() {
+  // CHECK: call void @llvm.memcpy{{.*}}(
+  memcpy(&dest_array, &dest_array, 2);
 }

@@ -1,9 +1,8 @@
 //===- unittest/ASTMatchers/Dynamic/ParserTest.cpp - Parser unit tests -===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===-------------------------------------------------------------------===//
 
@@ -148,8 +147,8 @@ TEST(ParserTest, ParseMatcher) {
   const uint64_t ExpectedBar = Sema.expectMatcher("Bar");
   const uint64_t ExpectedBaz = Sema.expectMatcher("Baz");
   Sema.parse(" Foo ( Bar ( 17), Baz( \n \"B A,Z\") ) .bind( \"Yo!\") ");
-  for (size_t i = 0, e = Sema.Errors.size(); i != e; ++i) {
-    EXPECT_EQ("", Sema.Errors[i]);
+  for (const auto &E : Sema.Errors) {
+    EXPECT_EQ("", E);
   }
 
   EXPECT_NE(ExpectedFoo, ExpectedBar);
@@ -181,13 +180,28 @@ TEST(ParserTest, ParseMatcher) {
   EXPECT_EQ("Yo!", Foo.BoundID);
 }
 
+TEST(ParserTest, ParseComment) {
+  MockSema Sema;
+  Sema.expectMatcher("Foo");
+  Sema.parse(" Foo() # Bar() ");
+  for (const auto &E : Sema.Errors) {
+    EXPECT_EQ("", E);
+  }
+
+  EXPECT_EQ(1ULL, Sema.Matchers.size());
+
+  Sema.parse("Foo(#) ");
+
+  EXPECT_EQ("1:4: Error parsing matcher. Found end-of-code while looking for ')'.", Sema.Errors[1]);
+}
+
 using ast_matchers::internal::Matcher;
 
 Parser::NamedValueMap getTestNamedValues() {
   Parser::NamedValueMap Values;
   Values["nameX"] = llvm::StringRef("x");
-  Values["hasParamA"] =
-      VariantMatcher::SingleMatcher(hasParameter(0, hasName("a")));
+  Values["hasParamA"] = VariantMatcher::SingleMatcher(
+      functionDecl(hasParameter(0, hasName("a"))));
   return Values;
 }
 
@@ -234,6 +248,17 @@ TEST(ParserTest, FullParserTest) {
             "2:27: Incorrect type for arg 1. "
             "(Expected = Matcher<Expr>) != (Actual = String)",
             Error.toStringFull());
+}
+
+TEST(ParserTest, VariadicMatchTest) {
+  Diagnostics Error;
+  llvm::Optional<DynTypedMatcher> OM(Parser::parseMatcherExpression(
+      "stmt(objcMessageExpr(hasAnySelector(\"methodA\", \"methodB:\")))",
+      &Error));
+  EXPECT_EQ("", Error.toStringFull());
+  auto M = OM->unconditionalConvertTo<Stmt>();
+  EXPECT_TRUE(matchesObjC("@interface I @end "
+                          "void foo(I* i) { [i methodA]; }", M));
 }
 
 std::string ParseWithError(StringRef Code) {
@@ -329,22 +354,61 @@ TEST(ParserTest, CompletionNamedValues) {
   EXPECT_LT(0u, Comps.size());
 
   // Can complete names and registry together.
-  Code = "cxxMethodDecl(hasP";
+  Code = "functionDecl(hasP";
   Comps = Parser::completeExpression(Code, Code.size(), nullptr, &NamedValues);
   ASSERT_EQ(3u, Comps.size());
-  EXPECT_EQ("aramA", Comps[0].TypedText);
-  EXPECT_EQ("Matcher<FunctionDecl> hasParamA", Comps[0].MatcherDecl);
 
-  EXPECT_EQ("arameter(", Comps[1].TypedText);
+  EXPECT_EQ("arameter(", Comps[0].TypedText);
   EXPECT_EQ(
       "Matcher<FunctionDecl> hasParameter(unsigned, Matcher<ParmVarDecl>)",
-      Comps[1].MatcherDecl);
+      Comps[0].MatcherDecl);
+
+  EXPECT_EQ("aramA", Comps[1].TypedText);
+  EXPECT_EQ("Matcher<Decl> hasParamA", Comps[1].MatcherDecl);
 
   EXPECT_EQ("arent(", Comps[2].TypedText);
   EXPECT_EQ(
       "Matcher<Decl> "
       "hasParent(Matcher<NestedNameSpecifierLoc|TypeLoc|Decl|...>)",
       Comps[2].MatcherDecl);
+}
+
+TEST(ParserTest, ParseBindOnLet) {
+
+  auto NamedValues = getTestNamedValues();
+
+  Diagnostics Error;
+
+  {
+    llvm::Optional<DynTypedMatcher> TopLevelLetBinding(
+        Parser::parseMatcherExpression("hasParamA.bind(\"parmABinding\")",
+                                       nullptr, &NamedValues, &Error));
+    EXPECT_EQ("", Error.toStringFull());
+    auto M = TopLevelLetBinding->unconditionalConvertTo<Decl>();
+
+    EXPECT_TRUE(matchAndVerifyResultTrue(
+        "void foo(int a);", M,
+        std::make_unique<VerifyIdIsBoundTo<FunctionDecl>>("parmABinding")));
+    EXPECT_TRUE(matchAndVerifyResultFalse(
+        "void foo(int b);", M,
+        std::make_unique<VerifyIdIsBoundTo<FunctionDecl>>("parmABinding")));
+  }
+
+  {
+    llvm::Optional<DynTypedMatcher> NestedLetBinding(
+        Parser::parseMatcherExpression(
+            "functionDecl(hasParamA.bind(\"parmABinding\"))", nullptr,
+            &NamedValues, &Error));
+    EXPECT_EQ("", Error.toStringFull());
+    auto M = NestedLetBinding->unconditionalConvertTo<Decl>();
+
+    EXPECT_TRUE(matchAndVerifyResultTrue(
+        "void foo(int a);", M,
+        std::make_unique<VerifyIdIsBoundTo<FunctionDecl>>("parmABinding")));
+    EXPECT_TRUE(matchAndVerifyResultFalse(
+        "void foo(int b);", M,
+        std::make_unique<VerifyIdIsBoundTo<FunctionDecl>>("parmABinding")));
+  }
 }
 
 }  // end anonymous namespace

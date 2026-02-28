@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 %s -emit-llvm -o - -triple x86_64-darwin-apple -fobjc-arc -O2 | FileCheck %s
+// RUN: %clang_cc1 %s -emit-llvm -o - -triple x86_64-darwin-apple -fobjc-arc -O2 -fno-experimental-new-pass-manager | FileCheck %s --check-prefixes=CHECK,CHECK-LEGACY
+// RUN: %clang_cc1 %s -emit-llvm -o - -triple x86_64-darwin-apple -fobjc-arc -O2 -fexperimental-new-pass-manager | FileCheck %s --check-prefixes=CHECK,CHECK-NEWPM
 // RUN: %clang_cc1 %s -emit-llvm -o - -triple x86_64-darwin-apple -fobjc-arc -O0 | FileCheck %s -check-prefix=CHECK-O0
 
 // Make sure we emit clang.arc.use before calling objc_release as part of the
@@ -21,8 +22,9 @@ void *test_builtin_os_log(void *buf) {
 
   // CHECK: %[[CALL:.*]] = tail call %[[TY0:.*]]* (...) @GenString()
   // CHECK: %[[V0:.*]] = bitcast %[[TY0]]* %[[CALL]] to i8*
-  // CHECK: %[[V1:.*]] = tail call i8* @objc_retainAutoreleasedReturnValue(i8* %[[V0]])
-  // CHECK: %[[V2:.*]] = ptrtoint %[[TY0]]* %[[CALL]] to i64
+  // CHECK: %[[V1:.*]] = notail call i8* @llvm.objc.retainAutoreleasedReturnValue(i8* %[[V0]])
+  // CHECK-LEGACY: %[[V2:.*]] = ptrtoint %[[TY0]]* %[[CALL]] to i64
+  // CHECK-NEWPM: %[[V2:.*]] = ptrtoint i8* %[[V1]] to i64
   // CHECK: store i8 2, i8* %[[BUF]], align 1
   // CHECK: %[[NUMARGS_I:.*]] = getelementptr i8, i8* %[[BUF]], i64 1
   // CHECK: store i8 1, i8* %[[NUMARGS_I]], align 1
@@ -33,8 +35,10 @@ void *test_builtin_os_log(void *buf) {
   // CHECK: %[[ARGDATA_I:.*]] = getelementptr i8, i8* %[[BUF]], i64 4
   // CHECK: %[[ARGDATACAST_I:.*]] = bitcast i8* %[[ARGDATA_I]] to i64*
   // CHECK: store i64 %[[V2]], i64* %[[ARGDATACAST_I]], align 1
-  // CHECK: tail call void (...) @clang.arc.use(%[[TY0]]* %[[CALL]])
-  // CHECK: tail call void @objc_release(i8* %[[V0]])
+  // CHECK-LEGACY: tail call void (...) @llvm.objc.clang.arc.use(%[[TY0]]* %[[CALL]])
+  // CHECK-LEGACY: tail call void @llvm.objc.release(i8* %[[V0]])
+  // CHECK-NEWPM: tail call void (...) @llvm.objc.clang.arc.use(i8* %[[V1]])
+  // CHECK-NEWPM: tail call void @llvm.objc.release(i8* %[[V1]])
   // CHECK: ret i8* %[[BUF]]
 
   // clang.arc.use is used and removed in IR optimizations. At O0, we should not
@@ -45,13 +49,13 @@ void *test_builtin_os_log(void *buf) {
   // CHECK-O0: %[[V0:.*]] = load i8*, i8** %[[BUF_ADDR]], align 8
   // CHECK-O0: %[[CALL:.*]] = call %[[TY0:.*]]* (...) @GenString()
   // CHECK-O0: %[[V1:.*]] = bitcast %[[TY0]]* %[[CALL]] to i8*
-  // CHECK-O0: %[[V2:.*]] = call i8* @objc_retainAutoreleasedReturnValue(i8* %[[V1]])
+  // CHECK-O0: %[[V2:.*]] = notail call i8* @llvm.objc.retainAutoreleasedReturnValue(i8* %[[V1]])
   // CHECK-O0: %[[V3:.*]] = bitcast i8* %[[V2]] to %[[TY0]]*
   // CHECK-O0: %[[V4:.*]] = ptrtoint %[[TY0]]* %[[V3]] to i64
   // CHECK-O0: call void @__os_log_helper_1_2_1_8_64(i8* %[[V0]], i64 %[[V4]])
   // CHECK-O0: %[[V5:.*]] = bitcast %[[TY0]]* %[[V3]] to i8*
-  // CHECK-O0-NOT call void (...) @clang.arc.use({{.*}}
-  // CHECK-O0: call void @objc_release(i8* %[[V5]])
+  // CHECK-O0-NOT: call void (...) @llvm.objc.clang.arc.use({{.*}}
+  // CHECK-O0: call void @llvm.objc.release(i8* %[[V5]])
   // CHECK-O0: ret i8* %[[V0]]
 }
 

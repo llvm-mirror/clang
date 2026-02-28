@@ -1,9 +1,8 @@
 //===--- NVPTX.h - Declare NVPTX target feature support ---------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -36,10 +35,21 @@ static const unsigned NVPTXAddrSpaceMap[] = {
     3, // cuda_shared
 };
 
+/// The DWARF address class. Taken from
+/// https://docs.nvidia.com/cuda/archive/10.0/ptx-writers-guide-to-interoperability/index.html#cuda-specific-dwarf
+static const int NVPTXDWARFAddrSpaceMap[] = {
+    -1, // Default, opencl_private or opencl_generic - not defined
+    5,  // opencl_global
+    -1,
+    8,  // opencl_local or cuda_shared
+    4,  // opencl_constant or cuda_constant
+};
+
 class LLVM_LIBRARY_VISIBILITY NVPTXTargetInfo : public TargetInfo {
   static const char *const GCCRegNames[];
   static const Builtin::Info BuiltinInfo[];
   CudaArch GPU;
+  uint32_t PTXVersion;
   std::unique_ptr<TargetInfo> HostTarget;
 
 public:
@@ -55,7 +65,8 @@ public:
   initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
                  StringRef CPU,
                  const std::vector<std::string> &FeaturesVec) const override {
-    Features["satom"] = GPU >= CudaArch::SM_60;
+    Features[CudaArchToString(GPU)] = true;
+    Features["ptx" + std::to_string(PTXVersion)] = true;
     return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
   }
 
@@ -98,6 +109,12 @@ public:
     return StringToCudaArch(Name) != CudaArch::UNKNOWN;
   }
 
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override {
+    for (int i = static_cast<int>(CudaArch::SM_20);
+         i < static_cast<int>(CudaArch::LAST); ++i)
+      Values.emplace_back(CudaArchToString(static_cast<CudaArch>(i)));
+  }
+
   bool setCPU(const std::string &Name) override {
     GPU = StringToCudaArch(Name);
     return GPU != CudaArch::UNKNOWN;
@@ -115,6 +132,20 @@ public:
     Opts.support("cl_khr_global_int32_extended_atomics");
     Opts.support("cl_khr_local_int32_base_atomics");
     Opts.support("cl_khr_local_int32_extended_atomics");
+  }
+
+  /// \returns If a target requires an address within a target specific address
+  /// space \p AddressSpace to be converted in order to be used, then return the
+  /// corresponding target specific DWARF address space.
+  ///
+  /// \returns Otherwise return None and no conversion will be emitted in the
+  /// DWARF.
+  Optional<unsigned>
+  getDWARFAddressSpace(unsigned AddressSpace) const override {
+    if (AddressSpace >= llvm::array_lengthof(NVPTXDWARFAddrSpaceMap) ||
+        NVPTXDWARFAddrSpaceMap[AddressSpace] < 0)
+      return llvm::None;
+    return NVPTXDWARFAddrSpaceMap[AddressSpace];
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {

@@ -1,9 +1,8 @@
 //===--- SemaAttr.cpp - Semantic Analysis for Attributes ------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -86,6 +85,123 @@ void Sema::AddMsStructLayoutForRecord(RecordDecl *RD) {
         MSVtorDispAttr::CreateImplicit(Context, VtorDispStack.CurrentValue));
 }
 
+template <typename Attribute>
+static void addGslOwnerPointerAttributeIfNotExisting(ASTContext &Context,
+                                                     CXXRecordDecl *Record) {
+  if (Record->hasAttr<OwnerAttr>() || Record->hasAttr<PointerAttr>())
+    return;
+
+  for (Decl *Redecl : Record->redecls())
+    Redecl->addAttr(Attribute::CreateImplicit(Context, /*DerefType=*/nullptr));
+}
+
+void Sema::inferGslPointerAttribute(NamedDecl *ND,
+                                    CXXRecordDecl *UnderlyingRecord) {
+  if (!UnderlyingRecord)
+    return;
+
+  const auto *Parent = dyn_cast<CXXRecordDecl>(ND->getDeclContext());
+  if (!Parent)
+    return;
+
+  static llvm::StringSet<> Containers{
+      "array",
+      "basic_string",
+      "deque",
+      "forward_list",
+      "vector",
+      "list",
+      "map",
+      "multiset",
+      "multimap",
+      "priority_queue",
+      "queue",
+      "set",
+      "stack",
+      "unordered_set",
+      "unordered_map",
+      "unordered_multiset",
+      "unordered_multimap",
+  };
+
+  static llvm::StringSet<> Iterators{"iterator", "const_iterator",
+                                     "reverse_iterator",
+                                     "const_reverse_iterator"};
+
+  if (Parent->isInStdNamespace() && Iterators.count(ND->getName()) &&
+      Containers.count(Parent->getName()))
+    addGslOwnerPointerAttributeIfNotExisting<PointerAttr>(Context,
+                                                          UnderlyingRecord);
+}
+
+void Sema::inferGslPointerAttribute(TypedefNameDecl *TD) {
+
+  QualType Canonical = TD->getUnderlyingType().getCanonicalType();
+
+  CXXRecordDecl *RD = Canonical->getAsCXXRecordDecl();
+  if (!RD) {
+    if (auto *TST =
+            dyn_cast<TemplateSpecializationType>(Canonical.getTypePtr())) {
+
+      RD = dyn_cast_or_null<CXXRecordDecl>(
+          TST->getTemplateName().getAsTemplateDecl()->getTemplatedDecl());
+    }
+  }
+
+  inferGslPointerAttribute(TD, RD);
+}
+
+void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
+  static llvm::StringSet<> StdOwners{
+      "any",
+      "array",
+      "basic_regex",
+      "basic_string",
+      "deque",
+      "forward_list",
+      "vector",
+      "list",
+      "map",
+      "multiset",
+      "multimap",
+      "optional",
+      "priority_queue",
+      "queue",
+      "set",
+      "stack",
+      "unique_ptr",
+      "unordered_set",
+      "unordered_map",
+      "unordered_multiset",
+      "unordered_multimap",
+      "variant",
+  };
+  static llvm::StringSet<> StdPointers{
+      "basic_string_view",
+      "reference_wrapper",
+      "regex_iterator",
+  };
+
+  if (!Record->getIdentifier())
+    return;
+
+  // Handle classes that directly appear in std namespace.
+  if (Record->isInStdNamespace()) {
+    if (Record->hasAttr<OwnerAttr>() || Record->hasAttr<PointerAttr>())
+      return;
+
+    if (StdOwners.count(Record->getName()))
+      addGslOwnerPointerAttributeIfNotExisting<OwnerAttr>(Context, Record);
+    else if (StdPointers.count(Record->getName()))
+      addGslOwnerPointerAttributeIfNotExisting<PointerAttr>(Context, Record);
+
+    return;
+  }
+
+  // Handle nested classes that could be a gsl::Pointer.
+  inferGslPointerAttribute(Record, Record);
+}
+
 void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
                                    SourceLocation PragmaLoc) {
   PragmaMsStackAction Action = Sema::PSK_Reset;
@@ -150,6 +266,9 @@ void Sema::ActOnPragmaClangSection(SourceLocation PragmaLoc, PragmaClangSectionA
     case PragmaClangSectionKind::PCSK_Rodata:
       CSec = &PragmaClangRodataSection;
       break;
+    case PragmaClangSectionKind::PCSK_Relro:
+      CSec = &PragmaClangRelroSection;
+      break;
     case PragmaClangSectionKind::PCSK_Text:
       CSec = &PragmaClangTextSection;
       break;
@@ -205,7 +324,7 @@ void Sema::ActOnPragmaPack(SourceLocation PragmaLoc, PragmaMsStackAction Action,
   // "#pragma pack(pop, identifier, n) is undefined"
   if (Action & Sema::PSK_Pop) {
     if (Alignment && !SlotLabel.empty())
-      Diag(PragmaLoc, diag::warn_pragma_pack_pop_identifer_and_alignment);
+      Diag(PragmaLoc, diag::warn_pragma_pack_pop_identifier_and_alignment);
     if (PackStack.Stack.empty())
       Diag(PragmaLoc, diag::warn_pragma_pop_failed) << "pack" << "stack empty";
   }
@@ -268,7 +387,7 @@ void Sema::DiagnoseUnterminatedPragmaPack() {
   }
 }
 
-void Sema::ActOnPragmaMSStruct(PragmaMSStructKind Kind) { 
+void Sema::ActOnPragmaMSStruct(PragmaMSStructKind Kind) {
   MSStructPragmaOn = (Kind == PMSST_ON);
 }
 
@@ -330,7 +449,7 @@ void Sema::PragmaStack<ValueType>::Act(SourceLocation PragmaLocation,
         Stack.erase(std::prev(I.base()), Stack.end());
       }
     } else if (!Stack.empty()) {
-      // We don't have a label, just pop the last entry.
+      // We do not have a label, just pop the last entry.
       CurrentValue = Stack.back().Value;
       CurrentPragmaLocation = Stack.back().PragmaLocation;
       Stack.pop_back();
@@ -389,7 +508,7 @@ bool Sema::UnifySection(StringRef SectionName,
   return false;
 }
 
-/// \brief Called on well formed \#pragma bss_seg().
+/// Called on well formed \#pragma bss_seg().
 void Sema::ActOnPragmaMSSeg(SourceLocation PragmaLocation,
                             PragmaMsStackAction Action,
                             llvm::StringRef StackSlotLabel,
@@ -404,13 +523,19 @@ void Sema::ActOnPragmaMSSeg(SourceLocation PragmaLocation,
   if (Action & PSK_Pop && Stack->Stack.empty())
     Diag(PragmaLocation, diag::warn_pragma_pop_failed) << PragmaName
         << "stack empty";
-  if (SegmentName &&
-      !checkSectionName(SegmentName->getLocStart(), SegmentName->getString()))
-    return;
+  if (SegmentName) {
+    if (!checkSectionName(SegmentName->getBeginLoc(), SegmentName->getString()))
+      return;
+
+    if (SegmentName->getString() == ".drectve" &&
+        Context.getTargetInfo().getCXXABI().isMicrosoft())
+      Diag(PragmaLocation, diag::warn_attribute_section_drectve) << PragmaName;
+  }
+
   Stack->Act(PragmaLocation, Action, StackSlotLabel, SegmentName);
 }
 
-/// \brief Called on well formed \#pragma bss_seg().
+/// Called on well formed \#pragma bss_seg().
 void Sema::ActOnPragmaMSSection(SourceLocation PragmaLocation,
                                 int SectionFlags, StringLiteral *SegmentName) {
   UnifySection(SegmentName->getString(), SectionFlags, PragmaLocation);
@@ -449,12 +574,15 @@ void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
   if (VD->isUsed())
     Diag(PragmaLoc, diag::warn_used_but_marked_unused) << Name;
 
-  VD->addAttr(UnusedAttr::CreateImplicit(Context, UnusedAttr::GNU_unused,
-                                         IdTok.getLocation()));
+  VD->addAttr(UnusedAttr::CreateImplicit(Context, IdTok.getLocation(),
+                                         AttributeCommonInfo::AS_Pragma,
+                                         UnusedAttr::GNU_unused));
 }
 
 void Sema::AddCFAuditedAttribute(Decl *D) {
-  SourceLocation Loc = PP.getPragmaARCCFCodeAuditedLoc();
+  IdentifierInfo *Ident;
+  SourceLocation Loc;
+  std::tie(Ident, Loc) = PP.getPragmaARCCFCodeAuditedInfo();
   if (!Loc.isValid()) return;
 
   // Don't add a redundant or conflicting attribute.
@@ -462,7 +590,9 @@ void Sema::AddCFAuditedAttribute(Decl *D) {
       D->hasAttr<CFUnknownTransferAttr>())
     return;
 
-  D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Loc));
+  AttributeCommonInfo Info(Ident, SourceRange(Loc),
+                           AttributeCommonInfo::AS_Pragma);
+  D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Info));
 }
 
 namespace {
@@ -520,9 +650,10 @@ attrMatcherRuleListToString(ArrayRef<attr::SubjectMatchRule> Rules) {
 
 } // end anonymous namespace
 
-void Sema::ActOnPragmaAttributePush(AttributeList &Attribute,
-                                    SourceLocation PragmaLoc,
-                                    attr::ParsedSubjectMatchRuleSet Rules) {
+void Sema::ActOnPragmaAttributeAttribute(
+    ParsedAttr &Attribute, SourceLocation PragmaLoc,
+    attr::ParsedSubjectMatchRuleSet Rules) {
+  Attribute.setIsPragmaClangAttribute();
   SmallVector<attr::SubjectMatchRule, 4> SubjectMatchRules;
   // Gather the subject match rules that are supported by the attribute.
   SmallVector<std::pair<attr::SubjectMatchRule, bool>, 4>
@@ -612,7 +743,7 @@ void Sema::ActOnPragmaAttributePush(AttributeList &Attribute,
   if (!Rules.empty()) {
     auto Diagnostic =
         Diag(PragmaLoc, diag::err_pragma_attribute_invalid_matchers)
-        << Attribute.getName();
+        << Attribute;
     SmallVector<attr::SubjectMatchRule, 2> ExtraRules;
     for (const auto &Rule : Rules) {
       ExtraRules.push_back(attr::SubjectMatchRule(Rule.first));
@@ -622,53 +753,90 @@ void Sema::ActOnPragmaAttributePush(AttributeList &Attribute,
     Diagnostic << attrMatcherRuleListToString(ExtraRules);
   }
 
-  PragmaAttributeStack.push_back(
+  if (PragmaAttributeStack.empty()) {
+    Diag(PragmaLoc, diag::err_pragma_attr_attr_no_push);
+    return;
+  }
+
+  PragmaAttributeStack.back().Entries.push_back(
       {PragmaLoc, &Attribute, std::move(SubjectMatchRules), /*IsUsed=*/false});
 }
 
-void Sema::ActOnPragmaAttributePop(SourceLocation PragmaLoc) {
+void Sema::ActOnPragmaAttributeEmptyPush(SourceLocation PragmaLoc,
+                                         const IdentifierInfo *Namespace) {
+  PragmaAttributeStack.emplace_back();
+  PragmaAttributeStack.back().Loc = PragmaLoc;
+  PragmaAttributeStack.back().Namespace = Namespace;
+}
+
+void Sema::ActOnPragmaAttributePop(SourceLocation PragmaLoc,
+                                   const IdentifierInfo *Namespace) {
   if (PragmaAttributeStack.empty()) {
-    Diag(PragmaLoc, diag::err_pragma_attribute_stack_mismatch);
+    Diag(PragmaLoc, diag::err_pragma_attribute_stack_mismatch) << 1;
     return;
   }
-  const PragmaAttributeEntry &Entry = PragmaAttributeStack.back();
-  if (!Entry.IsUsed) {
-    assert(Entry.Attribute && "Expected an attribute");
-    Diag(Entry.Attribute->getLoc(), diag::warn_pragma_attribute_unused)
-        << Entry.Attribute->getName();
-    Diag(PragmaLoc, diag::note_pragma_attribute_region_ends_here);
+
+  // Dig back through the stack trying to find the most recently pushed group
+  // that in Namespace. Note that this works fine if no namespace is present,
+  // think of push/pops without namespaces as having an implicit "nullptr"
+  // namespace.
+  for (size_t Index = PragmaAttributeStack.size(); Index;) {
+    --Index;
+    if (PragmaAttributeStack[Index].Namespace == Namespace) {
+      for (const PragmaAttributeEntry &Entry :
+           PragmaAttributeStack[Index].Entries) {
+        if (!Entry.IsUsed) {
+          assert(Entry.Attribute && "Expected an attribute");
+          Diag(Entry.Attribute->getLoc(), diag::warn_pragma_attribute_unused)
+              << *Entry.Attribute;
+          Diag(PragmaLoc, diag::note_pragma_attribute_region_ends_here);
+        }
+      }
+      PragmaAttributeStack.erase(PragmaAttributeStack.begin() + Index);
+      return;
+    }
   }
-  PragmaAttributeStack.pop_back();
+
+  if (Namespace)
+    Diag(PragmaLoc, diag::err_pragma_attribute_stack_mismatch)
+        << 0 << Namespace->getName();
+  else
+    Diag(PragmaLoc, diag::err_pragma_attribute_stack_mismatch) << 1;
 }
 
 void Sema::AddPragmaAttributes(Scope *S, Decl *D) {
   if (PragmaAttributeStack.empty())
     return;
-  for (auto &Entry : PragmaAttributeStack) {
-    const AttributeList *Attribute = Entry.Attribute;
-    assert(Attribute && "Expected an attribute");
+  for (auto &Group : PragmaAttributeStack) {
+    for (auto &Entry : Group.Entries) {
+      ParsedAttr *Attribute = Entry.Attribute;
+      assert(Attribute && "Expected an attribute");
+      assert(Attribute->isPragmaClangAttribute() &&
+             "expected #pragma clang attribute");
 
-    // Ensure that the attribute can be applied to the given declaration.
-    bool Applies = false;
-    for (const auto &Rule : Entry.MatchRules) {
-      if (Attribute->appliesToDecl(D, Rule)) {
-        Applies = true;
-        break;
+      // Ensure that the attribute can be applied to the given declaration.
+      bool Applies = false;
+      for (const auto &Rule : Entry.MatchRules) {
+        if (Attribute->appliesToDecl(D, Rule)) {
+          Applies = true;
+          break;
+        }
       }
+      if (!Applies)
+        continue;
+      Entry.IsUsed = true;
+      PragmaAttributeCurrentTargetDecl = D;
+      ParsedAttributesView Attrs;
+      Attrs.addAtEnd(Attribute);
+      ProcessDeclAttributeList(S, D, Attrs);
+      PragmaAttributeCurrentTargetDecl = nullptr;
     }
-    if (!Applies)
-      continue;
-    Entry.IsUsed = true;
-    assert(!Attribute->getNext() && "Expected just one attribute");
-    PragmaAttributeCurrentTargetDecl = D;
-    ProcessDeclAttributeList(S, D, Attribute);
-    PragmaAttributeCurrentTargetDecl = nullptr;
   }
 }
 
 void Sema::PrintPragmaAttributeInstantiationPoint() {
   assert(PragmaAttributeCurrentTargetDecl && "Expected an active declaration");
-  Diags.Report(PragmaAttributeCurrentTargetDecl->getLocStart(),
+  Diags.Report(PragmaAttributeCurrentTargetDecl->getBeginLoc(),
                diag::note_pragma_attribute_applied_decl_here);
 }
 
@@ -692,7 +860,7 @@ void Sema::AddRangeBasedOptnone(FunctionDecl *FD) {
     AddOptnoneAttributeIfNoConflicts(FD, OptimizeOffPragmaLocation);
 }
 
-void Sema::AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD, 
+void Sema::AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD,
                                             SourceLocation Loc) {
   // Don't add a conflicting attribute. No diagnostic is needed.
   if (FD->hasAttr<MinSizeAttr>() || FD->hasAttr<AlwaysInlineAttr>())
@@ -771,6 +939,18 @@ void Sema::ActOnPragmaFPContract(LangOptions::FPContractModeKind FPC) {
     break;
   }
 }
+
+void Sema::ActOnPragmaFEnvAccess(LangOptions::FEnvAccessModeKind FPC) {
+  switch (FPC) {
+  case LangOptions::FEA_On:
+    FPFeatures.setAllowFEnvAccess();
+    break;
+  case LangOptions::FEA_Off:
+    FPFeatures.setDisallowFEnvAccess();
+    break;
+  }
+}
+
 
 void Sema::PushNamespaceVisibilityAttr(const VisibilityAttr *Attr,
                                        SourceLocation Loc) {

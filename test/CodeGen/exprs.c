@@ -143,7 +143,7 @@ int f12() {
 // Make sure negate of fp uses -0.0 for proper -0 handling.
 double f13(double X) {
   // CHECK-LABEL: define double @f13
-  // CHECK: fsub double -0.0
+  // CHECK: fneg double
   return -X;
 }
 
@@ -196,3 +196,13 @@ void f18() {
 }
 // CHECK-LABEL: define void @f18()
 // CHECK: call i32 @returns_int()
+
+// Ensure the right stmt is returned
+int f19() {
+  return ({ 3;;4;; });
+}
+// CHECK-LABEL: define i32 @f19()
+// CHECK: [[T:%.*]] = alloca i32
+// CHECK: store i32 4, i32* [[T]]
+// CHECK: [[L:%.*]] = load i32, i32* [[T]]
+// CHECK: ret i32 [[L]]

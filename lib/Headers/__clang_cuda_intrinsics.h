@@ -1,22 +1,8 @@
 /*===--- __clang_cuda_intrinsics.h - Device-side CUDA intrinsic wrappers ---===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
@@ -34,23 +20,24 @@
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300
 
 #pragma push_macro("__MAKE_SHUFFLES")
-#define __MAKE_SHUFFLES(__FnName, __IntIntrinsic, __FloatIntrinsic, __Mask)    \
-  inline __device__ int __FnName(int __val, int __offset,                      \
+#define __MAKE_SHUFFLES(__FnName, __IntIntrinsic, __FloatIntrinsic, __Mask,    \
+                        __Type)                                                \
+  inline __device__ int __FnName(int __val, __Type __offset,                   \
                                  int __width = warpSize) {                     \
     return __IntIntrinsic(__val, __offset,                                     \
                           ((warpSize - __width) << 8) | (__Mask));             \
   }                                                                            \
-  inline __device__ float __FnName(float __val, int __offset,                  \
+  inline __device__ float __FnName(float __val, __Type __offset,               \
                                    int __width = warpSize) {                   \
     return __FloatIntrinsic(__val, __offset,                                   \
                             ((warpSize - __width) << 8) | (__Mask));           \
   }                                                                            \
-  inline __device__ unsigned int __FnName(unsigned int __val, int __offset,    \
+  inline __device__ unsigned int __FnName(unsigned int __val, __Type __offset, \
                                           int __width = warpSize) {            \
     return static_cast<unsigned int>(                                          \
         ::__FnName(static_cast<int>(__val), __offset, __width));               \
   }                                                                            \
-  inline __device__ long long __FnName(long long __val, int __offset,          \
+  inline __device__ long long __FnName(long long __val, __Type __offset,       \
                                        int __width = warpSize) {               \
     struct __Bits {                                                            \
       int __a, __b;                                                            \
@@ -65,12 +52,29 @@
     memcpy(&__ret, &__tmp, sizeof(__tmp));                                     \
     return __ret;                                                              \
   }                                                                            \
+  inline __device__ long __FnName(long __val, __Type __offset,                 \
+                                  int __width = warpSize) {                    \
+    _Static_assert(sizeof(long) == sizeof(long long) ||                        \
+                   sizeof(long) == sizeof(int));                               \
+    if (sizeof(long) == sizeof(long long)) {                                   \
+      return static_cast<long>(                                                \
+          ::__FnName(static_cast<long long>(__val), __offset, __width));       \
+    } else if (sizeof(long) == sizeof(int)) {                                  \
+      return static_cast<long>(                                                \
+          ::__FnName(static_cast<int>(__val), __offset, __width));             \
+    }                                                                          \
+  }                                                                            \
+  inline __device__ unsigned long __FnName(                                    \
+      unsigned long __val, __Type __offset, int __width = warpSize) {          \
+    return static_cast<unsigned long>(                                         \
+        ::__FnName(static_cast<long>(__val), __offset, __width));              \
+  }                                                                            \
   inline __device__ unsigned long long __FnName(                               \
-      unsigned long long __val, int __offset, int __width = warpSize) {        \
+      unsigned long long __val, __Type __offset, int __width = warpSize) {     \
     return static_cast<unsigned long long>(::__FnName(                         \
         static_cast<unsigned long long>(__val), __offset, __width));           \
   }                                                                            \
-  inline __device__ double __FnName(double __val, int __offset,                \
+  inline __device__ double __FnName(double __val, __Type __offset,             \
                                     int __width = warpSize) {                  \
     long long __tmp;                                                           \
     _Static_assert(sizeof(__tmp) == sizeof(__val));                            \
@@ -81,13 +85,15 @@
     return __ret;                                                              \
   }
 
-__MAKE_SHUFFLES(__shfl, __nvvm_shfl_idx_i32, __nvvm_shfl_idx_f32, 0x1f);
+__MAKE_SHUFFLES(__shfl, __nvvm_shfl_idx_i32, __nvvm_shfl_idx_f32, 0x1f, int);
 // We use 0 rather than 31 as our mask, because shfl.up applies to lanes >=
 // maxLane.
-__MAKE_SHUFFLES(__shfl_up, __nvvm_shfl_up_i32, __nvvm_shfl_up_f32, 0);
-__MAKE_SHUFFLES(__shfl_down, __nvvm_shfl_down_i32, __nvvm_shfl_down_f32, 0x1f);
-__MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f);
-
+__MAKE_SHUFFLES(__shfl_up, __nvvm_shfl_up_i32, __nvvm_shfl_up_f32, 0,
+                unsigned int);
+__MAKE_SHUFFLES(__shfl_down, __nvvm_shfl_down_i32, __nvvm_shfl_down_f32, 0x1f,
+                unsigned int);
+__MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f,
+                int);
 #pragma pop_macro("__MAKE_SHUFFLES")
 
 #endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300
@@ -97,25 +103,26 @@ __MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f);
 // __shfl_sync_* variants available in CUDA-9
 #pragma push_macro("__MAKE_SYNC_SHUFFLES")
 #define __MAKE_SYNC_SHUFFLES(__FnName, __IntIntrinsic, __FloatIntrinsic,       \
-                             __Mask)                                           \
-  inline __device__ int __FnName(unsigned int __mask, int __val, int __offset, \
-                                 int __width = warpSize) {                     \
+                             __Mask, __Type)                                   \
+  inline __device__ int __FnName(unsigned int __mask, int __val,               \
+                                 __Type __offset, int __width = warpSize) {    \
     return __IntIntrinsic(__mask, __val, __offset,                             \
                           ((warpSize - __width) << 8) | (__Mask));             \
   }                                                                            \
   inline __device__ float __FnName(unsigned int __mask, float __val,           \
-                                   int __offset, int __width = warpSize) {     \
+                                   __Type __offset, int __width = warpSize) {  \
     return __FloatIntrinsic(__mask, __val, __offset,                           \
                             ((warpSize - __width) << 8) | (__Mask));           \
   }                                                                            \
   inline __device__ unsigned int __FnName(unsigned int __mask,                 \
-                                          unsigned int __val, int __offset,    \
+                                          unsigned int __val, __Type __offset, \
                                           int __width = warpSize) {            \
     return static_cast<unsigned int>(                                          \
         ::__FnName(__mask, static_cast<int>(__val), __offset, __width));       \
   }                                                                            \
   inline __device__ long long __FnName(unsigned int __mask, long long __val,   \
-                                       int __offset, int __width = warpSize) { \
+                                       __Type __offset,                        \
+                                       int __width = warpSize) {               \
     struct __Bits {                                                            \
       int __a, __b;                                                            \
     };                                                                         \
@@ -130,13 +137,31 @@ __MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f);
     return __ret;                                                              \
   }                                                                            \
   inline __device__ unsigned long long __FnName(                               \
-      unsigned int __mask, unsigned long long __val, int __offset,             \
+      unsigned int __mask, unsigned long long __val, __Type __offset,          \
       int __width = warpSize) {                                                \
     return static_cast<unsigned long long>(::__FnName(                         \
         __mask, static_cast<unsigned long long>(__val), __offset, __width));   \
   }                                                                            \
+  inline __device__ long __FnName(unsigned int __mask, long __val,             \
+                                  __Type __offset, int __width = warpSize) {   \
+    _Static_assert(sizeof(long) == sizeof(long long) ||                        \
+                   sizeof(long) == sizeof(int));                               \
+    if (sizeof(long) == sizeof(long long)) {                                   \
+      return static_cast<long>(::__FnName(                                     \
+          __mask, static_cast<long long>(__val), __offset, __width));          \
+    } else if (sizeof(long) == sizeof(int)) {                                  \
+      return static_cast<long>(                                                \
+          ::__FnName(__mask, static_cast<int>(__val), __offset, __width));     \
+    }                                                                          \
+  }                                                                            \
+  inline __device__ unsigned long __FnName(                                    \
+      unsigned int __mask, unsigned long __val, __Type __offset,               \
+      int __width = warpSize) {                                                \
+    return static_cast<unsigned long>(                                         \
+        ::__FnName(__mask, static_cast<long>(__val), __offset, __width));      \
+  }                                                                            \
   inline __device__ double __FnName(unsigned int __mask, double __val,         \
-                                    int __offset, int __width = warpSize) {    \
+                                    __Type __offset, int __width = warpSize) { \
     long long __tmp;                                                           \
     _Static_assert(sizeof(__tmp) == sizeof(__val));                            \
     memcpy(&__tmp, &__val, sizeof(__val));                                     \
@@ -146,15 +171,15 @@ __MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f);
     return __ret;                                                              \
   }
 __MAKE_SYNC_SHUFFLES(__shfl_sync, __nvvm_shfl_sync_idx_i32,
-                     __nvvm_shfl_sync_idx_f32, 0x1f);
+                     __nvvm_shfl_sync_idx_f32, 0x1f, int);
 // We use 0 rather than 31 as our mask, because shfl.up applies to lanes >=
 // maxLane.
 __MAKE_SYNC_SHUFFLES(__shfl_up_sync, __nvvm_shfl_sync_up_i32,
-                     __nvvm_shfl_sync_up_f32, 0);
+                     __nvvm_shfl_sync_up_f32, 0, unsigned int);
 __MAKE_SYNC_SHUFFLES(__shfl_down_sync, __nvvm_shfl_sync_down_i32,
-                     __nvvm_shfl_sync_down_f32, 0x1f);
+                     __nvvm_shfl_sync_down_f32, 0x1f, unsigned int);
 __MAKE_SYNC_SHUFFLES(__shfl_xor_sync, __nvvm_shfl_sync_bfly_i32,
-                     __nvvm_shfl_sync_bfly_f32, 0x1f);
+                     __nvvm_shfl_sync_bfly_f32, 0x1f, int);
 #pragma pop_macro("__MAKE_SYNC_SHUFFLES")
 
 inline __device__ void __syncwarp(unsigned int mask = 0xffffffff) {
@@ -186,7 +211,19 @@ inline __device__ unsigned int __ballot_sync(unsigned int mask, int pred) {
   return __nvvm_vote_ballot_sync(mask, pred);
 }
 
-inline __device__ unsigned int __activemask() { return __nvvm_vote_ballot(1); }
+inline __device__ unsigned int __activemask() {
+#if CUDA_VERSION < 9020
+  return __nvvm_vote_ballot(1);
+#else
+  unsigned int mask;
+  asm volatile("activemask.b32 %0;" : "=r"(mask));
+  return mask;
+#endif
+}
+
+inline __device__ unsigned int __fns(unsigned mask, unsigned base, int offset) {
+  return __nvvm_fns(mask, base, offset);
+}
 
 #endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300
 
@@ -233,6 +270,9 @@ inline __device__ long long __ldg(const long long *ptr) {
 }
 inline __device__ unsigned char __ldg(const unsigned char *ptr) {
   return __nvvm_ldg_uc(ptr);
+}
+inline __device__ signed char __ldg(const signed char *ptr) {
+  return __nvvm_ldg_uc((const unsigned char *)ptr);
 }
 inline __device__ unsigned short __ldg(const unsigned short *ptr) {
   return __nvvm_ldg_us(ptr);
